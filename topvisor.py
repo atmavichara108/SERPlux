@@ -13,67 +13,108 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.topvisor.com/v2/json"
-USER_ID = os.environ["TOPVISOR_USER_ID"]
-API_KEY = os.environ["TOPVISOR_API_KEY"]
-PROJECT_ID = int(os.environ["TOPVISOR_PROJECT_ID"])
 
-HEADERS = {
-    "User-Id": USER_ID,
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json",
-}
+def _get_env(key: str) -> str:
+    """Безопасное получение переменной окружения с понятным сообщением."""
+    value = os.environ.get(key)
+    if not value:
+        raise EnvironmentError(
+            f"Переменная окружения {key} не установлена. "
+            f"Проверьте файл .env (см. .env.example)"
+        )
+    return value
+
+USER_ID = _get_env("TOPVISOR_USER_ID")
+API_KEY = _get_env("TOPVISOR_API_KEY")
+PROJECT_ID = int(_get_env("TOPVISOR_PROJECT_ID"))
 
 Row = dict[str, Any]
 
+SEARCHER_MAP = {
+    0: "yandex_ru",
+    1: "google",
+    20: "yandex_com",
+}
 
-def _post(service: str, method: str, payload: dict) -> dict:
+
+def _get_headers() -> dict[str, str]:
+    """Lazy создание headers для избежания утечки credentials при импорте."""
+    return {
+        "User-Id": USER_ID,
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _post(service: str, method: str, payload: dict) -> dict | None:
+    """
+    POST запрос к topvisor API с обработкой ошибок.
+    Возвращает result или None при ошибке.
+    """
     url = f"{BASE_URL}/{service}/{method}"
-    resp = requests.post(url, json=payload, headers=HEADERS, timeout=60)
-    resp.raise_for_status()
+    try:
+        resp = requests.post(url, json=payload, headers=_get_headers(), timeout=60)
+        resp.raise_for_status()
+    except requests.exceptions.Timeout:
+        log.error("Timeout при запросе к %s/%s", service, method)
+        return None
+    except requests.exceptions.ConnectionError:
+        log.error("Ошибка соединения при запросе к %s/%s", service, method)
+        return None
+    except requests.exceptions.RequestException as e:
+        log.error("Ошибка запроса к %s/%s: %s", service, method, e)
+        return None
+
     data = resp.json()
     if "error" in data:
-        raise RuntimeError(f"API error: {data['error']}")
+        log.error("API error: %s", data["error"])
+        return None
     if "errors" in data and data["errors"]:
         log.error("API errors: %s", data["errors"])
-    if method == "snapshots_2/history":
-        log.info("DEBUG snapshots_2/history full response: %s", str(data)[:1000])
-    return data.get("result", {})
+        return None
+    return data.get("result")
 
 
-def list_regions() -> None:
-    """Выводит список ПС и регионов проекта для выбора region_index."""
+def list_regions() -> list[dict[str, Any]]:
+    """
+    Получает список ПС и регионов проекта.
+    Возвращает список searcher объектов с регионами.
+    """
     result = _post("get", "projects_2/projects", {
         "show_searchers_and_regions": 2,
         "filters": [{"name": "id", "operator": "EQUALS", "values": [PROJECT_ID]}],
     })
     if not result:
         log.error("Проект %s не найден", PROJECT_ID)
-        return
+        return []
     project = result[0] if isinstance(result, list) else result
     searchers = project.get("searchers", [])
-    print(f"\nПроект: {project.get('name')} (id={project.get('id')})\n")
+    log.info("Проект: %s (id=%s)", project.get("name"), project.get("id"))
     for s in searchers:
-        print(f"Поисковая система: {s.get('name')} (key={s.get('key')})")
-        print(f"  Full searcher data: {s}")
+        log.info("ПС: %s (key=%s)", s.get("name"), s.get("key"))
         for r in s.get("regions", []):
-            print(f"  region_index={r.get('index'):>4}  {r.get('name')}")
-            print(f"    Full region data: {r}")
-    print()
+            log.info("  region_index=%s %s", r.get("index"), r.get("name"))
+    return searchers
 
 
 def run_check(project_id: int, depth: int, region_indexes: list[int]) -> list[int]:
     """
     Запускает проверку позиций со сбором снимка.
     Вызывает edit/positions_2/checker/go с do_snapshots=1.
-    Глубину прокидывает в настройки проекта при необходимости.
+    Параметр depth зарезервирован для будущего использования.
     Возвращает projectsIds, отправленные на проверку.
     """
+    log.info("Запуск проверки: project=%s, regions=%s, depth=%s", 
+             project_id, region_indexes, depth)
     result = _post("edit", "positions_2/checker/go", {
         "filters": [{"name": "id", "operator": "EQUALS", "values": [project_id]}],
         "regions_indexes": region_indexes,
         "do_snapshots": True,
     })
-    ids = result.get("projectIds", [])
+    if result is None:
+        log.error("Не удалось запустить проверку")
+        return []
+    ids = result.get("projectsIds", [])
     log.info("Запущена проверка проектов: %s", ids)
     return ids
 
@@ -81,7 +122,7 @@ def run_check(project_id: int, depth: int, region_indexes: list[int]) -> list[in
 def poll_status(project_id: int, timeout_sec: int = 600) -> bool:
     """
     Опрашивает процент готовности проверки до 100% или таймаута.
-    Возвращает True если готово, False если таймаут.
+    Возвращает True если готово, False при таймауте или ошибке.
     Пауза между опросами 10 сек.
     """
     deadline = time.time() + timeout_sec
@@ -103,19 +144,26 @@ def poll_status(project_id: int, timeout_sec: int = 600) -> bool:
 
 
 def get_snapshot(project_id: int, region_index: int, date: str,
-                 depth: int) -> list[Row]:
+                 depth: int, searcher_key: int = 1, region_key: int = 117,
+                 region_lang: str = "lt", region_device: int = 0,
+                 geo: str = "") -> list[Row]:
     """
     Получает собранный ТОП через get/snapshots_2/history.
     Возвращает list[Row] с заполненными полями кроме label (=None).
-    Поле domain вычисляет из url. snippet берёт из ответа если есть.
+    
+    Параметры региона (searcher_key, region_key, region_lang, region_device)
+    должны соответствовать настройкам проекта в topvisor.
+    Параметр depth зарезервирован для будущего использования.
     """
+    log.info("Получение снимка: project=%s, region=%s, date=%s, searcher_key=%s",
+             project_id, region_index, date, searcher_key)
     result = _post("get", "snapshots_2/history", {
         "project_id": project_id,
         "regions_indexes": [region_index],
-        "searcher_key": 1,
-        "region_key": 117,
-        "region_lang": "lt",
-        "region_device": 0,
+        "searcher_key": searcher_key,
+        "region_key": region_key,
+        "region_lang": region_lang,
+        "region_device": region_device,
         "date1": date,
         "date2": date,
         "history_fields": ["url", "domain", "snippet_title", "snippet_body"],
@@ -123,46 +171,49 @@ def get_snapshot(project_id: int, region_index: int, date: str,
     if result is None:
         log.error("snapshots_2/history вернул None")
         return []
-    log.info("Snapshot result keys: %s", list(result.keys()) if isinstance(result, dict) else type(result))
-    if isinstance(result, dict):
-        log.info("Snapshot keywords count: %s", len(result.get("keywords", [])))
-        if result.get("keywords"):
-            log.info("First keyword sample: %s", list(result["keywords"][0].keys()) if result["keywords"] else "empty")
     keywords = result.get("keywords", []) if isinstance(result, dict) else []
+    searcher_name = SEARCHER_MAP.get(searcher_key, "unknown")
     rows: list[Row] = []
     for kw in keywords:
         name = kw.get("name", "")
-        positions_data = kw.get("positions", {})
-        for pos_key, pos_val in positions_data.items():
-            if not isinstance(pos_val, dict):
+        snapshots_data = kw.get("snapshotsData", {})
+        for key, val in snapshots_data.items():
+            if not isinstance(val, dict):
                 continue
-            url = pos_val.get("url", "")
-            domain = pos_val.get("domain") or (urlparse(url).netloc if url else "")
-            snippet_title = pos_val.get("snippet_title", "")
-            snippet_body = pos_val.get("snippet_body", "")
-            snippet = f"{snippet_title} {snippet_body}".strip()
-            position = pos_val.get("position")
-            if position is None:
+            parts = key.split(":")
+            if len(parts) < 2:
                 continue
+            try:
+                position = int(parts[1])
+            except (ValueError, IndexError):
+                continue
+            url = val.get("url", "")
+            if not url:
+                continue
+            domain = val.get("domain") or urlparse(url).netloc or ""
+            snippet = f"{val.get('snippet_title', '')} {val.get('snippet_body', '')}".strip()
             rows.append({
                 "date": date,
-                "searcher": "google",
+                "searcher": searcher_name,
                 "query": name,
-                "geo": "",
+                "geo": geo,
                 "region_index": region_index,
-                "position": int(position),
+                "position": position,
                 "url": url,
                 "domain": domain,
                 "snippet": snippet,
                 "label": None,
             })
-    rows.sort(key=lambda r: r["position"])
+    rows.sort(key=lambda r: (r["query"], r["position"]))
     log.info("Получено %s строк из снимка", len(rows))
     return rows
 
 
 def list_keywords(project_id: int, limit: int = 10) -> list[str]:
-    """Возвращает список ключевых запросов проекта."""
+    """
+    Возвращает список ключевых запросов проекта.
+    Используется для диагностики и тестирования.
+    """
     result = _post("get", "keywords_2/keywords", {
         "project_id": project_id,
         "fields": ["name"],
@@ -174,42 +225,70 @@ def list_keywords(project_id: int, limit: int = 10) -> list[str]:
     return keywords
 
 
+def snapshot_exists(project_id: int, region_index: int, date: str,
+                    searcher_key: int = 1, region_key: int = 117,
+                    region_lang: str = "lt", region_device: int = 0) -> bool:
+    """
+    Проверяет наличие снимка за указанную дату.
+    Используется для идемпотентности — избежания повторных проверок.
+    """
+    result = _post("get", "snapshots_2/history", {
+        "project_id": project_id,
+        "regions_indexes": [region_index],
+        "searcher_key": searcher_key,
+        "region_key": region_key,
+        "region_lang": region_lang,
+        "region_device": region_device,
+        "date1": date,
+        "date2": date,
+        "history_fields": ["url"],
+    })
+    if result is None:
+        return False
+    keywords = result.get("keywords", []) if isinstance(result, dict) else []
+    for kw in keywords:
+        if kw.get("snapshotsData"):
+            return True
+    return False
+
+
 if __name__ == "__main__":
+    import sys
     from datetime import date as date_type
 
-    REGION_INDEX = 1300
-    DEPTH = 10
+    REGION_INDEX = int(os.environ.get("TOPVISOR_REGION_INDEX", "1300"))
+    SEARCHER_KEY = int(os.environ.get("TOPVISOR_SEARCHER_KEY", "1"))
+    REGION_KEY = int(os.environ.get("TOPVISOR_REGION_KEY", "117"))
+    REGION_LANG = os.environ.get("TOPVISOR_REGION_LANG", "lt")
+    REGION_DEVICE = int(os.environ.get("TOPVISOR_REGION_DEVICE", "0"))
+    GEO = os.environ.get("TOPVISOR_GEO", "Литва")
+    DEPTH = int(os.environ.get("TOPVISOR_DEPTH", "10"))
 
-    print("=== Вертикальный срез: Google, Литва (region_index=1300) ===\n")
+    if len(sys.argv) > 1 and sys.argv[1] == "--list-regions":
+        list_regions()
+        sys.exit(0)
 
-    print("1. Получаю список запросов проекта...")
-    keywords = list_keywords(PROJECT_ID, limit=5)
-    if not keywords:
-        log.error("В проекте нет ключевых запросов")
-        raise SystemExit(1)
-    print(f"   Запросы проекта: {keywords}")
-    print(f"   Беру первый запрос: '{keywords[0]}'\n")
-
-    print("2. Запускаю проверку со снимком...")
-    ids = run_check(PROJECT_ID, DEPTH, [REGION_INDEX])
-    if not ids:
-        log.error("Не удалось запустить проверку")
-        raise SystemExit(1)
-    print(f"   Проверка запущена для проектов: {ids}\n")
-
-    print("3. Ожидаю готовности (поллинг)...")
-    if not poll_status(PROJECT_ID, timeout_sec=600):
-        log.error("Таймаут ожидания")
-        raise SystemExit(1)
-    print("   Проверка завершена!\n")
-
-    print("4. Получаю снимок выдачи...")
     today = date_type.today().isoformat()
-    rows = get_snapshot(PROJECT_ID, REGION_INDEX, today, DEPTH)
-    print(f"   Получено строк: {len(rows)}\n")
+    log.info("=== Вертикальный срез: %s, %s (region_index=%s) ===",
+             SEARCHER_MAP.get(SEARCHER_KEY, "unknown"), GEO, REGION_INDEX)
 
-    print("5. Первые 10 результатов:")
-    print("-" * 80)
-    for i, row in enumerate(rows[:10], 1):
-        print(f"{i:2}. pos={row['position']:>3} | {row['domain'][:40]:<40} | {row['url'][:60]}")
-    print("-" * 80)
+    if snapshot_exists(PROJECT_ID, REGION_INDEX, today, SEARCHER_KEY,
+                       REGION_KEY, REGION_LANG, REGION_DEVICE):
+        log.info("Снимок за %s уже существует, пропускаю проверку", today)
+    else:
+        log.info("Снимок за %s отсутствует, запускаю проверку", today)
+        ids = run_check(PROJECT_ID, DEPTH, [REGION_INDEX])
+        if not ids:
+            log.error("Не удалось запустить проверку")
+            sys.exit(1)
+        if not poll_status(PROJECT_ID, timeout_sec=600):
+            log.error("Таймаут ожидания проверки")
+            sys.exit(1)
+
+    rows = get_snapshot(PROJECT_ID, REGION_INDEX, today, DEPTH,
+                        SEARCHER_KEY, REGION_KEY, REGION_LANG, REGION_DEVICE, GEO)
+    log.info("Получено строк: %s", len(rows))
+
+    for i, row in enumerate(rows[:15], 1):
+        log.info("%2d. query='%s' pos=%s domain=%s",
+                 i, row["query"][:30], row["position"], row["domain"][:35])
