@@ -53,7 +53,7 @@ def _post(service: str, method: str, payload: dict) -> dict | None:
     """
     url = f"{BASE_URL}/{service}/{method}"
     try:
-        resp = requests.post(url, json=payload, headers=_get_headers(), timeout=60)
+        resp = requests.post(url, json=payload, headers=_get_headers(), timeout=(10, 60))
         resp.raise_for_status()
     except requests.exceptions.Timeout:
         log.error("Timeout при запросе к %s/%s", service, method)
@@ -77,8 +77,10 @@ def _post(service: str, method: str, payload: dict) -> dict | None:
 
 def list_regions() -> list[dict[str, Any]]:
     """
-    Получает список ПС и регионов проекта.
-    Возвращает список searcher объектов с регионами.
+    Получает карту параметров всех регионов проекта.
+    Возвращает плоский список dict, по одному на каждую связку ПС×регион:
+      searcher_key, searcher_name, region_key, region_lang, region_device,
+      region_index, name, type, country_code, domain
     """
     result = _post("get", "projects_2/projects", {
         "show_searchers_and_regions": 2,
@@ -89,12 +91,26 @@ def list_regions() -> list[dict[str, Any]]:
         return []
     project = result[0] if isinstance(result, list) else result
     searchers = project.get("searchers", [])
-    log.info("Проект: %s (id=%s)", project.get("name"), project.get("id"))
+    region_map: list[dict[str, Any]] = []
     for s in searchers:
-        log.info("ПС: %s (key=%s)", s.get("name"), s.get("key"))
+        searcher_key = s.get("key")
+        searcher_name = s.get("name", "")
         for r in s.get("regions", []):
-            log.info("  region_index=%s %s", r.get("index"), r.get("name"))
-    return searchers
+            region_map.append({
+                "searcher_key": searcher_key,
+                "searcher_name": searcher_name,
+                "region_key": r.get("key"),
+                "region_lang": r.get("lang"),
+                "region_device": r.get("device"),
+                "region_index": r.get("index"),
+                "name": r.get("name"),
+                "type": r.get("type"),
+                "country_code": r.get("countryCode"),
+                "domain": r.get("domain"),
+            })
+    log.info("Проект %s (id=%s): %s связок ПС×регион",
+             project.get("name"), project.get("id"), len(region_map))
+    return region_map
 
 
 def run_check(project_id: int, depth: int, region_indexes: list[int]) -> list[int]:
@@ -265,7 +281,16 @@ if __name__ == "__main__":
     DEPTH = int(os.environ.get("TOPVISOR_DEPTH", "10"))
 
     if len(sys.argv) > 1 and sys.argv[1] == "--list-regions":
-        list_regions()
+        regions = list_regions()
+        print(f"\n{'searcher_key':>12} {'searcher_name':<12} {'region_key':>10} "
+              f"{'region_lang':>11} {'region_device':>13} {'region_index':>12} "
+              f"{'name':<25} {'type':<8} {'country':<8} {'domain':<10}")
+        print("-" * 140)
+        for r in regions:
+            print(f"{r['searcher_key']:>12} {r['searcher_name']:<12} {r['region_key']:>10} "
+                  f"{r['region_lang']:>11} {r['region_device']:>13} {r['region_index']:>12} "
+                  f"{r['name']:<25} {r['type']:<8} {r['country_code']:<8} {r['domain']:<10}")
+        print(f"\nВсего связок: {len(regions)}")
         sys.exit(0)
 
     today = date_type.today().isoformat()
