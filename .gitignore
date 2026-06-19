@@ -5,3 +5,10 @@ __pycache__/
 *.db
 credentials.json
 .DS_Store
+
+# Google service account keys
+credentials.json
+serplux-project-*.json
+*-*.iam.gserviceaccount.com.json
+service-account*.json
+*.json.key
