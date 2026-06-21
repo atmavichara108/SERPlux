@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound, APIError
 
 from storage import get_history
-from config import SUBJECT_DISPLAY, GEO_DISPLAY
+from config import SUBJECT_DISPLAY, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH
 
 load_dotenv()
 
@@ -22,6 +22,19 @@ SEARCHER_MAP = {
 }
 
 REPORT_SHEET_NAME = "Отчёт"
+
+COLS = 16
+
+SUBJECT_BLOCKS = [
+    {"key": "juri sudheimer", "display": "Juri Sudheimer", "pos": 1,  "url": 2},
+    {"key": "erik sudheimer", "display": "Erik Sudheimer", "pos": 6,  "url": 7},
+    {"key": "sct chemicals",  "display": "SCT Chemicals",  "pos": 9,  "url": 10},
+    {"key": "chempioil",      "display": "Chempioil",      "pos": 12, "url": 13},
+]
+
+
+def _get_geo_display(geo: str) -> str:
+    return GEO_DISPLAY.get(geo, geo)
 
 
 def _get_spreadsheet():
@@ -80,78 +93,80 @@ def build_report(date: str | None = None) -> None:
         log.warning("Нет данных за дату %s", date)
         return
 
+    known_keys = {s["key"] for s in SUBJECT_BLOCKS}
+    rows = [r for r in rows if r["query"] in known_keys]
+
+    if not rows:
+        log.warning("Нет данных известных субъектов за дату %s", date)
+        return
+
     log.info("Построение отчёта за %s: %s строк", date, len(rows))
 
-    grouped: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
-    all_queries: set[str] = set()
-    
+    raw_grouped: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
     for row in rows:
         searcher = row["searcher"]
         geo = row["geo"]
         query = row["query"]
-        position = row["position"]
+        pos = row["position"]
         url = row["url"]
-
-        if searcher not in grouped:
-            grouped[searcher] = {}
-        if geo not in grouped[searcher]:
-            grouped[searcher][geo] = {}
-        if query not in grouped[searcher][geo]:
-            grouped[searcher][geo][query] = {}
-
-        grouped[searcher][geo][query][position] = url
-        all_queries.add(query)
-    
-    # Sort queries by SUBJECT_DISPLAY order, fallback unknowns to end
-    def sort_key(query: str) -> tuple[int, str]:
-        if query in SUBJECT_DISPLAY:
-            return (SUBJECT_DISPLAY[query][0], query)
-        # Unknown subjects go to end
-        return (999, query)
-    
-    sorted_queries = sorted(all_queries, key=sort_key)
+        raw_grouped.setdefault(searcher, {}).setdefault(geo, {}).setdefault(query, {})[pos] = url
 
     report_data: list[list[str]] = []
 
-    for searcher in sorted(grouped.keys()):
+    for searcher in sorted(raw_grouped.keys()):
         searcher_readable = SEARCHER_MAP.get(searcher, searcher)
         date_formatted = _format_date(date)
-        report_data.append([f"Позиции {searcher_readable} на {date_formatted}"])
 
-        geo_data = grouped[searcher]
-        for geo in sorted(geo_data.keys()):
-            # Use GEO_DISPLAY mapping, fallback to raw geo name
-            geo_display = GEO_DISPLAY.get(geo, geo)
-            report_data.append([geo_display])
-
-            # Filter queries for this geo and sort by SUBJECT_DISPLAY order
-            queries_for_geo = set(geo_data[geo].keys())
-            queries_sorted = sorted(
-                queries_for_geo,
-                key=lambda q: (SUBJECT_DISPLAY[q][0], q) if q in SUBJECT_DISPLAY else (999, q)
+        display_groups: dict[str, dict[str, dict[int, str]]] = {}
+        geo_max_pos: dict[str, int] = {}
+        for raw_geo, queries in raw_grouped[searcher].items():
+            display = _get_geo_display(raw_geo)
+            if display not in display_groups:
+                display_groups[display] = {}
+            for query, positions in queries.items():
+                if query not in display_groups[display]:
+                    display_groups[display][query] = {}
+                display_groups[display][query].update(positions)
+            max_p = max(
+                (p for qp in display_groups[display].values() for p in qp),
+                default=0,
             )
-            
-            # Header row: display names or raw query names
-            header_row = [""]
-            for query in queries_sorted:
-                display_name = SUBJECT_DISPLAY.get(query, (999, query))[1] if query in SUBJECT_DISPLAY else query
-                header_row.append(display_name)
-            report_data.append(header_row)
+            geo_max_pos[display] = max_p
 
-            max_position = max(
-                pos
-                for query_data in geo_data[geo].values()
-                for pos in query_data.keys()
-            )
+        report_data.append([f"Позиции {searcher_readable} на {date_formatted}"] + [""] * (COLS - 1))
+        report_data.append([""] * COLS)
 
-            for pos in range(1, max_position + 1):
-                row_data = [str(pos)]
-                for query in queries_sorted:
-                    url = geo_data[geo][query].get(pos, "")
-                    row_data.append(url)
-                report_data.append(row_data)
+        hdr_row = [""] * COLS
+        for sb in SUBJECT_BLOCKS:
+            hdr_row[sb["url"]] = sb["display"]
+        report_data.append(hdr_row)
 
-        report_data.append([])
+        for geo_key in GEO_ORDER:
+            geo_display = _get_geo_display(geo_key)
+
+            geo_row = [""] * COLS
+            for sb in SUBJECT_BLOCKS:
+                geo_row[sb["pos"]] = geo_display
+            report_data.append(geo_row)
+
+            geo_data = display_groups.get(geo_display, {})
+            max_pos = geo_max_pos.get(geo_display, 0)
+            if max_pos == 0:
+                max_pos = EMPTY_GEO_DEPTH
+
+            for pos in range(1, max_pos + 1):
+                row = [""] * COLS
+                for sb in SUBJECT_BLOCKS:
+                    qkey = sb["key"]
+                    if qkey in geo_data and pos in geo_data[qkey]:
+                        row[sb["pos"]] = str(pos)
+                        row[sb["url"]] = geo_data[qkey][pos]
+                report_data.append(row)
+
+            report_data.append([""] * COLS)
+
+        report_data.append([""] * COLS)
+        report_data.append([""] * COLS)
 
     spreadsheet = _get_spreadsheet()
     if spreadsheet is None:
@@ -179,6 +194,5 @@ if __name__ == "__main__":
 
     print("\n=== Тест завершён ===")
     print("Откройте Google Sheet и проверьте лист 'Отчёт':")
-    print("- Блоки по ПС (Google, Яндекс, Яндекс.com)")
-    print("- Секции по гео внутри каждого блока")
-    print("- Матрица: позиции × субъекты с URL в ячейках")
+    print("- 16-колоночная матрица: pos/URL для каждого субъекта + разделители")
+    print("- Блоки по ПС, секции по гео, точный формат заказчика")
