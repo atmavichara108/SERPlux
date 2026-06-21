@@ -1,8 +1,9 @@
-
+ 
 ---
 description: Пишет и отлаживает topvisor.py и collector.py по контракту
 mode: subagent
-temperature: 0.2
+model: opencode/claude-sonnet-4-6
+temperature: 0.1
 permission:
   edit: allow
   bash:

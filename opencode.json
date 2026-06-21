@@ -18,17 +18,23 @@
     },
     "webfetch": "allow"
   },
+  "provider": {
+    "opencode": {
+      "options": {
+      }
+    }
+  },
   "agent": {
     "build": {
       "mode": "primary",
-      "model": "opencode-go/qwen3.7-max",
+      "model": "opencode/claude-sonnet-4-6",
       "temperature": 0.1,
       "steps": 30,
       "permission": { "task": { "*": "allow" } }
     },
     "plan": {
       "mode": "primary",
-      "model": "opencode-go/qwen3.7-plus",
+      "model": "opencode/claude-sonnet-4-6",
       "temperature": 0.1,
       "steps": 20,
       "permission": { "edit": "deny", "bash": "deny" }
