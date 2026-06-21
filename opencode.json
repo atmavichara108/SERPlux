@@ -18,12 +18,6 @@
     },
     "webfetch": "allow"
   },
-  "provider": {
-    "opencode": {
-      "options": {
-      }
-    }
-  },
   "agent": {
     "build": {
       "mode": "primary",
