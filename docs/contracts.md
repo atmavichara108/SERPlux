@@ -21,3 +21,18 @@ Row = {
     "snippet": str,     # сниппет из выдачи (может быть "")
     "label": str | None # "positive" | "negative" | "neutral" | None
 }
+
+## storage.py
+
+- `save(rows: list[Row]) -> int` — сохраняет строки в SQLite, возвращает кол-во вставленных.
+- `get_cached_label(url: str, query: str) -> str | None` — ищет последнюю не-NULL метку
+  по паре (url, query), сортировка по date DESC. Возвращает метку или None.
+- `get_history(filters: dict | None = None) -> list[Row]` — возвращает строки из БД
+  с опциональными фильтрами (date, searcher, geo, query).
+
+## labeler.py
+
+- `label(rows: list[Row]) -> list[Row]` — проставляет поле label каждой строке.
+  Сначала проверяет кэш (storage.get_cached_label), затем вызывает LLM (Gemini).
+  При ошибке Gemini — фолбек на дешёвую модель. При ошибке обоих — label=None.
+  Возвращает тот же список с заполненными label.

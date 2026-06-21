@@ -9,14 +9,14 @@ DB_PATH = "serplux.db"
 Row = dict[str, Any]
 
 
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+def _get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def _init_db() -> None:
-    conn = _get_conn()
+def _init_db(db_path: str = DB_PATH) -> None:
+    conn = _get_conn(db_path)
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS results (
@@ -37,13 +37,13 @@ def _init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_url ON results(url)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_date_searcher_geo ON results(date, searcher, geo)")
         conn.commit()
-        log.info("БД инициализирована: %s", DB_PATH)
+        log.info("БД инициализирована: %s", db_path)
     finally:
         conn.close()
 
 
-def save(rows: list[Row]) -> int:
-    conn = _get_conn()
+def save(rows: list[Row], db_path: str = DB_PATH) -> int:
+    conn = _get_conn(db_path)
     inserted = 0
     try:
         for row in rows:
@@ -73,15 +73,15 @@ def save(rows: list[Row]) -> int:
     return inserted
 
 
-def get_cached_label(url: str) -> str | None:
-    conn = _get_conn()
+def get_cached_label(url: str, query: str, db_path: str = DB_PATH) -> str | None:
+    conn = _get_conn(db_path)
     try:
         row = conn.execute(
             """SELECT label FROM results
-               WHERE url = ? AND label IS NOT NULL
+               WHERE url = ? AND query = ? AND label IS NOT NULL
                ORDER BY date DESC
                LIMIT 1""",
-            (url,),
+            (url, query),
         ).fetchone()
         if row:
             return row["label"]
@@ -90,8 +90,8 @@ def get_cached_label(url: str) -> str | None:
         conn.close()
 
 
-def get_history(filters: dict | None = None) -> list[Row]:
-    conn = _get_conn()
+def get_history(filters: dict | None = None, db_path: str = DB_PATH) -> list[Row]:
+    conn = _get_conn(db_path)
     try:
         query = "SELECT * FROM results WHERE 1=1"
         params: list[Any] = []
@@ -121,10 +121,12 @@ def get_history(filters: dict | None = None) -> list[Row]:
 if __name__ == "__main__":
     import os
 
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
+    TEST_DB = "test_serplux.db"
 
-    _init_db()
+    if os.path.exists(TEST_DB):
+        os.remove(TEST_DB)
+
+    _init_db(TEST_DB)
 
     test_rows: list[Row] = [
         {
@@ -165,30 +167,30 @@ if __name__ == "__main__":
         },
     ]
 
-    print("=== Тест storage.py ===\n")
+    print("=== Тест storage.py (изолированная БД: %s) ===\n" % TEST_DB)
 
     print("1. Первый save()...")
-    inserted1 = save(test_rows)
+    inserted1 = save(test_rows, TEST_DB)
     print(f"   Вставлено: {inserted1} (ожидалось 3)\n")
 
     print("2. Повторный save() тех же строк (идемпотентность)...")
-    inserted2 = save(test_rows)
+    inserted2 = save(test_rows, TEST_DB)
     print(f"   Вставлено: {inserted2} (ожидалось 0)\n")
 
-    print("3. get_cached_label() для известного URL...")
-    label1 = get_cached_label("https://example.com/page1")
-    print(f"   label для https://example.com/page1: {label1} (ожидалось 'positive')\n")
+    print("3. get_cached_label() для известного URL+query...")
+    label1 = get_cached_label("https://example.com/page1", "test query", TEST_DB)
+    print(f"   label для https://example.com/page1 + 'test query': {label1} (ожидалось 'positive')\n")
 
     print("4. get_cached_label() для URL без метки...")
-    label2 = get_cached_label("https://example.com/page2")
-    print(f"   label для https://example.com/page2: {label2} (ожидалось None)\n")
+    label2 = get_cached_label("https://example.com/page2", "test query", TEST_DB)
+    print(f"   label для https://example.com/page2 + 'test query': {label2} (ожидалось None)\n")
 
     print("5. get_cached_label() для неизвестного URL...")
-    label3 = get_cached_label("https://unknown.com")
-    print(f"   label для https://unknown.com: {label3} (ожидалось None)\n")
+    label3 = get_cached_label("https://unknown.com", "test query", TEST_DB)
+    print(f"   label для https://unknown.com + 'test query': {label3} (ожидалось None)\n")
 
     print("6. get_history() без фильтров...")
-    history = get_history()
+    history = get_history(db_path=TEST_DB)
     print(f"   Всего строк: {len(history)}")
     for i, row in enumerate(history, 1):
         print(f"   {i}. date={row['date']} query='{row['query']}' pos={row['position']} "
@@ -196,7 +198,7 @@ if __name__ == "__main__":
     print()
 
     print("7. get_history() с фильтром query='test query'...")
-    filtered = get_history({"query": "test query"})
+    filtered = get_history({"query": "test query"}, TEST_DB)
     print(f"   Строк: {len(filtered)}")
     for row in filtered:
         print(f"   query='{row['query']}' pos={row['position']} url={row['url'][:40]}")
@@ -227,9 +229,9 @@ if __name__ == "__main__":
         "snippet": "New snippet",
         "label": None,
     }
-    save([old_row])
-    save([new_row])
-    cached = get_cached_label("https://chempioil.com")
+    save([old_row], TEST_DB)
+    save([new_row], TEST_DB)
+    cached = get_cached_label("https://chempioil.com", "chempioil", TEST_DB)
     print(f"   Старая дата (2026-06-13): label=neutral")
     print(f"   Новая дата (2026-06-20): label=None")
     print(f"   get_cached_label(): {cached} (ожидалось 'neutral')")
@@ -239,4 +241,6 @@ if __name__ == "__main__":
         print("   ✗ БАГ: кэш не работает!")
     print()
 
+    os.remove(TEST_DB)
+    print("Тестовая БД удалена: %s" % TEST_DB)
     print("=== Тест завершён ===")

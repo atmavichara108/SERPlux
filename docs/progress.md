@@ -20,7 +20,7 @@
 - **storage.py готов**: SQLite хранилище с кэшем меток
   - Версионность: каждый прогон — новые строки со своей датой
   - Идемпотентность: UNIQUE constraint на (date, searcher, query, geo, position, url)
-  - Кэш меток: get_cached_label() возвращает последнюю известную метку для URL
+  - Кэш меток: get_cached_label(url, query) по паре (url+query), не только url
   - Протестирован на фейковых данных
 - **exporter.py готов**: выгрузка в Google Sheets
   - Версионность: новые данные вставляются блоком сверху (insert_rows)
@@ -45,18 +45,26 @@
   - Пустые строки: 1 после каждой geo-секции, 2 после блока (итого 3 между блоками дат)
   - Без merge_cells, без bold/заливки — чистая вставка данных
   - Данные из storage.get_history(), версионность insert_rows сверху
+- **labeler.py готов**: разметка тональности через Gemini Flash
+  - Основной провайдер: Gemini 2.0 Flash (бесплатный лимит)
+  - Фолбек: Zen-модель через OpenAI-совместимый API при ошибке Gemini
+  - Пауза 4с между вызовами LLM для защиты от rate limit
+  - Кэш по паре (url+query): сначала проверяет БД, потом вызывает LLM
+  - Протестирован на моках (3 фейковых строки: negative/positive/neutral)
+  - Реальный прогон на данных — отдельно (тратит лимит Gemini)
 
 ## В работе
-- labeler.py: разметка тональности через Gemini Flash
+- Интеграция labeler.py в main.py (пайплайн collect → save → label → export)
 
 ## Заблокировано / ждёт
 - Деплой на сервер заказчика (интерфейс непонятен, разберём в конце)
 - Широкий формат exporter — переработать контракт Row под него
 - Риск timeout при сборе больших групп (5+ регионов одной ПС): 
   timeout вынесен в config (дефолт 900 сек), при проблемах увеличить
+- TODO: «labeler: миграция google.generativeai → google.genai (старый SDK deprecated)».
 
 ## Дальше по порядку
-1. labeler.py: разметка тональности через Gemini Flash (интеграция в main.py)
+1. Интеграция labeler.py в main.py (пайплайн с нейронкой)
 2. config.py: чтение настроек из листа "Настройки" Google Sheet (этап 3)
 3. webhook.py: FastAPI endpoint для триггера из Sheets
 4. Реальный прогон main.py с полной конфигурацией (все searchers × все geos)
