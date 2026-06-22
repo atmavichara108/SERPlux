@@ -45,65 +45,56 @@ def collect(config: dict[str, Any]) -> list[Row]:
 
     log.info("Найдено %s связок для сбора", len(filtered))
 
-    grouped: dict[int, list[dict]] = {}
-    for region in filtered:
-        sk = region["searcher_key"]
-        if sk not in grouped:
-            grouped[sk] = []
-        grouped[sk].append(region)
-
     all_rows: list[Row] = []
     today = config.get("date") or date_type.today().isoformat()
 
-    for searcher_key, regions in grouped.items():
-        region_indexes = [r["region_index"] for r in regions]
-        log.info("Searcher_key=%s: %s регионов, indexes=%s",
-                 searcher_key, len(regions), region_indexes)
+    # Проверяем наличие снапшотов для ВСЕХ регионов
+    missing = [
+        r for r in filtered
+        if not snapshot_exists(
+            PROJECT_ID, r["region_index"], today,
+            r["searcher_key"], r["region_key"],
+            r["region_lang"], r["region_device"]
+        )
+    ]
 
-        need_check = False
-        for region in regions:
-            if not snapshot_exists(
-                PROJECT_ID, region["region_index"], today,
-                searcher_key, region["region_key"],
-                region["region_lang"], region["region_device"]
-            ):
-                need_check = True
-                break
+    if missing:
+        log.info("Отсутствуют снапшоты для %s из %s регионов, запускаю одну проверку",
+                 len(missing), len(filtered))
+        missing_indexes = [r["region_index"] for r in missing]
+        ids = run_check(PROJECT_ID, depth, missing_indexes)
+        if not ids:
+            log.warning("run_check не вернул id (возможно, проверка уже запущена)")
+        if not poll_status(PROJECT_ID, timeout_sec=timeout_sec):
+            log.error("Таймаут ожидания проверки")
+            return all_rows
+    else:
+        log.info("Все снапшоты за %s уже существуют, пропускаю проверку", today)
 
-        if need_check:
-            log.info("Запуск проверки для searcher_key=%s", searcher_key)
-            ids = run_check(PROJECT_ID, depth, region_indexes)
-            if not ids:
-                log.error("Не удалось запустить проверку для searcher_key=%s", searcher_key)
-                continue
-            if not poll_status(PROJECT_ID, timeout_sec=timeout_sec):
-                log.error("Таймаут проверки для searcher_key=%s", searcher_key)
-                continue
-        else:
-            log.info("Снимки за %s уже существуют, пропускаю проверку", today)
-
-        for region in regions:
-            try:
-                log.info("Получение снимка: %s / %s (region_index=%s)",
-                         region["searcher"], region["geo_name"], region["region_index"])
-                rows = get_snapshot(
-                    PROJECT_ID,
-                    region["region_index"],
-                    today,
-                    depth,
-                    searcher_key=region["searcher_key"],
-                    region_key=region["region_key"],
-                    region_lang=region["region_lang"],
-                    region_device=region["region_device"],
-                    geo=region["geo_name"],
-                )
-                log.info("Получено %s строк для %s / %s",
-                         len(rows), region["searcher"], region["geo_name"])
-                all_rows.extend(rows)
-            except Exception as e:
-                log.error("Ошибка при получении снимка %s / %s: %s",
-                          region["searcher"], region["geo_name"], e)
-                continue
+    # Скачиваем get_snapshot для ВСЕХ регионов
+    # (run_check в Topvisor обновляет весь проект, а не подмножество)
+    for region in filtered:
+        try:
+            log.info("Получение снимка: %s / %s (region_index=%s)",
+                     region["searcher"], region["geo_name"], region["region_index"])
+            rows = get_snapshot(
+                PROJECT_ID,
+                region["region_index"],
+                today,
+                depth,
+                searcher_key=region["searcher_key"],
+                region_key=region["region_key"],
+                region_lang=region["region_lang"],
+                region_device=region["region_device"],
+                geo=region["geo_name"],
+            )
+            log.info("Получено %s строк для %s / %s",
+                     len(rows), region["searcher"], region["geo_name"])
+            all_rows.extend(rows)
+        except Exception as e:
+            log.error("Ошибка при получении снимка %s / %s: %s",
+                      region["searcher"], region["geo_name"], e)
+            continue
 
     log.info("Всего собрано строк: %s", len(all_rows))
     return all_rows

@@ -6,24 +6,31 @@ SUBJECT_DISPLAY = {
 }
 
 GEO_DISPLAY = {
+    # Точные ключи из regions_map.json
     "Литва": "Lithuania",
     "Германия": "Germany",
     "Великобритания": "United Kingdom",
     "Лондон": "United Kingdom",
+    "Объединённые Арабские Эмираты": "United Arab Emirates",
+    "Кипр": "Cyprus",
+    # Legacy-ключи для совместимости со старыми данными
     "ОАЭ": "United Arab Emirates",
     "Объединённые Эмираты": "United Arab Emirates",
     "Кипр Eng": "Cyprus Eng",
     "Кипр Greek": "Cyprus Greek",
-    "Кипр": "Cyprus",
 }
 
 GEO_ORDER: list[str] = [
     "Литва",
     "Германия",
     "Великобритания",
-    "ОАЭ",
-    "Кипр Eng",
-    "Кипр Greek",
+    "Лондон",
+    "Объединённые Арабские Эмираты",
+    "Кипр",
 ]
 
-EMPTY_GEO_DEPTH = 10
+# Глубина отображения в матрице-отчёте; в будущем — опция в интерфейсе serplux
+REPORT_DEPTH = 10
+
+# Пустые гео-секции рисуем на REPORT_DEPTH строк (не больше)
+EMPTY_GEO_DEPTH = REPORT_DEPTH

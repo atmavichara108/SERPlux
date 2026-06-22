@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound, APIError
 
 from storage import get_history
-from config import SUBJECT_DISPLAY, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH
+from config import SUBJECT_DISPLAY, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH, REPORT_DEPTH
 
 load_dotenv()
 
@@ -154,7 +154,7 @@ def build_report(date: str | None = None) -> None:
             if max_pos == 0:
                 max_pos = EMPTY_GEO_DEPTH
 
-            for pos in range(1, max_pos + 1):
+            for pos in range(1, min(max_pos, REPORT_DEPTH) + 1):
                 row = [""] * COLS
                 for sb in SUBJECT_BLOCKS:
                     qkey = sb["key"]
