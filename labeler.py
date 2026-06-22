@@ -90,12 +90,8 @@ _PROVIDER_MAP = {
 }
 
 
-def _label_one(row: dict, db_path: str = storage.DB_PATH) -> str | None:
-    cached = storage.get_cached_label(row["url"], row["query"], db_path)
-    if cached is not None:
-        log.info("из кэша: %s + '%s' -> %s", row["url"], row["query"], cached)
-        return cached
-
+def _label_one_llm(row: dict) -> str | None:
+    """Вызывает LLM для разметки (без проверки кэша — кэш проверяет label())."""
     prompt = _build_prompt(row["query"], row["url"], row.get("snippet", ""))
 
     for provider_name in PROVIDER_CHAIN:
@@ -111,15 +107,11 @@ def _label_one(row: dict, db_path: str = storage.DB_PATH) -> str | None:
 
 
 def label(rows: list[dict], db_path: str = storage.DB_PATH) -> list[dict]:
-    load_dotenv()
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    if gemini_key:
-        genai.configure(api_key=gemini_key)
-
     result = []
     last_real_call = 0.0
 
     for row in rows:
+        # Проверяем кэш прямо здесь, чтобы не вызывать LLM и не ждать паузу
         cached = storage.get_cached_label(row["url"], row["query"], db_path)
         if cached is not None:
             row["label"] = cached
@@ -127,6 +119,7 @@ def label(rows: list[dict], db_path: str = storage.DB_PATH) -> list[dict]:
             result.append(row)
             continue
 
+        # Пауза только между реальными вызовами LLM
         now = time.time()
         elapsed = now - last_real_call
         if elapsed < LLM_PAUSE and last_real_call > 0:
@@ -134,7 +127,7 @@ def label(rows: list[dict], db_path: str = storage.DB_PATH) -> list[dict]:
             log.debug("Пауза %.1fс между вызовами LLM", wait)
             time.sleep(wait)
 
-        row["label"] = _label_one(row, db_path)
+        row["label"] = _label_one_llm(row)
         last_real_call = time.time()
         result.append(row)
 

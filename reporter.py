@@ -125,7 +125,8 @@ def build_report(date: str | None = None) -> None:
         date = all_rows[0]["date"]
         log.info("Дата не указана, использую последнюю: %s", date)
 
-    assert date is not None
+    if date is None:
+        raise ValueError("Дата не определена и нет данных в базе")
 
     rows = get_history(filters={"date": date})
     if not rows:
@@ -220,6 +221,16 @@ def build_report(date: str | None = None) -> None:
     worksheet = _get_or_create_report_sheet(spreadsheet)
 
     try:
+        # Проверяем идемпотентность: читаем первые строки листа
+        existing_values = worksheet.get_all_values()
+        date_formatted = _format_date(date)
+        # Ищем заголовок первого блока: "Позиции {searcher} на {date}"
+        for row_vals in existing_values[:3]:
+            if row_vals and date_formatted in row_vals[0]:
+                log.info("Отчёт за %s уже есть на листе '%s', пропущен (идемпотентность)",
+                         date_formatted, REPORT_SHEET_NAME)
+                return
+
         log.info("Вставляю %s строк отчёта на лист '%s'", len(report_data), REPORT_SHEET_NAME)
         worksheet.insert_rows(report_data, 1)
 

@@ -9,10 +9,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.topvisor.com/v2/json"
+
+Row = dict[str, Any]
+
+SEARCHER_MAP = {
+    0: "yandex_ru",
+    1: "google",
+    20: "yandex_com",
+}
+
+# Lazy credentials — не читаются при импорте
+_credentials: dict[str, Any] = {}
+
 
 def _get_env(key: str) -> str:
     """Безопасное получение переменной окружения с понятным сообщением."""
@@ -24,24 +35,22 @@ def _get_env(key: str) -> str:
         )
     return value
 
-USER_ID = _get_env("TOPVISOR_USER_ID")
-API_KEY = _get_env("TOPVISOR_API_KEY")
-PROJECT_ID = int(_get_env("TOPVISOR_PROJECT_ID"))
 
-Row = dict[str, Any]
-
-SEARCHER_MAP = {
-    0: "yandex_ru",
-    1: "google",
-    20: "yandex_com",
-}
+def _get_credentials() -> dict[str, Any]:
+    """Lazy загрузка credentials. Не падает при импорте модуля."""
+    if not _credentials:
+        _credentials["user_id"] = _get_env("TOPVISOR_USER_ID")
+        _credentials["api_key"] = _get_env("TOPVISOR_API_KEY")
+        _credentials["project_id"] = int(_get_env("TOPVISOR_PROJECT_ID"))
+    return _credentials
 
 
 def _get_headers() -> dict[str, str]:
-    """Lazy создание headers для избежания утечки credentials при импорте."""
+    """Создание headers с lazy загрузкой credentials."""
+    creds = _get_credentials()
     return {
-        "User-Id": USER_ID,
-        "Authorization": f"Bearer {API_KEY}",
+        "User-Id": creds["user_id"],
+        "Authorization": f"Bearer {creds['api_key']}",
         "Content-Type": "application/json",
     }
 
@@ -84,10 +93,10 @@ def list_regions() -> list[dict[str, Any]]:
     """
     result = _post("get", "projects_2/projects", {
         "show_searchers_and_regions": 2,
-        "filters": [{"name": "id", "operator": "EQUALS", "values": [PROJECT_ID]}],
+        "filters": [{"name": "id", "operator": "EQUALS", "values": [_get_credentials()["project_id"]]}],
     })
     if not result:
-        log.error("Проект %s не найден", PROJECT_ID)
+        log.error("Проект %s не найден", _get_credentials()["project_id"])
         return []
     project = result[0] if isinstance(result, list) else result
     searchers = project.get("searchers", [])
@@ -297,20 +306,22 @@ if __name__ == "__main__":
     log.info("=== Вертикальный срез: %s, %s (region_index=%s) ===",
              SEARCHER_MAP.get(SEARCHER_KEY, "unknown"), GEO, REGION_INDEX)
 
-    if snapshot_exists(PROJECT_ID, REGION_INDEX, today, SEARCHER_KEY,
+    project_id = _get_credentials()["project_id"]
+
+    if snapshot_exists(project_id, REGION_INDEX, today, SEARCHER_KEY,
                        REGION_KEY, REGION_LANG, REGION_DEVICE):
         log.info("Снимок за %s уже существует, пропускаю проверку", today)
     else:
         log.info("Снимок за %s отсутствует, запускаю проверку", today)
-        ids = run_check(PROJECT_ID, DEPTH, [REGION_INDEX])
+        ids = run_check(project_id, DEPTH, [REGION_INDEX])
         if not ids:
             log.error("Не удалось запустить проверку")
             sys.exit(1)
-        if not poll_status(PROJECT_ID, timeout_sec=600):
+        if not poll_status(project_id, timeout_sec=600):
             log.error("Таймаут ожидания проверки")
             sys.exit(1)
 
-    rows = get_snapshot(PROJECT_ID, REGION_INDEX, today, DEPTH,
+    rows = get_snapshot(project_id, REGION_INDEX, today, DEPTH,
                         SEARCHER_KEY, REGION_KEY, REGION_LANG, REGION_DEVICE, GEO)
     log.info("Получено строк: %s", len(rows))
 

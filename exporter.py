@@ -92,8 +92,21 @@ def export(rows: list[Row]) -> None:
             log.info("Лист пустой или нет заголовка — добавляю заголовок")
             worksheet.insert_row(HEADER, 1)
             insert_position = 2
+            existing_data_dates = set()
         else:
             insert_position = 2
+            # Собираем даты уже существующих данных (пропускаем заголовок)
+            existing_data_dates = set()
+            for row_vals in existing_values[1:]:
+                if row_vals and row_vals[0]:  # колонка "Дата"
+                    existing_data_dates.add(row_vals[0])
+
+        # Проверяем идемпотентность: если все даты уже есть в sheet — пропускаем
+        new_dates = {str(row["date"]) for row in rows}
+        if new_dates.issubset(existing_data_dates) and existing_data_dates:
+            log.info("Данные за %s уже есть в Sheet, экспорт пропущен (идемпотентность)",
+                     ", ".join(sorted(new_dates)))
+            return
 
         data_to_insert = [_row_to_list(row) for row in rows]
 

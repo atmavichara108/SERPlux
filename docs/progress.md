@@ -46,16 +46,18 @@
   - Пустые строки: 1 после каждой geo-секции, 2 после блока (итого 3 между блоками дат)
   - Без merge_cells, без bold/заливки — чистая вставка данных
   - Данные из storage.get_history(), версионность insert_rows сверху
-- **labeler.py готов**: разметка тональности через Gemini Flash
-  - Основной провайдер: Gemini 2.0 Flash (бесплатный лимит)
-  - Фолбек: Zen-модель через OpenAI-совместимый API при ошибке Gemini
-  - Пауза 4с между вызовами LLM для защиты от rate limit
+- **labeler.py готов**: разметка тональности через Zen qwen3.6-plus
+  - Основной провайдер: Zen (qwen3.6-plus) через opencode.ai/zen/v1
+  - Фолбек: Gemini 2.0 Flash (если задан GEMINI_API_KEY)
+  - Пауза 1с между вызовами LLM
   - Кэш по паре (url+query): сначала проверяет БД, потом вызывает LLM
-  - Протестирован на моках (3 фейковых строки: negative/positive/neutral)
-  - Реальный прогон на данных — отдельно (тратит лимит Gemini)
+  - Протестирован на реальном Zen (3 фейковых строки: negative/positive/neutral)
+- **main.py**: полный пайплайн collect → save → label → update_labels → export
+  - `_ensure_db()` автоматически создаёт таблицу при первом save()
+  - Идемпотентность exporter/reporter: пропуск если данные уже есть
 
 ## В работе
-- Интеграция labeler.py в main.py (пайплайн collect → save → label → export)
+- (пусто)
 
 ## Заблокировано / ждёт
 - Деплой на сервер заказчика (интерфейс непонятен, разберём в конце)
@@ -65,7 +67,7 @@
 - TODO: «labeler: миграция google.generativeai → google.genai (старый SDK deprecated)».
 
 ## Дальше по порядку
-1. Интеграция labeler.py в main.py (пайплайн с нейронкой)
+1. config.py: чтение настроек из листа "Настройки" Google Sheet (этап 3)
 2. config.py: чтение настроек из листа "Настройки" Google Sheet (этап 3)
 3. webhook.py: FastAPI endpoint для триггера из Sheets
 4. Реальный прогон main.py с полной конфигурацией (все searchers × все geos)

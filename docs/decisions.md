@@ -4,6 +4,17 @@
 Каждое решение: дата, что решили, почему, какие альтернативы отвергли.
 Дописывать сверху (новые решения вверху). Не удалять старые.
 
+## 2026-06-22 — Фикс ревью: labeler в пайплайне, lazy credentials, идемпотентность
+Решение (по результатам ревью):
+- main.py: пайплайн collect → save → label → update_labels → export
+- storage.py: `_ensure_db()` вызывается перед `save()` — БД инициализируется автоматически
+- labeler.py: убран двойной `get_cached_label()` — кэш проверяется только в `label()`
+- topvisor.py: credentials загружаются лениво через `_get_credentials()`, не при импорте
+- exporter.py: идемпотентность — пропуск если даты уже есть в Sheet
+- reporter.py: идемпотентность — пропуск если отчёт за дату уже на листе
+- reporter.py: `assert` заменён на `raise ValueError`
+- Убран `logging.basicConfig()` из модулей (только в main.py)
+
 ## 2026-06-22 — Метки сохраняются через update_labels (UPDATE), а не save (INSERT OR IGNORE)
 Решение: новая функция update_labels(rows) делает UPDATE поля label для существующих
 строк по UNIQUE-ключу (date, searcher, query, geo, position, url). Строки с

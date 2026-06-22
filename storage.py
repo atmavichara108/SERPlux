@@ -42,7 +42,22 @@ def _init_db(db_path: str = DB_PATH) -> None:
         conn.close()
 
 
+_DB_INITIALIZED = False
+
+
+def _ensure_db(db_path: str = DB_PATH) -> None:
+    """Ленивая инициализация БД — вызывается перед каждым запросом."""
+    global _DB_INITIALIZED
+    if db_path != DB_PATH:
+        # Тестовая БД — инициализируем каждый раз (она создаётся тестом)
+        return
+    if not _DB_INITIALIZED:
+        _init_db(db_path)
+        _DB_INITIALIZED = True
+
+
 def save(rows: list[Row], db_path: str = DB_PATH) -> int:
+    _ensure_db(db_path)
     conn = _get_conn(db_path)
     inserted = 0
     try:
