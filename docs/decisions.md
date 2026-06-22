@@ -4,6 +4,27 @@
 Каждое решение: дата, что решили, почему, какие альтернативы отвергли.
 Дописывать сверху (новые решения вверху). Не удалять старые.
 
+## 2026-06-22 — Метки сохраняются через update_labels (UPDATE), а не save (INSERT OR IGNORE)
+Решение: новая функция update_labels(rows) делает UPDATE поля label для существующих
+строк по UNIQUE-ключу (date, searcher, query, geo, position, url). Строки с
+label=None пропускаются — не затирают существующие метки.
+Почему: save() использует INSERT OR IGNORE для идемпотентности сырых данных.
+Это правильно для первичной записи, но labeler проставляет label УЖЕ существующим
+строкам — INSERT OR IGNORE их игнорирует, метки не сохранялись (2177 строк с NULL).
+Следствие: пайплайн = save(сырые данные) → labeler → update_labels(размеченные строки).
+save — только сырые данные, update_labels — только метки.
+
+## 2026-06-22 — Разметка через Zen qwen3.6-plus основной, Gemini опциональный фолбек
+Решение: labeler.py использует Zen (qwen3.6-plus) как основной провайдер,
+Gemini — опциональный фолбек. PROVIDER_CHAIN = ["zen", "gemini"].
+Эндпоинт: https://opencode.ai/zen/v1/chat/completions, OpenAI-совместимый формат.
+Модель: "qwen3.6-plus" (без префикса opencode/). Auth: Bearer OPENCODE_API_KEY.
+Парсинг ответа: регэксп \b(positive|negative|neutral)\b из content (не reasoning_content),
+т.к. qwen думает вслух в отдельном поле. LLM_PAUSE = 1с (Zen rate limit мягче).
+Почему: Gemini free у клиента не активен (429 limit:0), Zen работает стабильно
+и дёшево (~0.4 цента/запрос).
+Следствие: Gemini требует GEMINI_API_KEY в .env; если ключа нет — Gemini пропускается.
+
 ## 2026-06-22 — Матрица отчёта режется по REPORT_DEPTH=10 для сопоставимости ПС
 Решение: reporter.py ограничивает диапазон позиций значением REPORT_DEPTH=10
 при построении матрицы. Сырые данные в БД хранятся полностью (Яндекс топ-50,

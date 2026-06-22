@@ -24,11 +24,16 @@ Row = {
 
 ## storage.py
 
-- `save(rows: list[Row]) -> int` — сохраняет строки в SQLite, возвращает кол-во вставленных.
-- `get_cached_label(url: str, query: str) -> str | None` — ищет последнюю не-NULL метку
-  по паре (url, query), сортировка по date DESC. Возвращает метку или None.
-- `get_history(filters: dict | None = None) -> list[Row]` — возвращает строки из БД
-  с опциональными фильтрами (date, searcher, geo, query).
+- `save(rows: list[Row], db_path: str = DB_PATH) -> int` — INSERT OR IGNORE сырых данных,
+  возвращает кол-во вставленных. Не обновляет существующие строки.
+- `update_labels(rows: list[Row], db_path: str = DB_PATH) -> int` — UPDATE поля label
+  для существующих строк по UNIQUE-ключу (date, searcher, query, geo, position, url).
+  Строки с label=None пропускаются (не затирают существующие метки).
+  Возвращает кол-во обновлённых строк.
+- `get_cached_label(url: str, query: str, db_path: str = DB_PATH) -> str | None` — ищет
+  последнюю не-NULL метку по паре (url, query), сортировка по date DESC.
+- `get_history(filters: dict | None = None, db_path: str = DB_PATH) -> list[Row]` — возвращает
+  строки из БД с опциональными фильтрами (date, searcher, geo, query).
 
 ## labeler.py
 

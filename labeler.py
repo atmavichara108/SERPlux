@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 from dotenv import load_dotenv
@@ -9,18 +10,17 @@ import storage
 
 log = logging.getLogger(__name__)
 
+# Провайдеры: порядок попыток. В будущем — выбор в интерфейсе serplux.
+PROVIDER_CHAIN = ["zen", "gemini"]
+
+ZEN_MODEL = "qwen3.6-plus"
+ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions"
+
 GEMINI_MODEL = "gemini-2.0-flash"
-FALLBACK_MODEL = "opencode/deepseek-v4-flash-free"
-FALLBACK_API_URL = "https://api.opencode.ai/v1/chat/completions"
-LLM_PAUSE = 4  # секунд между вызовами, чтобы не ловить 429
 
-VALID_LABELS = {"positive", "negative", "neutral"}
+LLM_PAUSE = 1  # секунд между вызовами (Zen rate limit мягче Gemini)
 
-SYSTEM_PROMPT = (
-    "Ты анализируешь репутацию субъекта в поисковой выдаче. "
-    "Оцени, как ссылка влияет на репутацию субъекта. "
-    "Ответь ОДНИМ словом: positive, negative или neutral."
-)
+LABEL_PATTERN = re.compile(r"\b(positive|negative|neutral)\b", re.IGNORECASE)
 
 
 def _build_prompt(query: str, url: str, snippet: str) -> str:
@@ -32,60 +32,62 @@ def _build_prompt(query: str, url: str, snippet: str) -> str:
         f"positive — ссылка выгодна субъекту (офиц. сайт, позитивное упоминание, соцсети субъекта),\n"
         f"negative — вредит репутации (компромат, санкции, отмывание, скандал, негатив),\n"
         f"neutral — нейтральное упоминание (каталоги, справочники, отзывы без оценки).\n"
-        f"Ответь только одно слово: positive, negative или neutral."
+        f"Ответь СТРОГО одним словом без пояснений: positive, negative или neutral."
     )
 
 
-def _parse_label(raw: str) -> str | None:
-    cleaned = raw.strip().lower()
-    for label in VALID_LABELS:
-        if label in cleaned:
-            return label
-    return None
+def _parse_label(raw: str) -> str:
+    match = LABEL_PATTERN.search(raw)
+    if match:
+        return match.group(1).lower()
+    log.warning("LLM вернул мусор '%s', ставлю neutral", raw.strip()[:80])
+    return "neutral"
+
+
+def _call_zen(prompt: str) -> str | None:
+    api_key = os.environ.get("OPENCODE_API_KEY")
+    if not api_key:
+        log.warning("OPENCODE_API_KEY не задан, Zen невозможен")
+        return None
+    try:
+        resp = requests.post(
+            ZEN_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": ZEN_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+            },
+            timeout=(10, 60),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        log.warning("Zen ошибка: %s", e)
+        return None
 
 
 def _call_gemini(prompt: str) -> str | None:
     try:
         model = genai.GenerativeModel(GEMINI_MODEL)
         response = model.generate_content(
-            [SYSTEM_PROMPT, prompt],
+            [prompt],
             generation_config={"temperature": 0.1, "max_output_tokens": 10},
         )
         return response.text
     except Exception as e:
-        log.error("Gemini ошибка: %s", e)
+        log.warning("Gemini ошибка: %s", e)
         return None
 
 
-def _call_fallback(prompt: str) -> str | None:
-    api_key = os.environ.get("OPENCODE_API_KEY")
-    if not api_key:
-        log.error("OPENCODE_API_KEY не задан, фолбек невозможен")
-        return None
-    try:
-        resp = requests.post(
-            FALLBACK_API_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": FALLBACK_MODEL,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 10,
-                "temperature": 0.1,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        log.error("Фолбек ошибка: %s", e)
-        return None
+_PROVIDER_MAP = {
+    "zen": _call_zen,
+    "gemini": _call_gemini,
+}
 
 
 def _label_one(row: dict, db_path: str = storage.DB_PATH) -> str | None:
@@ -96,32 +98,23 @@ def _label_one(row: dict, db_path: str = storage.DB_PATH) -> str | None:
 
     prompt = _build_prompt(row["query"], row["url"], row.get("snippet", ""))
 
-    raw = _call_gemini(prompt)
-    if raw is not None:
-        label = _parse_label(raw)
-        if label is not None:
-            log.info("Gemini: %s + '%s' -> %s", row["url"], row["query"], label)
+    for provider_name in PROVIDER_CHAIN:
+        call_fn = _PROVIDER_MAP[provider_name]
+        raw = call_fn(prompt)
+        if raw is not None:
+            label = _parse_label(raw)
+            log.info("%s: %s + '%s' -> %s", provider_name, row["url"], row["query"], label)
             return label
-        log.warning("Gemini вернул мусор '%s', ставлю neutral", raw.strip())
-        return "neutral"
 
-    log.warning("Gemini упал, пробую фолбек для %s", row["url"])
-    raw = _call_fallback(prompt)
-    if raw is not None:
-        label = _parse_label(raw)
-        if label is not None:
-            log.info("Фолбек: %s + '%s' -> %s", row["url"], row["query"], label)
-            return label
-        log.warning("Фолбек вернул мусор '%s', ставлю neutral", raw.strip())
-        return "neutral"
-
-    log.error("Оба провайдера упали для %s, label=None", row["url"])
+    log.error("Все провайдеры упали для %s, label=None", row["url"])
     return None
 
 
 def label(rows: list[dict], db_path: str = storage.DB_PATH) -> list[dict]:
     load_dotenv()
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key:
+        genai.configure(api_key=gemini_key)
 
     result = []
     last_real_call = 0.0
@@ -196,57 +189,33 @@ if __name__ == "__main__":
         },
     ]
 
-    mock_responses = {
-        "sanctions-list.example": "negative",
-        "ivan-petrov.ru": "positive",
-        "spravka.example": "neutral",
-    }
+    print("=== Тест labeler.py (РЕАЛЬНЫЙ Zen, изолированная БД: %s) ===\n" % TEST_DB)
 
-    def mock_gemini(prompt: str) -> str | None:
-        for domain, label in mock_responses.items():
-            if domain in prompt:
-                return label
-        return None
+    results = label(fake_rows, TEST_DB)
 
-    def mock_fallback(prompt: str) -> str | None:
-        return mock_gemini(prompt)
+    print("Результаты разметки:")
+    for row in results:
+        print(f"  {row['url']}")
+        print(f"    query: {row['query']}")
+        print(f"    label: {row['label']}")
+        print()
 
-    import unittest.mock as mock
+    print("=== Тест кэша ===")
+    no_cache = storage.get_cached_label("https://unknown.com", "unknown query", TEST_DB)
+    print(f"  Несуществующая пара: {no_cache} (ожидалось None)")
+    assert no_cache is None
 
-    with mock.patch("__main__._call_gemini", mock_gemini):
-        with mock.patch("__main__._call_fallback", mock_fallback):
-            print("=== Тест labeler.py (изолированная БД: %s) ===\n" % TEST_DB)
+    storage.save(results, TEST_DB)
 
-            results = label(fake_rows, TEST_DB)
+    cached = storage.get_cached_label("https://ivan-petrov.ru", "Ivan Petrov", TEST_DB)
+    print(f"  Существующая пара: {cached} (ожидалось 'positive')")
+    assert cached == "positive"
 
-            print("Результаты разметки:")
-            for row in results:
-                print(f"  {row['url']}")
-                print(f"    query: {row['query']}")
-                print(f"    label: {row['label']}")
-                print()
+    other_query = storage.get_cached_label("https://ivan-petrov.ru", "Other Person", TEST_DB)
+    print(f"  Тот же URL, другой query: {other_query} (ожидалось None)")
+    assert other_query is None
 
-            assert results[0]["label"] == "negative", f"Ожидалось negative, получено {results[0]['label']}"
-            assert results[1]["label"] == "positive", f"Ожидалось positive, получено {results[1]['label']}"
-            assert results[2]["label"] == "neutral", f"Ожидалось neutral, получено {results[2]['label']}"
-            print("✓ Все метки совпали с ожидаемыми\n")
-
-            print("=== Тест кэша ===")
-            no_cache = storage.get_cached_label("https://unknown.com", "unknown query", TEST_DB)
-            print(f"  Несуществующая пара: {no_cache} (ожидалось None)")
-            assert no_cache is None
-
-            storage.save(results, TEST_DB)
-
-            cached = storage.get_cached_label("https://ivan-petrov.ru", "Ivan Petrov", TEST_DB)
-            print(f"  Существующая пара: {cached} (ожидалось 'positive')")
-            assert cached == "positive"
-
-            other_query = storage.get_cached_label("https://ivan-petrov.ru", "Other Person", TEST_DB)
-            print(f"  Тот же URL, другой query: {other_query} (ожидалось None)")
-            assert other_query is None
-
-            print("\n✓ Кэш работает корректно по паре (url + query)")
+    print("\n✓ Кэш работает корректно по паре (url + query)")
 
     if _os.path.exists(TEST_DB):
         _os.remove(TEST_DB)

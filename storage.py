@@ -73,6 +73,37 @@ def save(rows: list[Row], db_path: str = DB_PATH) -> int:
     return inserted
 
 
+def update_labels(rows: list[Row], db_path: str = DB_PATH) -> int:
+    conn = _get_conn(db_path)
+    updated = 0
+    try:
+        for row in rows:
+            label = row.get("label")
+            if label is None:
+                continue
+            cursor = conn.execute(
+                """UPDATE results SET label = ?
+                   WHERE date = ? AND searcher = ? AND query = ?
+                     AND geo = ? AND position = ? AND url = ?""",
+                (
+                    label,
+                    row["date"],
+                    row["searcher"],
+                    row["query"],
+                    row["geo"],
+                    row["position"],
+                    row["url"],
+                ),
+            )
+            if cursor.rowcount > 0:
+                updated += 1
+        conn.commit()
+        log.info("Обновлено %s меток из %s", updated, len(rows))
+    finally:
+        conn.close()
+    return updated
+
+
 def get_cached_label(url: str, query: str, db_path: str = DB_PATH) -> str | None:
     conn = _get_conn(db_path)
     try:
@@ -244,3 +275,74 @@ if __name__ == "__main__":
     os.remove(TEST_DB)
     print("Тестовая БД удалена: %s" % TEST_DB)
     print("=== Тест завершён ===")
+
+    print("\n=== Тест update_labels() ===")
+
+    _init_db(TEST_DB)
+
+    raw_rows: list[Row] = [
+        {
+            "date": "2026-06-22",
+            "searcher": "google",
+            "query": "test subject",
+            "geo": "Москва",
+            "region_index": 213,
+            "position": 1,
+            "url": "https://example.com/page1",
+            "domain": "example.com",
+            "snippet": "Snippet 1",
+            "label": None,
+        },
+        {
+            "date": "2026-06-22",
+            "searcher": "google",
+            "query": "test subject",
+            "geo": "Москва",
+            "region_index": 213,
+            "position": 2,
+            "url": "https://example.com/page2",
+            "domain": "example.com",
+            "snippet": "Snippet 2",
+            "label": None,
+        },
+    ]
+
+    print("1. save() 2 строки без меток...")
+    saved = save(raw_rows, TEST_DB)
+    print(f"   Вставлено: {saved} (ожидалось 2)")
+    assert saved == 2
+
+    history_before = get_history(db_path=TEST_DB)
+    assert all(r["label"] is None for r in history_before)
+    print("   ✓ Все label = NULL\n")
+
+    print("2. update_labels() тех же строк с метками...")
+    labeled_rows = [
+        {**raw_rows[0], "label": "positive"},
+        {**raw_rows[1], "label": "negative"},
+    ]
+    updated = update_labels(labeled_rows, TEST_DB)
+    print(f"   Обновлено: {updated} (ожидалось 2)")
+    assert updated == 2
+
+    history_after = get_history(db_path=TEST_DB)
+    labels = {r["url"]: r["label"] for r in history_after}
+    assert labels["https://example.com/page1"] == "positive"
+    assert labels["https://example.com/page2"] == "negative"
+    print("   ✓ Метки записались: positive, negative\n")
+
+    print("3. update_labels() с label=None — существующая метка НЕ затирается...")
+    null_rows = [
+        {**raw_rows[0], "label": None},
+    ]
+    updated_null = update_labels(null_rows, TEST_DB)
+    print(f"   Обновлено: {updated_null} (ожидалось 0, т.к. label=None пропускается)")
+    assert updated_null == 0
+
+    still_positive = get_cached_label("https://example.com/page1", "test subject", TEST_DB)
+    assert still_positive == "positive"
+    print(f"   ✓ Метка 'positive' сохранилась: {still_positive}\n")
+
+    os.remove(TEST_DB)
+    print("Тестовая БД удалена: %s" % TEST_DB)
+    print("=== Тест update_labels завершён ===")
