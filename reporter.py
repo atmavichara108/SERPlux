@@ -32,6 +32,12 @@ SUBJECT_BLOCKS = [
     {"key": "chempioil",      "display": "Chempioil",      "pos": 12, "url": 13},
 ]
 
+LABEL_COLORS = {
+    "positive": {"red": 0.85, "green": 0.92, "blue": 0.83},
+    "negative": {"red": 0.96, "green": 0.80, "blue": 0.80},
+    "neutral":  {"red": 1.0,  "green": 0.95, "blue": 0.80},
+}
+
 
 def _get_geo_display(geo: str) -> str:
     return GEO_DISPLAY.get(geo, geo)
@@ -77,6 +83,39 @@ def _format_date(date_str: str) -> str:
     return f"{dt.day}.{dt.month}.{dt.year}"
 
 
+def _apply_label_colors(spreadsheet, sheet_id: int,
+                        format_cells: list[tuple[int, int, dict]]) -> None:
+    if not format_cells:
+        return
+
+    requests = []
+    for row_idx, col_idx, color in format_cells:
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": row_idx,
+                    "endRowIndex": row_idx + 1,
+                    "startColumnIndex": col_idx,
+                    "endColumnIndex": col_idx + 1,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": color,
+                    },
+                },
+                "fields": "userEnteredFormat.backgroundColor",
+            },
+        })
+
+    body = {"requests": requests}
+    try:
+        spreadsheet.batch_update(body)
+        log.info("Применено %s цветовых разметок", len(format_cells))
+    except Exception as e:
+        log.error("Ошибка при применении цветов: %s", e)
+
+
 def build_report(date: str | None = None) -> None:
     if date is None:
         all_rows = get_history()
@@ -102,22 +141,24 @@ def build_report(date: str | None = None) -> None:
 
     log.info("Построение отчёта за %s: %s строк", date, len(rows))
 
-    raw_grouped: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
+    raw_grouped: dict[str, dict[str, dict[str, dict[int, tuple[str, str | None]]]]] = {}
     for row in rows:
         searcher = row["searcher"]
         geo = row["geo"]
         query = row["query"]
         pos = row["position"]
         url = row["url"]
-        raw_grouped.setdefault(searcher, {}).setdefault(geo, {}).setdefault(query, {})[pos] = url
+        label = row.get("label")
+        raw_grouped.setdefault(searcher, {}).setdefault(geo, {}).setdefault(query, {})[pos] = (url, label)
 
     report_data: list[list[str]] = []
+    format_cells: list[tuple[int, int, dict]] = []
 
     for searcher in sorted(raw_grouped.keys()):
         searcher_readable = SEARCHER_MAP.get(searcher, searcher)
         date_formatted = _format_date(date)
 
-        display_groups: dict[str, dict[str, dict[int, str]]] = {}
+        display_groups: dict[str, dict[str, dict[int, tuple[str, str | None]]]] = {}
         geo_max_pos: dict[str, int] = {}
         for raw_geo, queries in raw_grouped[searcher].items():
             display = _get_geo_display(raw_geo)
@@ -160,7 +201,11 @@ def build_report(date: str | None = None) -> None:
                     qkey = sb["key"]
                     if qkey in geo_data and pos in geo_data[qkey]:
                         row[sb["pos"]] = str(pos)
-                        row[sb["url"]] = geo_data[qkey][pos]
+                        url_val, label_val = geo_data[qkey][pos]
+                        row[sb["url"]] = url_val
+                        if label_val is not None and label_val in LABEL_COLORS:
+                            row_idx = len(report_data)
+                            format_cells.append((row_idx, sb["pos"], LABEL_COLORS[label_val]))
                 report_data.append(row)
 
             report_data.append([""] * COLS)
@@ -177,6 +222,10 @@ def build_report(date: str | None = None) -> None:
     try:
         log.info("Вставляю %s строк отчёта на лист '%s'", len(report_data), REPORT_SHEET_NAME)
         worksheet.insert_rows(report_data, 1)
+
+        sheet_id = worksheet.id
+        _apply_label_colors(spreadsheet, sheet_id, format_cells)
+
         log.info("Отчёт успешно построен")
     except APIError as e:
         log.error("Ошибка Google API при записи отчёта: %s", e)
@@ -196,3 +245,4 @@ if __name__ == "__main__":
     print("Откройте Google Sheet и проверьте лист 'Отчёт':")
     print("- 16-колоночная матрица: pos/URL для каждого субъекта + разделители")
     print("- Блоки по ПС, секции по гео, точный формат заказчика")
+    print("- Ячейки позиций залиты цветом по метке: зелёный/красный/жёлтый")
