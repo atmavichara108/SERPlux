@@ -6,6 +6,7 @@ from collector import collect
 from storage import save, update_labels, _ensure_db
 from labeler import label
 from exporter import export
+from reporter import build_report
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "Кипр",
     ],
     "timeout_sec": 900,
+    "with_labels": True,
     # TODO: config из листа "Настройки" Google Sheet — этап 3
 }
 
@@ -57,12 +59,15 @@ def run(config: dict[str, Any]) -> int:
     # Разметка тональности и сохранение меток
     labeled_count = 0
     labeled_rows = rows  # fallback: если labeler упал, используем сырые данные
-    try:
-        labeled_rows = label(rows)
-        labeled_count = update_labels(labeled_rows)
-        log.info("Размечено меток: %s (сохранено в БД)", labeled_count)
-    except Exception as e:
-        log.error("Сбой label/update_labels: %s", e)
+    if config.get("with_labels", True):
+        try:
+            labeled_rows = label(rows)
+            labeled_count = update_labels(labeled_rows)
+            log.info("Размечено и обновлено меток: %s", labeled_count)
+        except Exception as e:
+            log.error("Сбой labeler: %s", e)
+    else:
+        log.info("Разметка пропущена (with_labels=False)")
 
     export_ok = False
     try:
@@ -72,13 +77,22 @@ def run(config: dict[str, Any]) -> int:
     except Exception as e:
         log.error("Сбой export: %s", e)
 
+    # Построение отчёта
+    report_ok = False
+    try:
+        build_report()
+        report_ok = True
+        log.info("Отчёт построен")
+    except Exception as e:
+        log.error("Сбой reporter: %s", e)
+
     log.info("=== Итог прогона ===")
     if export_ok:
-        log.info("Собрано: %s | Сохранено (новых): %s | Меток: %s | Выгружено: %s",
-                  len(rows), saved_count, labeled_count, len(rows))
+        log.info("Собрано: %s | Сохранено (новых): %s | Меток: %s | Выгружено: %s | Отчёт: %s",
+                  len(rows), saved_count, labeled_count, len(rows), "OK" if report_ok else "FAIL")
     else:
-        log.info("Собрано: %s | Сохранено (новых): %s | Меток: %s | Выгрузка не удалась",
-                  len(rows), saved_count, labeled_count)
+        log.info("Собрано: %s | Сохранено (новых): %s | Меток: %s | Выгрузка не удалась | Отчёт: %s",
+                  len(rows), saved_count, labeled_count, "OK" if report_ok else "FAIL")
     return 0
 
 

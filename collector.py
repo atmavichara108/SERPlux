@@ -4,8 +4,8 @@ from datetime import date as date_type
 from typing import Any
 
 from topvisor import (
-    PROJECT_ID,
     Row,
+    get_project_id,
     get_snapshot,
     poll_status,
     run_check,
@@ -31,6 +31,7 @@ def collect(config: dict[str, Any]) -> list[Row]:
     searchers = config.get("searchers", [])
     geos = config.get("geos", [])
     timeout_sec = config.get("timeout_sec", 900)
+    project_id = get_project_id()
 
     with open("regions_map.json", "r", encoding="utf-8") as f:
         regions_map = json.load(f)
@@ -52,7 +53,7 @@ def collect(config: dict[str, Any]) -> list[Row]:
     missing = [
         r for r in filtered
         if not snapshot_exists(
-            PROJECT_ID, r["region_index"], today,
+            project_id, r["region_index"], today,
             r["searcher_key"], r["region_key"],
             r["region_lang"], r["region_device"]
         )
@@ -62,10 +63,10 @@ def collect(config: dict[str, Any]) -> list[Row]:
         log.info("Отсутствуют снапшоты для %s из %s регионов, запускаю одну проверку",
                  len(missing), len(filtered))
         missing_indexes = [r["region_index"] for r in missing]
-        ids = run_check(PROJECT_ID, depth, missing_indexes)
+        ids = run_check(project_id, depth, missing_indexes)
         if not ids:
             log.warning("run_check не вернул id (возможно, проверка уже запущена)")
-        if not poll_status(PROJECT_ID, timeout_sec=timeout_sec):
+        if not poll_status(project_id, timeout_sec=timeout_sec):
             log.error("Таймаут ожидания проверки")
             return all_rows
     else:
@@ -78,7 +79,7 @@ def collect(config: dict[str, Any]) -> list[Row]:
             log.info("Получение снимка: %s / %s (region_index=%s)",
                      region["searcher"], region["geo_name"], region["region_index"])
             rows = get_snapshot(
-                PROJECT_ID,
+                project_id,
                 region["region_index"],
                 today,
                 depth,

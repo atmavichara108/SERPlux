@@ -45,6 +45,11 @@ def _get_credentials() -> dict[str, Any]:
     return _credentials
 
 
+def get_project_id() -> int:
+    """Публичный геттер project_id."""
+    return _get_credentials()["project_id"]
+
+
 def _get_headers() -> dict[str, str]:
     """Создание headers с lazy загрузкой credentials."""
     creds = _get_credentials()
