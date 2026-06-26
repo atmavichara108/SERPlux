@@ -3,20 +3,16 @@ import re
 import time
 import logging
 from dotenv import load_dotenv
-import google.generativeai as genai
 import requests
+
+load_dotenv()
 
 import storage
 
 log = logging.getLogger(__name__)
 
-# Провайдеры: порядок попыток. В будущем — выбор в интерфейсе serplux.
-PROVIDER_CHAIN = ["zen", "gemini"]
-
-ZEN_MODEL = "qwen3.6-plus"
+ZEN_MODEL = "deepseek-v4-flash-free"
 ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions"
-
-GEMINI_MODEL = "gemini-2.0-flash"
 
 LLM_PAUSE = 1  # секунд между вызовами (Zen rate limit мягче Gemini)
 
@@ -71,38 +67,15 @@ def _call_zen(prompt: str) -> str | None:
         return None
 
 
-def _call_gemini(prompt: str) -> str | None:
-    try:
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        response = model.generate_content(
-            [prompt],
-            generation_config={"temperature": 0.1, "max_output_tokens": 10},
-        )
-        return response.text
-    except Exception as e:
-        log.warning("Gemini ошибка: %s", e)
-        return None
-
-
-_PROVIDER_MAP = {
-    "zen": _call_zen,
-    "gemini": _call_gemini,
-}
-
-
 def _label_one_llm(row: dict) -> str | None:
     """Вызывает LLM для разметки (без проверки кэша — кэш проверяет label())."""
     prompt = _build_prompt(row["query"], row["url"], row.get("snippet", ""))
-
-    for provider_name in PROVIDER_CHAIN:
-        call_fn = _PROVIDER_MAP[provider_name]
-        raw = call_fn(prompt)
-        if raw is not None:
-            label = _parse_label(raw)
-            log.info("%s: %s + '%s' -> %s", provider_name, row["url"], row["query"], label)
-            return label
-
-    log.error("Все провайдеры упали для %s, label=None", row["url"])
+    raw = _call_zen(prompt)
+    if raw is not None:
+        lbl = _parse_label(raw)
+        log.info("zen: %s + '%s' -> %s", row["url"], row["query"], lbl)
+        return lbl
+    log.error("Zen упал для %s, label=None", row["url"])
     return None
 
 

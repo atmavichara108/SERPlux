@@ -207,6 +207,8 @@ def get_snapshot(project_id: int, region_index: int, date: str,
     for kw in keywords:
         name = kw.get("name", "")
         snapshots_data = kw.get("snapshotsData", {})
+        if not isinstance(snapshots_data, dict):
+            continue
         for key, val in snapshots_data.items():
             if not isinstance(val, dict):
                 continue

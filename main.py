@@ -13,19 +13,10 @@ log = logging.getLogger(__name__)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "depth": 10,
-    "searchers": ["google", "yandex_ru", "yandex_com"],
-    # Оба UK-варианта: yandex_ru → "Великобритания", google/yandex_com → "Лондон"
-    # collector фильтрует по точному geo_name из regions_map.json (15 пар = 3×5)
-    "geos": [
-        "Литва",
-        "Германия",
-        "Великобритания",
-        "Лондон",
-        "Объединённые Арабские Эмираты",
-        "Кипр",
-    ],
+    "searchers": ["google"],
+    "geos": ["Кипр", "Индонезия", "Камбоджа", "Вьетнам", "Япония", "Таиланд"],
     "timeout_sec": 900,
-    "with_labels": True,
+    "with_labels": False,
     # TODO: config из листа "Настройки" Google Sheet — этап 3
 }
 

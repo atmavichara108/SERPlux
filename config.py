@@ -1,9 +1,12 @@
-SUBJECT_DISPLAY = {
-    "juri sudheimer": (1, "Juri Sudheimer"),
-    "erik sudheimer": (2, "Erik Sudheimer"),
-    "sct chemicals":  (3, "SCT Chemicals"),
-    "chempioil":      (4, "Chempioil"),
-}
+SUBJECT_BLOCKS = [
+    {"key": "adsterra",            "display": "Adsterra",            "pos": 1,  "url": 2},
+    {"key": "adsterra linkedin",   "display": "Adsterra LinkedIn",   "pos": 6,  "url": 7},
+    {"key": "adsterra crunchbase", "display": "Adsterra Crunchbase", "pos": 9,  "url": 10},
+    {"key": "adsterra review",     "display": "Adsterra review",     "pos": 12, "url": 13},
+    {"key": "adsterra scam",       "display": "Adsterra scam",       "pos": 15, "url": 16},
+]
+
+COLS = 18
 
 GEO_DISPLAY = {
     # Точные ключи из regions_map.json
@@ -13,6 +16,11 @@ GEO_DISPLAY = {
     "Лондон": "United Kingdom",
     "Объединённые Арабские Эмираты": "United Arab Emirates",
     "Кипр": "Cyprus",
+    "Индонезия": "Indonesia",
+    "Камбоджа": "Cambodia",
+    "Вьетнам": "Vietnam",
+    "Япония": "Japan",
+    "Таиланд": "Thailand",
     # Legacy-ключи для совместимости со старыми данными
     "ОАЭ": "United Arab Emirates",
     "Объединённые Эмираты": "United Arab Emirates",
@@ -21,12 +29,12 @@ GEO_DISPLAY = {
 }
 
 GEO_ORDER: list[str] = [
-    "Литва",
-    "Германия",
-    "Великобритания",
-    "Лондон",
-    "Объединённые Арабские Эмираты",
     "Кипр",
+    "Индонезия",
+    "Камбоджа",
+    "Вьетнам",
+    "Япония",
+    "Таиланд",
 ]
 
 # Глубина отображения в матрице-отчёте; в будущем — опция в интерфейсе serplux

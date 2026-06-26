@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound, APIError
 
 from storage import get_history
-from config import SUBJECT_DISPLAY, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH, REPORT_DEPTH
+from config import SUBJECT_BLOCKS, COLS, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH, REPORT_DEPTH
 
 load_dotenv()
 
@@ -22,15 +22,6 @@ SEARCHER_MAP = {
 }
 
 REPORT_SHEET_NAME = "Отчёт"
-
-COLS = 16
-
-SUBJECT_BLOCKS = [
-    {"key": "juri sudheimer", "display": "Juri Sudheimer", "pos": 1,  "url": 2},
-    {"key": "erik sudheimer", "display": "Erik Sudheimer", "pos": 6,  "url": 7},
-    {"key": "sct chemicals",  "display": "SCT Chemicals",  "pos": 9,  "url": 10},
-    {"key": "chempioil",      "display": "Chempioil",      "pos": 12, "url": 13},
-]
 
 LABEL_COLORS = {
     "positive": {"red": 0.85, "green": 0.92, "blue": 0.83},
@@ -116,7 +107,7 @@ def _apply_label_colors(spreadsheet, sheet_id: int,
         log.error("Ошибка при применении цветов: %s", e)
 
 
-def build_report(date: str | None = None) -> None:
+def build_report(date: str | None = None, force: bool = False) -> None:
     if date is None:
         all_rows = get_history()
         if not all_rows:
@@ -221,15 +212,36 @@ def build_report(date: str | None = None) -> None:
     worksheet = _get_or_create_report_sheet(spreadsheet)
 
     try:
-        # Проверяем идемпотентность: читаем первые строки листа
         existing_values = worksheet.get_all_values()
         date_formatted = _format_date(date)
-        # Ищем заголовок первого блока: "Позиции {searcher} на {date}"
-        for row_vals in existing_values[:3]:
-            if row_vals and date_formatted in row_vals[0]:
-                log.info("Отчёт за %s уже есть на листе '%s', пропущен (идемпотентность)",
-                         date_formatted, REPORT_SHEET_NAME)
-                return
+
+        if not force:
+            # Проверяем идемпотентность: ищем заголовок «Позиции ... на {date}»
+            for row_vals in existing_values[:3]:
+                if row_vals and date_formatted in row_vals[0]:
+                    log.info("Отчёт за %s уже есть на листе '%s', пропущен (идемпотентность)",
+                             date_formatted, REPORT_SHEET_NAME)
+                    return
+        else:
+            # force=True: удаляем существующий блок за эту дату перед вставкой
+            start_row = None
+            end_row = None
+            for i, row_vals in enumerate(existing_values):
+                cell = row_vals[0] if row_vals else ""
+                if start_row is None:
+                    if date_formatted in cell and cell.startswith("Позиции"):
+                        start_row = i  # 0-based
+                else:
+                    # Конец блока — следующий заголовок «Позиции» или конец данных
+                    if cell.startswith("Позиции") and date_formatted not in cell:
+                        end_row = i  # не включаем
+                        break
+            if start_row is not None:
+                end_row = end_row if end_row is not None else len(existing_values)
+                # gspread delete_rows принимает 1-based индексы, удаляем снизу вверх
+                worksheet.delete_rows(start_row + 1, end_row)
+                log.info("Удалён старый блок за %s (строки %s–%s)",
+                         date_formatted, start_row + 1, end_row)
 
         log.info("Вставляю %s строк отчёта на лист '%s'", len(report_data), REPORT_SHEET_NAME)
         worksheet.insert_rows(report_data, 1)
