@@ -1,0 +1,8 @@
+[
+  {"searcher": "google", "geo_name": "Кипр",      "searcher_key": 1, "region_index": 671007, "region_key": 20574, "region_lang": "el", "region_device": 0},
+  {"searcher": "google", "geo_name": "Индонезия",  "searcher_key": 1, "region_index": 6650,   "region_key": 10095, "region_lang": "id", "region_device": 0},
+  {"searcher": "google", "geo_name": "Камбоджа",   "searcher_key": 1, "region_index": 3397,   "region_key": 20975, "region_lang": "en", "region_device": 0},
+  {"searcher": "google", "geo_name": "Вьетнам",    "searcher_key": 1, "region_index": 3393,   "region_key": 10093, "region_lang": "vi", "region_device": 0},
+  {"searcher": "google", "geo_name": "Япония",     "searcher_key": 1, "region_index": 2477,   "region_key": 137,   "region_lang": "ja", "region_device": 0},
+  {"searcher": "google", "geo_name": "Таиланд",    "searcher_key": 1, "region_index": 2541,   "region_key": 995,   "region_lang": "th", "region_device": 0}
+]

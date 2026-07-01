@@ -8,8 +8,9 @@
 ## Стек (не менять без явного указания)
 - Python 3.11+
 - requests (topvisor API), gspread (Sheets), FastAPI (webhook)
-- google-generativeai (Gemini Flash для разметки)
+- DeepSeek через opencode.ai/zen API (разметка тональности, OPENCODE_API_KEY)
 - SQLite для кэша и истории
+- Docker + docker-compose для деплоя
 - Никаких тяжёлых фреймворков. Если хочешь добавить зависимость — спроси.
 
 ## Архитектура: модули и контракты (СТРОГО соблюдать)
@@ -27,7 +28,7 @@
 Row = dict: {date, searcher, query, geo, position, url, domain, label}
 
 ## Секреты
-- ВСЕ ключи (topvisor API, Google service account, Gemini) только в .env
+- ВСЕ ключи (topvisor API, Google service account, OPENCODE_API_KEY, WEBHOOK_SECRET) только в .env
 - .env в .gitignore. Никогда не коммить ключи. Никогда не печатай ключи в логи.
 - В репо лежит .env.example с пустыми плейсхолдерами.
 
@@ -52,4 +53,4 @@ Row = dict: {date, searcher, query, geo, position, url, domain, label}
 ## Чего НЕ делать
 - Не парсить Google/Яндекс напрямую. Источник только topvisor.
 - Не строить отдельный веб-фронт. Интерфейс = Google Sheets.
-- Не реализовывать "расширенный" LLM-режим на старте. Только дешёвый Gemini Flash.
+- Не реализовывать "расширенный" LLM-режим. Только дешёвый DeepSeek через Zen.

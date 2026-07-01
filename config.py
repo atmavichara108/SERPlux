@@ -1,12 +1,11 @@
 SUBJECT_BLOCKS = [
-    {"key": "adsterra",            "display": "Adsterra",            "pos": 1,  "url": 2},
-    {"key": "adsterra linkedin",   "display": "Adsterra LinkedIn",   "pos": 6,  "url": 7},
-    {"key": "adsterra crunchbase", "display": "Adsterra Crunchbase", "pos": 9,  "url": 10},
-    {"key": "adsterra review",     "display": "Adsterra review",     "pos": 12, "url": 13},
-    {"key": "adsterra scam",       "display": "Adsterra scam",       "pos": 15, "url": 16},
+    {"key": "juri sudheimer", "display": "Juri Sudheimer", "pos": 1,  "url": 2},
+    {"key": "erik sudheimer", "display": "Erik Sudheimer", "pos": 6,  "url": 7},
+    {"key": "sct chemicals",  "display": "SCT Chemicals",  "pos": 9,  "url": 10},
+    {"key": "chempioil",      "display": "Chempioil",      "pos": 12, "url": 13},
 ]
 
-COLS = 18
+COLS = 16
 
 GEO_DISPLAY = {
     # Точные ключи из regions_map.json
@@ -29,12 +28,12 @@ GEO_DISPLAY = {
 }
 
 GEO_ORDER: list[str] = [
+    "Литва",
+    "Германия",
+    "Великобритания",
+    "Лондон",
+    "Объединённые Арабские Эмираты",
     "Кипр",
-    "Индонезия",
-    "Камбоджа",
-    "Вьетнам",
-    "Япония",
-    "Таиланд",
 ]
 
 # Глубина отображения в матрице-отчёте; в будущем — опция в интерфейсе serplux

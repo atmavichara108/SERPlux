@@ -56,22 +56,38 @@
   - `_ensure_db()` автоматически создаёт таблицу при первом save()
   - Идемпотентность exporter/reporter: пропуск если данные уже есть
 
+- **labeler.py**: переведён на DeepSeek v4 Flash Free через opencode.ai/zen API
+  - Gemini полностью убран, OPENCODE_API_KEY вместо GEMINI_API_KEY
+- **webhook.py готов**: FastAPI endpoint для запуска пайплайна из Google Sheets
+  - POST /run — запуск в фоновом потоке (202 Accepted), защита Bearer-токеном
+  - GET /status — статус последнего прогона
+  - GET /health — health-check для мониторинга контейнера
+  - Защита от параллельных прогонов (threading.Lock → 409 Conflict)
+- **apps_script.gs готов**: Google Apps Script кнопка в Sheets
+  - Меню "SERPlux" → Запустить сбор / Проверить статус / Установить секрет
+  - Секрет хранится в Script Properties (не в коде)
+  - Читает параметры из листа "Настройки" если он есть
+- **Dockerfile готов**: многоэтапная сборка, non-root пользователь, health-check
+- **docker-compose.yml готов**: volume для SQLite, credentials.json read-only, ограничения ресурсов
+- **collector.py**: параметризация клиента — regions_map через config["regions_map"] или env REGIONS_MAP
+- **storage.py**: DB_PATH читается из env DB_PATH (для контейнера /app/data/serplux.db)
+- **.env.example**: актуализирован (OPENCODE_API_KEY, WEBHOOK_SECRET, DB_PATH, REGIONS_MAP)
+- **requirements.txt**: добавлен pydantic, uvicorn[standard]
+
 ## В работе
 - (пусто)
 
 ## Заблокировано / ждёт
-- Деплой на сервер заказчика (интерфейс непонятен, разберём в конце)
-- Широкий формат exporter — переработать контракт Row под него
-- Риск timeout при сборе больших групп (5+ регионов одной ПС): 
+- Деплой на сервер заказчика: скопировать репо, создать .env, положить credentials.json, docker compose up -d
+- Широкий формат exporter — переработать контракт Row под него (низкий приоритет)
+- Риск timeout при сборе больших групп (5+ регионов одной ПС):
   timeout вынесен в config (дефолт 900 сек), при проблемах увеличить
-- TODO: «labeler: миграция google.generativeai → google.genai (старый SDK deprecated)».
 
 ## Дальше по порядку
-1. config.py: чтение настроек из листа "Настройки" Google Sheet (этап 3)
-2. config.py: чтение настроек из листа "Настройки" Google Sheet (этап 3)
-3. webhook.py: FastAPI endpoint для триггера из Sheets
-4. Реальный прогон main.py с полной конфигурацией (все searchers × все geos)
-5. Деплой на сервер заказчика
+1. Деплой на сервер заказчика (docker compose up -d)
+2. Установить WEBHOOK_SECRET в Apps Script (SERPlux → Установить секрет)
+3. Тестовый прогон через кнопку в Sheets
+4. config.py: чтение настроек из листа "Настройки" (опционально, низкий приоритет)
 
 ## Идеи на будущее (UI-этап)
 - **Календарь версий**: каждый прогон собирает выдачу под датой, в отчёте копятся

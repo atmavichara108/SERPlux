@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import date as date_type
 from typing import Any
 
@@ -33,7 +34,13 @@ def collect(config: dict[str, Any]) -> list[Row]:
     timeout_sec = config.get("timeout_sec", 900)
     project_id = get_project_id()
 
-    with open("regions_map.json", "r", encoding="utf-8") as f:
+    # Путь к карте регионов: аргумент config > env REGIONS_MAP > дефолт
+    regions_map_path = (
+        config.get("regions_map")
+        or os.environ.get("REGIONS_MAP")
+        or "regions_map.json"
+    )
+    with open(regions_map_path, "r", encoding="utf-8") as f:
         regions_map = json.load(f)
 
     filtered = [

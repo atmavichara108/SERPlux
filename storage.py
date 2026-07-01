@@ -1,10 +1,12 @@
+import os
 import sqlite3
 import logging
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-DB_PATH = "serplux.db"
+# Путь к БД: env DB_PATH > дефолт (для контейнера задаётся через docker-compose)
+DB_PATH = os.environ.get("DB_PATH", "serplux.db")
 
 Row = dict[str, Any]
 

@@ -1,0 +1,68 @@
+# docker-compose.yml — оркестрация SERPlux на сервере
+#
+# Запуск:
+#   docker compose up -d
+#
+# Остановка:
+#   docker compose down
+#
+# Просмотр логов:
+#   docker compose logs -f serplux
+#
+# Требования перед запуском:
+#   1. Создайте .env из .env.example и заполните все переменные
+#   2. Положите credentials.json рядом с docker-compose.yml
+#   3. Убедитесь что WEBHOOK_SECRET задан в .env
+
+services:
+  serplux:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: serplux:latest
+    container_name: serplux
+
+    # Секреты и конфигурация — только через env-файл, не в коде
+    env_file:
+      - .env
+
+    volumes:
+      # SQLite БД — персистентный volume (данные не теряются при пересборке)
+      - serplux_data:/app/data
+      # Google service account credentials — монтируем read-only
+      # Путь внутри контейнера должен совпадать с GOOGLE_CREDENTIALS_PATH в .env
+      - ./credentials.json:/app/credentials.json:ro
+
+    ports:
+      # Внешний порт:внутренний порт
+      # Для продакшена рекомендуется ставить nginx/caddy перед контейнером
+      # и открывать только 127.0.0.1:8000 (убрать 0.0.0.0)
+      - "127.0.0.1:8000:8000"
+
+    restart: unless-stopped
+
+    # Ограничения ресурсов
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
+
+    # Логирование: ротация чтобы не забивать диск
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  serplux_data:
+    driver: local
