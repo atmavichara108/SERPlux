@@ -47,18 +47,30 @@ main.py       — точка входа, полный пайплайн
 - Аккаунт topvisor с проектом и Snapshots API
 - Аккаунт opencode.ai (для OPENCODE_API_KEY)
 
+### Тесты перед деплоем
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Все 64 теста должны пройти. Тесты не обращаются к внешним API.
+
 ### Шаги
 
 ```bash
 # 1. Клонировать репозиторий
 git clone <repo-url> && cd serp
 
-# 2. Создать .env из шаблона и заполнить все переменные
+# 2. Прогнать тесты
+pip install -r requirements-dev.txt && pytest
+
+# 3. Создать .env из шаблона и заполнить все переменные
 cp .env.example .env
 
-# 3. Положить credentials.json (Google service account) рядом с docker-compose.yml
+# 4. Положить credentials.json (Google service account) рядом с docker-compose.yml
 
-# 4. Запустить контейнер
+# 5. Запустить контейнер
 docker compose up -d
 
 # 5. Проверить что сервис поднялся

@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# Добавляем корень проекта в pythonpath, чтобы тесты видели модули
+pythonpath = ["."]
+# Краткий вывод по умолчанию
+addopts = "-v --tb=short"
