@@ -73,28 +73,21 @@
 - **storage.py**: DB_PATH читается из env DB_PATH (для контейнера /app/data/serplux.db)
 - **.env.example**: актуализирован (OPENCODE_API_KEY, WEBHOOK_SECRET, DB_PATH, REGIONS_MAP)
 - **requirements.txt**: добавлен pydantic, uvicorn[standard]
-- **docs/ui-spec.md**: полная UI-спецификация (609 строк) — параметры, API-контракт, Sheets-меню, мультиклиентность, провайдеры
-- **docs/techdebt.md**: реестр техдолга — 4 высоких, 3 средних, 3 низких приоритета
-- **Мульти-агентная архитектура v2**: 6 агентов, 3 команды-пайплайна
-  - Агенты: build, plan (primary); collector-dev, reviewer, ui-dev, infra-dev (subagent)
-  - Команды: `/interface` (ui-dev), `/container` (infra-dev), `/deploy` (infra-dev)
-  - Файлы: `.opencode/agents/*.md`, `.opencode/command/*.md`
-  - opencode.json: `default_agent: build`, task-права для subagent'ов
 
 ## В работе
-- **Веб-интерфейс** (приоритет №1): дашборд, запуск прогона, история, статус — через `/interface` (ui-dev)
 - Спецификация LLM-провайдеров (фолбек-цепочка, мониторинг, админ-управление) — docs/ui-spec.md §1.6, §5.5–5.6
 
 ## Заблокировано / ждёт
+- Деплой на сервер заказчика: скопировать репо, создать .env, положить credentials.json, docker compose up -d
 - Широкий формат exporter — переработать контракт Row под него (низкий приоритет)
 - Риск timeout при сборе больших групп (5+ регионов одной ПС):
   timeout вынесен в config (дефолт 900 сек), при проблемах увеличить
 
 ## Дальше по порядку
-1. Веб-интерфейс: `/interface` → ui-dev → дашборд + запуск + история + статус
-2. Мультиклиентность: профили клиентов в SQLite, API /clients
-3. Мультипровайдерность: фолбек-цепочка LLM, API /providers
-4. Закрытие техдолга (docs/techdebt.md)
+1. Деплой на сервер заказчика (docker compose up -d)
+2. Установить WEBHOOK_SECRET в Apps Script (SERPlux → Установить секрет)
+3. Тестовый прогон через кнопку в Sheets
+4. config.py: чтение настроек из листа "Настройки" (опционально, низкий приоритет)
 
 ## Идеи на будущее (UI-этап)
 - **Календарь версий**: каждый прогон собирает выдачу под датой, в отчёте копятся
