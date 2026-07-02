@@ -1,6 +1,6 @@
 
 ---
-description: Проектирует и реализует веб-интерфейс SERPlux: FastAPI-роуты, Jinja2-шаблоны, Tailwind CSS. Не трогает core-модули.
+description: Проектирует и реализует веб-интерфейс SERPlux (FastAPI-роуты, Jinja2-шаблоны, Tailwind CSS). ПРИОСТАНОВЛЕНО — требуется ADR, см. docs/ui-spec.md Q20. Не трогает core-модули.
 mode: subagent
 model: opencode/claude-sonnet-4-6
 temperature: 0.2

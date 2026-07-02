@@ -4,14 +4,13 @@
 ## Что это
 Сбор поисковой выдачи (Google/Яндекс) через Topvisor Snapshots API,
 разметка URL по тональности, выгрузка в Google Sheets с версионированием.
-**Два интерфейса:** Google Sheets (Apps Script) + Web UI (FastAPI + Jinja2 + Tailwind).
+**Интерфейс:** Google Sheets (Apps Script меню + лист «Настройки»).
 
 ## Стек (не менять без явного указания)
 - Python 3.11+
-- requests (Topvisor API), gspread (Sheets), FastAPI (webhook + UI)
+- requests (Topvisor API), gspread (Sheets), FastAPI (webhook API)
 - DeepSeek через opencode.ai/zen API (разметка тональности, OPENCODE_API_KEY)
 - SQLite для кэша, истории и профилей
-- Jinja2 + Tailwind CSS (веб-интерфейс)
 - Docker + docker-compose для деплоя
 - Никаких тяжёлых фреймворков. Если хочешь добавить зависимость — спроси.
 
@@ -25,7 +24,7 @@
 - storage.py   → save(rows), get_cached_label(url), get_history()
 - exporter.py  → export(rows) пишет в Sheets с цветовой разметкой
 - reporter.py  → строит матрицу-отчёт в Google Sheets
-- webhook.py   → FastAPI: API-эндпоинты + Web UI (Jinja2-шаблоны)
+- webhook.py   → FastAPI: API-эндпоинты для Apps Script
 - config.py    → читает настройки из листа "Настройки" Google Sheet
 - main.py      → точка входа пайплайна: collect → save → label → export
 
@@ -58,14 +57,14 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 | **plan** | primary | claude-sonnet-4-6 | Планирование, анализ | deny |
 | **collector-dev** | subagent | claude-sonnet-4-6 | Topvisor API + сбор данных | allow |
 | **reviewer** | subagent | gpt-5.3-codex | PASS/FAIL верификация | deny |
-| **ui-dev** | subagent | claude-sonnet-4-6 | Веб-интерфейс: FastAPI + Jinja2 + Tailwind | allow |
+| **ui-dev** | subagent | claude-sonnet-4-6 | Веб-интерфейс (приостановлено — требуется ADR) | allow |
 | **infra-dev** | subagent | deepseek-v4-flash-free | Docker, deploy, серверная инфра | allow |
 
 ### Команды-пайплайны
 
 | Команда | Агент | Что делает |
 |---------|-------|-----------|
-| `/interface` | ui-dev | Реализовать веб-интерфейс: дашборд, запуск, история, статус |
+| `/interface` | ui-dev | Веб-интерфейс (приостановлено — требуется ADR, см. docs/ui-spec.md Q20) |
 | `/container` | infra-dev | Создать/обновить Dockerfile + docker-compose |
 | `/deploy` | infra-dev | Развернуть на сервере: проверка, обновление, proxy, SSL |
 
