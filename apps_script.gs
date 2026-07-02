@@ -1,19 +1,27 @@
 /**
  * apps_script.gs — Google Apps Script для запуска SERPlux из Google Sheets.
  *
- * Установка:
+ * Установка (ВЛАДЕЛЕЦ таблицы):
  *   1. Откройте таблицу → Расширения → Apps Script
  *   2. Вставьте этот код, сохраните (Ctrl+S)
  *   3. Закройте и заново откройте таблицу — появится меню "SERPlux"
- *      НЕ запускайте onOpen() вручную через кнопку Run — это не работает.
- *   4. Установите URL сервера: SERPlux → ⚙ Установить URL сервера
- *   5. Установите секрет: SERPlux → ⚙ Установить секрет
+ *   4. SERPlux → [+] Инициализировать настройки
+ *   5. SERPlux → ⚙ Установить URL сервера / Установить секрет
+ *
+ * Установка (РАЗРАБОТЧИК — таблица расшарена с правами редактора):
+ *   1. Откройте таблицу → Расширения → Apps Script
+ *   2. Вставьте этот код, сохраните (Ctrl+S)
+ *   3. Запустите функцию setupTriggers() через кнопку ▶ Run (ОДИН РАЗ)
+ *      — Google попросит разрешения — дайте их под СВОИМ аккаунтом
+ *   4. Закройте и заново откройте таблицу — появится меню "SERPlux"
+ *
+ *   НЕ запускайте onOpen() вручную через кнопку Run — это не работает.
  *
  * Безопасность:
  *   - WEBHOOK_URL и WEBHOOK_SECRET НЕ хранятся в коде — только в Script Properties
- *   - Для установки запустите соответствующий пункт меню один раз вручную
+ *   - Script Properties изолированы по аккаунтам: у каждого пользователя свои
  *
- * Версия: 0.3
+ * Версия: 0.4
  */
 
 // ─── Значения по умолчанию ────────────────────────────────────────────────────
@@ -33,6 +41,7 @@ function onOpen() {
       .addItem("⟳ Проверить статус", "checkStatus")
       .addItem("[>] Открыть настройки", "openSettings")
       .addItem("[+] Инициализировать настройки", "initSettingsSheet")
+      .addItem("[!] Установить триггеры (1 раз)", "setupTriggers")
       .addSeparator()
       .addItem("⚙ Установить секрет", "setSecret")
       .addItem("⚙ Установить URL сервера", "setWebhookUrl")
@@ -40,6 +49,39 @@ function onOpen() {
   } catch (e) {
     SpreadsheetApp.getUi().alert("SERPlux: ошибка инициализации меню\n" + e.message);
   }
+}
+
+// ─── Установка триггеров ──────────────────────────────────────────────────────
+
+/**
+ * Создаёт Installable Trigger для onOpen.
+ * Запускать ОДИН РАЗ под своим аккаунтом — и владелец, и разработчики.
+ * После этого меню SERPlux появляется при каждом открытии таблицы.
+ */
+function setupTriggers() {
+  var ui = SpreadsheetApp.getUi();
+
+  // Удаляем существующие onOpen-триггеры (чтобы не дублировать)
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === "onOpen") {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+
+  // Создаём Installable Trigger
+  ScriptApp.newTrigger("onOpen")
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onOpen()
+    .create();
+
+  var email = Session.getActiveUser().getEmail();
+  ui.alert(
+    "Триггер установлен",
+    "Installable Trigger создан для аккаунта:\n" + email + "\n\n" +
+    "Теперь меню SERPlux будет появляться при каждом открытии таблицы.",
+    ui.ButtonSet.OK
+  );
 }
 
 // ─── Основные функции ─────────────────────────────────────────────────────────
