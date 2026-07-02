@@ -47,6 +47,7 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
   выводы дописывай в docs/decisions.md. Плагин `compaction.js` автофлашит
   compaction-summary в раздел «Compaction flush»; курируемые ADR — вручную
   выше. Так контекст переживает сжатие. Финальный дамп по концу сессии — `/dream`.
+- Устойчивое развитие.
 
 ## Агенты и команды
 
@@ -100,6 +101,7 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 - Не строить SPA-фреймворки (React, Vue, Angular). Только Jinja2 + Tailwind + Vanilla JS.
 - Не реализовывать "расширенный" LLM-режим. Только дешёвый DeepSeek через Zen.
 - Не хардкодить секреты, ключи, токены — только через .env.
+- Не расходовать впустую токены, когда можно обращаться к докам Волта за актуальной информацией, если не знаешь.
 
 ## Документация проекта
 

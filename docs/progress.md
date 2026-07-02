@@ -94,6 +94,7 @@
   - Команды: `/interface` (ui-dev), `/container` (infra-dev), `/deploy` (infra-dev)
   - Файлы: `.opencode/agents/*.md`, `.opencode/command/*.md`
   - opencode.json: `default_agent: build`, task-права для subagent'ов
+- **AGENTS.md**: дополнены принципы — не расходовать токены впустую (обращаться к докам Волта), устойчивое развитие
 
 ## В работе
 - **В работе:** Расширение API /run — client_id, date, label_mode (см. techdebt)
