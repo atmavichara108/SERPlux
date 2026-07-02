@@ -56,6 +56,16 @@
 
 ## Средний приоритет (качество и UX)
 
+### 2026-07-02 — Расхождение: ui-spec хочет client_id/date/label_mode в /run, webhook не принимает
+
+**Проблема:** docs/ui-spec.md §5.2 описывает целевой контракт `/run` с полями `client_id`, `date`, `label_mode`, `force_relabel`, `force_rebuild_report`, `report_date`, `report_only`, `provider_chain`. Фактический webhook.py принимает только `{regions_map, with_labels, depth}`. apps_script.gs читает расширенные ключи из листа «Настройки», но НЕ отправляет их в /run — endpoint их проигнорирует.
+
+**Где:** `webhook.py:35-39` (RunRequest), `apps_script.gs` → `_runPipeline()` (payload)
+
+**Что делать:** Расширить `RunRequest` в webhook.py и `_run_pipeline()` для приёма новых полей. Приоритет: `client_id` (высокий), `date` (средний), `label_mode` (средний). Требует доработки main.py, collector.py, labeler.py для использования этих параметров.
+
+---
+
 ### 2026-07-02 — Качество разметки DeepSeek низкое
 
 **Проблема:** Используется бесплатная модель DeepSeek v4 Flash Free + промпт без few-shot примеров и контекста. Качество разметки тональности может быть нестабильным — neutral/positive/negative определяются без референсов.
