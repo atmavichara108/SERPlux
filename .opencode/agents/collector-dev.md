@@ -2,7 +2,7 @@
 ---
 description: Пишет и отлаживает topvisor.py и collector.py по контракту
 mode: subagent
-model: opencode/claude-sonnet-4-6
+model: opencode-go/kimi-k2.7-code
 temperature: 0.1
 permission:
   edit: allow

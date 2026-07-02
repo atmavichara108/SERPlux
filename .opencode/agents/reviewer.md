@@ -2,7 +2,7 @@
 ---
 description: Ревьюит код модулей на соответствие контрактам и безопасность
 mode: subagent
-model: opencode/gpt-5.3-codex
+model: opencode-go/glm-5.2
 temperature: 0.1
 permission:
   edit: deny

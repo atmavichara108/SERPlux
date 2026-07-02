@@ -2,7 +2,7 @@
 ---
 description: Проектирует и реализует веб-интерфейс SERPlux (FastAPI-роуты, Jinja2-шаблоны, Tailwind CSS). ПРИОСТАНОВЛЕНО — требуется ADR, см. docs/ui-spec.md Q20. Не трогает core-модули.
 mode: subagent
-model: opencode/claude-sonnet-4-6
+model: opencode-go/kimi-k2.7-code
 temperature: 0.2
 steps: 25
 permission:

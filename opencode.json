@@ -22,7 +22,7 @@
   "agent": {
     "build": {
       "mode": "primary",
-      "model": "opencode/claude-sonnet-4-6",
+      "model": "opencode-go/kimi-k2.7-code",
       "temperature": 0.1,
       "steps": 30,
       "permission": {
@@ -31,7 +31,7 @@
     },
     "plan": {
       "mode": "primary",
-      "model": "opencode/claude-sonnet-4-6",
+      "model": "opencode-go/glm-5.2",
       "temperature": 0.1,
       "steps": 20,
       "permission": { "edit": "deny", "bash": "deny" }
