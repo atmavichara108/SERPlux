@@ -43,6 +43,10 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 - Каждый модуль с примером запуска в __main__ для изоляции отладки.
 - После значимого изменения: обнови docs/progress.md (статус) и
   docs/decisions.md (если принято архитектурное решение). Кратко, без воды.
+- **Flush-протокол (память):** перед компакцией сессии ключевые решения и
+  выводы дописывай в docs/decisions.md. Плагин `compaction.js` автофлашит
+  compaction-summary в раздел «Compaction flush»; курируемые ADR — вручную
+  выше. Так контекст переживает сжатие. Финальный дамп по концу сессии — `/dream`.
 
 ## Агенты и команды
 
@@ -53,18 +57,18 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 
 | Агент | Mode | Модель | Назначение | edit |
 |-------|------|--------|-----------|------|
-| **build** | primary | claude-sonnet-4-6 | Основная разработка | allow |
-| **plan** | primary | claude-sonnet-4-6 | Планирование, анализ | deny |
-| **collector-dev** | subagent | claude-sonnet-4-6 | Topvisor API + сбор данных | allow |
-| **reviewer** | subagent | gpt-5.3-codex | PASS/FAIL верификация | deny |
-| **ui-dev** | subagent | claude-sonnet-4-6 | Веб-интерфейс (приостановлено — требуется ADR) | allow |
-| **infra-dev** | subagent | deepseek-v4-flash-free | Docker, deploy, серверная инфра | allow |
+| **build** | primary | opencode-go/kimi-k2.7-code | Основная разработка | allow |
+| **plan** | primary | opencode-go/glm-5.2 | Планирование, анализ | deny |
+| **collector-dev** | subagent | opencode-go/kimi-k2.7-code | Topvisor API + сбор данных | allow |
+| **reviewer** | subagent | opencode-go/glm-5.2 | PASS/FAIL верификация | deny |
+| **ui-dev** | subagent | opencode-go/kimi-k2.7-code | Google Sheets UI (Apps Script) | allow |
+| **infra-dev** | subagent | opencode-go/qwen3.7-plus | Docker, deploy, серверная инфра | allow |
 
 ### Команды-пайплайны
 
 | Команда | Агент | Что делает |
 |---------|-------|-----------|
-| `/interface` | ui-dev | Веб-интерфейс (приостановлено — требуется ADR, см. docs/ui-spec.md Q20) |
+| `/interface` | ui-dev | Google Sheets UI (Apps Script меню, лист Настройки). Web UI ⏸ ADR |
 | `/container` | infra-dev | Создать/обновить Dockerfile + docker-compose |
 | `/deploy` | infra-dev | Развернуть на сервере: проверка, обновление, proxy, SSL |
 
