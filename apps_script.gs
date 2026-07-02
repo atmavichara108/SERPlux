@@ -3,16 +3,17 @@
  *
  * Установка:
  *   1. Откройте таблицу → Расширения → Apps Script
- *   2. Вставьте этот код, сохраните
- *   3. Запустите onOpen() вручную один раз — появится меню "SERPlux"
- *   4. Установите URL сервера: SERPlux → Настройки → Установить URL сервера
- *   5. Установите секрет: SERPlux → Настройки → Установить секрет
+ *   2. Вставьте этот код, сохраните (Ctrl+S)
+ *   3. Закройте и заново откройте таблицу — появится меню "SERPlux"
+ *      НЕ запускайте onOpen() вручную через кнопку Run — это не работает.
+ *   4. Установите URL сервера: SERPlux → ⚙ Установить URL сервера
+ *   5. Установите секрет: SERPlux → ⚙ Установить секрет
  *
  * Безопасность:
  *   - WEBHOOK_URL и WEBHOOK_SECRET НЕ хранятся в коде — только в Script Properties
  *   - Для установки запустите соответствующий пункт меню один раз вручную
  *
- * Версия: 0.2
+ * Версия: 0.3
  */
 
 // ─── Значения по умолчанию ────────────────────────────────────────────────────
@@ -23,17 +24,22 @@ var DEFAULT_DEPTH = 10;
 // ─── Меню ─────────────────────────────────────────────────────────────────────
 
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu("SERPlux")
-    .addItem("▶ Запустить сбор (без разметки)", "runPipelineNoLabels")
-    .addItem("▶ Запустить сбор + разметка", "runPipelineWithLabels")
-    .addSeparator()
-    .addItem("⟳ Проверить статус", "checkStatus")
-    .addItem("📋 Открыть настройки", "openSettings")
-    .addSeparator()
-    .addItem("⚙ Установить секрет", "setSecret")
-    .addItem("⚙ Установить URL сервера", "setWebhookUrl")
-    .addToUi();
+  try {
+    SpreadsheetApp.getUi()
+      .createMenu("SERPlux")
+      .addItem("▶ Запустить сбор (без разметки)", "runPipelineNoLabels")
+      .addItem("▶ Запустить сбор + разметка", "runPipelineWithLabels")
+      .addSeparator()
+      .addItem("⟳ Проверить статус", "checkStatus")
+      .addItem("[>] Открыть настройки", "openSettings")
+      .addItem("[+] Инициализировать настройки", "initSettingsSheet")
+      .addSeparator()
+      .addItem("⚙ Установить секрет", "setSecret")
+      .addItem("⚙ Установить URL сервера", "setWebhookUrl")
+      .addToUi();
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("SERPlux: ошибка инициализации меню\n" + e.message);
+  }
 }
 
 // ─── Основные функции ─────────────────────────────────────────────────────────
@@ -182,6 +188,33 @@ function openSettings() {
       "Лист «Настройки» не найден.\nСоздайте лист с именем «Настройки» для управления параметрами прогона."
     );
   }
+}
+
+// ─── Инициализация листа настроек ────────────────────────────────────────────
+
+/**
+ * Создаёт или пересоздаёт лист "Настройки" с шаблоном ключей.
+ * Ключи на латинице — именно так их читает _readSettings().
+ */
+function initSettingsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("Настройки");
+  if (!sheet) {
+    sheet = ss.insertSheet("Настройки");
+  }
+  var template = [
+    ["regions_map",  "regions_map.json", "Имя файла карты регионов на сервере"],
+    ["depth",        10,                 "Глубина сбора: 10, 20, 50 или 100"],
+    ["label_mode",   "snippets",         "Режим разметки (в будущем)"],
+    ["client_id",    "",                 "ID клиента (в будущем)"],
+    ["date",         "today",            "Дата сбора (в будущем)"],
+    ["status",       "idle",             "Статус последнего прогона (авто)"],
+  ];
+  sheet.clearContents();
+  sheet.getRange(1, 1, template.length, 3).setValues(template);
+  sheet.getRange(1, 1, template.length, 1).setFontWeight("bold");
+  ss.setActiveSheet(sheet);
+  ss.toast("Лист «Настройки» инициализирован", "SERPlux", 5);
 }
 
 // ─── Настройка секретов и URL ─────────────────────────────────────────────────

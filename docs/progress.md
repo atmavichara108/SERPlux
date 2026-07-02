@@ -63,6 +63,7 @@
   - GET /status — статус последнего прогона
   - GET /health — health-check для мониторинга контейнера
   - Защита от параллельных прогонов (threading.Lock → 409 Conflict)
+- **apps_script.gs v0.3**: исправлено меню — убран 4-байтный emoji (📋→[>]), try/catch в onOpen(), initSettingsSheet() с шаблоном ключей, исправлена инструкция (НЕ запускать onOpen() вручную)
 - **apps_script.gs v0.2 готов**: Google Apps Script меню в Sheets
   - Разделённые пункты: «Запустить сбор (без разметки)» и «Запустить сбор + разметка»
   - WEBHOOK_URL перенесён из хардкода в Script Properties (как секрет)
