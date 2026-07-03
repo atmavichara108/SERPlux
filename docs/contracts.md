@@ -78,3 +78,31 @@ Row = {
 - `label` в Row — алиас для `sentiment` (обратная совместимость с exporter, reporter, main.py)
 - `client_id` по умолчанию = "default" (для миграции с одноклиентной модели)
 - `update_labels()` → `insert_labels()`: INSERT новой версии, не UPDATE существующей
+- Таблица `labels` получила поле `confidence` (`'high' | 'uncertain'`), пока всегда `'high'`
+- Новая таблица `domain_labels` — справочник доменов для режима `domains`
+
+## Миграция схемы (domain_labels + confidence)
+
+Для существующих БД, уже перенесённых на схему `clients/positions/labels`,
+необходимо выполнить:
+
+```sql
+ALTER TABLE labels
+ADD COLUMN confidence TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high';
+
+CREATE TABLE domain_labels (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+    domain      TEXT NOT NULL,
+    sentiment   TEXT CHECK(sentiment IN ('positive','negative','neutral')),
+    source      TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','llm')),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(client_id, domain)
+);
+
+CREATE INDEX idx_domlbl_client_domain ON domain_labels(client_id, domain);
+```
+
+- `migrate.py` следует дополнить этими DDL-шагами
+- На боевой БД запускать **только после бэкапа** и проверки на копии
