@@ -41,3 +41,17 @@ REPORT_DEPTH = 10
 
 # Пустые гео-секции рисуем на REPORT_DEPTH строк (не больше)
 EMPTY_GEO_DEPTH = REPORT_DEPTH
+
+# ─── Провайдеры LLM ───────────────────────────────────────────────────────────
+
+PROVIDERS: dict[str, dict] = {
+    "opencode-zen": {
+        "enabled": True,
+        "priority": 1,
+        "default_model": "deepseek-v4-flash-free",
+        "models": ["deepseek-v4-flash-free"],
+        "endpoint": "https://opencode.ai/zen/v1/chat/completions",
+        "api_key_env_var": "OPENCODE_API_KEY",
+    },
+}
+DEFAULT_PROVIDER: str = "opencode-zen"

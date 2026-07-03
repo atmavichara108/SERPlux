@@ -4,6 +4,8 @@ __pycache__/
 .env
 .envrc
 *.db
+*.db.bak*
+*.db.copy*
 credentials.json
 .DS_Store
 

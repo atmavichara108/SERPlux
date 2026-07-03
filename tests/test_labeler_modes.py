@@ -219,3 +219,49 @@ def test_full_mode_is_stub(init_db, sample_row):
     assert labeled["label"] is None
     assert labeled["confidence"] == "high"
     assert labeled["label_mode"] == "full"
+
+
+# ─── labeler.py: цепочка провайдеров из config ────────────────────────────────
+
+
+def test_provider_chain_returns_enabled_sorted(monkeypatch):
+    """_get_provider_chain возвращает включённых провайдеров по priority."""
+    chain = labeler._get_provider_chain()
+    assert len(chain) >= 1
+    pid, cfg = chain[0]
+    assert pid == "opencode-zen"
+    assert cfg["enabled"] is True
+
+
+def test_provider_chain_excludes_disabled(monkeypatch):
+    """Отключённый провайдер исключается из цепочки."""
+    import config as cfg_mod
+
+    old = cfg_mod.PROVIDERS.copy()
+    disabled = {k: {**v, "enabled": False} for k, v in old.items()}
+    monkeypatch.setattr(cfg_mod, "PROVIDERS", disabled)
+
+    chain = labeler._get_provider_chain()
+    assert len(chain) == 0
+
+
+def test_provider_chain_empty_when_none_enabled(monkeypatch):
+    """Пустая цепочка, если нет включённых провайдеров — _label_one_llm
+    возвращает None."""
+    import config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "PROVIDERS", {})
+
+    chain = labeler._get_provider_chain()
+    assert len(chain) == 0
+
+
+def test_label_one_llm_returns_none_on_empty_chain(monkeypatch):
+    """При пустой цепочке _label_one_llm возвращает None."""
+    import config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "PROVIDERS", {})
+
+    row = {"url": "https://x.com", "query": "test", "snippet": "test"}
+    result = labeler._label_one_llm(row)
+    assert result is None

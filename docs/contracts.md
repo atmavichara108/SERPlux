@@ -89,6 +89,50 @@ Row = {
   — Обновляет поля `client_name`, `project_id`, `sheet_id` и `updated_at`.
   Выбрасывает `ValueError`, если клиент не найден или переданы недопустимые поля.
 
+## config.py — провайдеры LLM
+
+Провайдеры LLM описываются словарём `PROVIDERS`, считываются **только** из `config.py`
+(не из БД). Добавление нового провайдера = новая запись в `PROVIDERS`, без правок `labeler.py`.
+
+```python
+PROVIDERS: dict[str, dict] = {
+    "opencode-zen": {
+        "enabled": True,               # участвует в фолбек-цепочке
+        "priority": 1,                 # порядок в цепочке (меньше = выше)
+        "default_model": "deepseek-v4-flash-free",  # модель для API-вызова
+        "models": ["deepseek-v4-flash-free"],        # список доступных моделей
+        "endpoint": "https://opencode.ai/zen/v1/chat/completions",
+        "api_key_env_var": "OPENCODE_API_KEY",
+    },
+}
+DEFAULT_PROVIDER: str = "opencode-zen"
+```
+
+- `enabled`: `False` — провайдер исключается из цепочки labeler без удаления записи.
+- `priority`: порядок фолбек-цепочки (1 → 2 → 3…). При ошибке первого пробуется следующий.
+- `api_key_env_var`: имя переменной в `.env`, **не значение ключа** (безопасность).
+- `endpoint`: OpenAI-совместимый URL.
+- `models`: список строк-идентификаторов моделей; `default_model` — одна из них.
+
+## webhook.py — GET /providers
+
+**Метод:** `GET /providers`
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+**Ответ:** список провайдеров с полями `id`, `enabled`, `priority`, `default_model`, `models`.
+Только чтение — POST/PUT/DELETE не предусмотрены.
+
+```json
+[
+  {
+    "id": "opencode-zen",
+    "enabled": true,
+    "priority": 1,
+    "default_model": "deepseek-v4-flash-free",
+    "models": ["deepseek-v4-flash-free"]
+  }
+]
+```
+
 ## labeler.py
 
 - `label(rows: list[Row], db_path: str = DB_PATH, label_mode: str = "snippets",

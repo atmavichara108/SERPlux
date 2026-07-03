@@ -246,3 +246,25 @@ class TestClientsEndpoint:
         assert client.post("/clients", json={"client_id": "x", "client_name": "X"}).status_code == 401
         assert client.get("/clients/x").status_code == 401
         assert client.put("/clients/x", json={}).status_code == 401
+
+
+class TestProvidersEndpoint:
+    """Тесты read-only эндпоинта /providers."""
+
+    def test_list_providers_returns_open_code_zen(self, client):
+        """GET /providers возвращает opencode-zen с корректными полями."""
+        resp = client.get("/providers", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) >= 1
+        zen = next((p for p in body if p["id"] == "opencode-zen"), None)
+        assert zen is not None
+        assert zen["enabled"] is True
+        assert zen["priority"] == 1
+        assert zen["default_model"] == "deepseek-v4-flash-free"
+        assert "deepseek-v4-flash-free" in zen["models"]
+
+    def test_list_providers_missing_auth_returns_401(self, client):
+        """GET /providers без Bearer возвращает 401."""
+        resp = client.get("/providers")
+        assert resp.status_code == 401

@@ -7,14 +7,12 @@ import requests
 
 load_dotenv()
 
+import config
 import storage
 
 log = logging.getLogger(__name__)
 
-ZEN_MODEL = "deepseek-v4-flash-free"
-ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions"
-
-LLM_PAUSE = 1  # секунд между вызовами (Zen rate limit мягче Gemini)
+LLM_PAUSE = 1  # секунд между вызовами LLM
 
 LABEL_PATTERN = re.compile(r"\b(positive|negative|neutral)\b", re.IGNORECASE)
 
@@ -40,20 +38,32 @@ def _parse_label(raw: str) -> str:
     return "neutral"
 
 
-def _call_zen(prompt: str) -> str | None:
-    api_key = os.environ.get("OPENCODE_API_KEY")
+def _get_provider_chain() -> list[tuple[str, dict]]:
+    """Возвращает список (provider_id, config) включённых провайдеров,
+    отсортированный по priority."""
+    chain: list[tuple[str, dict]] = []
+    for pid, cfg in config.PROVIDERS.items():
+        if cfg.get("enabled", False):
+            chain.append((pid, cfg))
+    chain.sort(key=lambda x: x[1].get("priority", 999))
+    return chain
+
+
+def _call_provider(provider_id: str, provider_cfg: dict, prompt: str) -> str | None:
+    """Вызывает LLM-провайдера по его конфигу. Возвращает сырой ответ или None."""
+    api_key = os.environ.get(provider_cfg["api_key_env_var"])
     if not api_key:
-        log.warning("OPENCODE_API_KEY не задан, Zen невозможен")
+        log.warning("%s: %s не задан", provider_id, provider_cfg["api_key_env_var"])
         return None
     try:
         resp = requests.post(
-            ZEN_ENDPOINT,
+            provider_cfg["endpoint"],
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             json={
-                "model": ZEN_MODEL,
+                "model": provider_cfg["default_model"],
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
             },
@@ -63,19 +73,22 @@ def _call_zen(prompt: str) -> str | None:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
     except Exception as e:
-        log.warning("Zen ошибка: %s", e)
+        log.warning("%s ошибка: %s", provider_id, e)
         return None
 
 
 def _label_one_llm(row: dict) -> str | None:
-    """Вызывает LLM для разметки (без проверки кэша — кэш проверяет label())."""
+    """Вызывает LLM для разметки по цепочке провайдеров
+    (без проверки кэша — кэш проверяет label())."""
     prompt = _build_prompt(row["query"], row["url"], row.get("snippet", ""))
-    raw = _call_zen(prompt)
-    if raw is not None:
-        lbl = _parse_label(raw)
-        log.info("zen: %s + '%s' -> %s", row["url"], row["query"], lbl)
-        return lbl
-    log.error("Zen упал для %s, sentiment=None", row["url"])
+    chain = _get_provider_chain()
+    for provider_id, provider_cfg in chain:
+        raw = _call_provider(provider_id, provider_cfg, prompt)
+        if raw is not None:
+            lbl = _parse_label(raw)
+            log.info("%s: %s + '%s' -> %s", provider_id, row["url"], row["query"], lbl)
+            return lbl
+    log.error("Все провайдеры недоступны для %s, sentiment=None", row["url"])
     return None
 
 

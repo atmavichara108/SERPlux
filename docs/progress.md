@@ -5,6 +5,14 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Провайдеры LLM в config.py + read-only /providers**
+  - `config.py`: `PROVIDERS` dict (opencode-zen: endpoint, model, api_key_env_var, enabled, priority)
+  - `labeler.py`: рефактор — цепочка провайдеров из `config.PROVIDERS` (фильтр enabled, сортировка priority), убран хардкод Zen/DeepSeek; `_call_provider` обобщён, `_label_one_llm` итерирует цепочку с фолбеком
+  - `webhook.py`: `GET /providers` под Bearer-авторизацией, возвращает `id/enabled/priority/default_model/models`
+  - Тесты: `test_webhook.py` +2 (GET /providers, 401), `test_labeler_modes.py` +4 (цепочка из config, disabled исключается, пустая цепочка → None)
+  - `docs/contracts.md`: структура PROVIDERS + сигнатура GET /providers
+  - `docs/decisions.md`: ADR «провайдеры в config.py, read-only, CRUD отложен»
+  - `./venv/bin/python -m pytest -q` — **136 passed**, 0 warnings
 - **API `/clients` — CRUD профилей клиентов**
   - `storage.py`: `list_clients`, `get_client`, `create_client`, `update_client`
     — работают с таблицей `clients`, обновляют `updated_at`, поднимают понятные ошибки

@@ -20,6 +20,7 @@ from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+import config
 import storage
 
 load_dotenv()
@@ -274,6 +275,22 @@ def update_client(
         ) from exc
     client = storage.get_client(client_id, storage.DB_PATH)
     return JSONResponse(client)
+
+
+@app.get("/providers")
+def list_providers(authorization: str | None = Header(default=None)) -> JSONResponse:
+    """Возвращает список зарегистрированных провайдеров LLM (только чтение)."""
+    _verify_token(authorization)
+    result = []
+    for pid, cfg in config.PROVIDERS.items():
+        result.append({
+            "id": pid,
+            "enabled": cfg.get("enabled", False),
+            "priority": cfg.get("priority", 999),
+            "default_model": cfg.get("default_model", ""),
+            "models": cfg.get("models", []),
+        })
+    return JSONResponse(result)
 
 
 if __name__ == "__main__":
