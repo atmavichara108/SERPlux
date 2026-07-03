@@ -1,18 +1,37 @@
 #!/usr/bin/env python3
 """
-Миграция БД с устаревшей схемы results на новую схему clients/positions/labels.
+Миграция БД SERPlux на схему clients/positions/labels/domain_labels.
 
 Запускать вручную, явно указывая путь к БД:
     python migrate.py --db serplux.db
 
-Скрипт:
-  1. Делает бэкап <db>.bak.YYYY-MM-DD
-  2. Создаёт таблицы clients, positions, labels
-  3. Добавляет клиента 'default'
-  4. Переносит данные из results в positions (client_id='default')
-  5. Переносит не-NULL метки в labels (version=1, mode='snippets')
-  6. Верифицирует COUNT(results) == COUNT(positions)
-  7. DROP TABLE results только при успешной верификации
+Скрипт идемпотентен и поддерживает три стартовых состояния БД:
+
+  1. Чистая БД (нет results, нет positions/labels/domain_labels):
+     создать полную схему, авто-клиент 'default', данных не переносить.
+
+  2. БД после 1-й миграции (есть positions/labels, но labels без колонки
+     confidence, и нет таблицы domain_labels): досоздать недостающее
+     (ALTER labels + CREATE domain_labels + индекс), клиента 'default'
+     оставить как есть.
+
+  3. Полностью мигрированная БД (positions/labels/domain_labels, confidence
+     в labels присутствует, results уже удалена): ничего не менять,
+     отчитаться «актуально».
+
+Поток migrate(db_path):
+  1. backup (всегда)
+  2. _create_new_schema(conn)        — все таблицы IF NOT EXISTS
+  3. _apply_schema_patches(conn)     — confidence + domain_labels
+  4. авто-клиент 'default'           — INSERT OR IGNORE
+  5. if _table_exists(conn, "results"):
+         перенос results→positions
+         перенос labels
+         верификация COUNT(results)==COUNT(positions)
+         DROP results
+     else:
+         log «перенос данных не требуется»
+  6. _verify_schema(conn)            — всегда, в конце
 
 НЕ запускает миграцию автоматически и НЕ трогает боевую БД без явного --db.
 """
@@ -62,7 +81,11 @@ def _backup_db(db_path: str) -> str:
 
 
 def _create_new_schema(conn: sqlite3.Connection) -> None:
-    """Создаёт таблицы clients, positions, labels и индексы."""
+    """Создаёт таблицы clients, positions, labels (с confidence), индексы.
+
+    Свежая БД сразу получает колонку confidence в labels — как в storage._init_db.
+    Старые БД с labels без confidence патчатся в _apply_schema_patches.
+    """
     conn.execute("""
         CREATE TABLE IF NOT EXISTS clients (
             client_id   TEXT PRIMARY KEY,
@@ -98,6 +121,7 @@ def _create_new_schema(conn: sqlite3.Connection) -> None:
             label_mode     TEXT NOT NULL CHECK(label_mode IN ('domains','snippets','full')),
             label_version  INTEGER NOT NULL,
             sentiment      TEXT CHECK(sentiment IN ('positive','negative','neutral')),
+            confidence     TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high',
             created_at     TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(position_id, label_mode, label_version)
         )
@@ -111,13 +135,20 @@ def _create_new_schema(conn: sqlite3.Connection) -> None:
 
 
 def _apply_schema_patches(conn: sqlite3.Connection) -> None:
-    """Дополняет схему: поле confidence в labels и справочник domain_labels."""
+    """Дополняет схему старых БД: колонка confidence в labels + справочник domain_labels.
+
+    Идемпотентно:
+      - ALTER TABLE labels ADD COLUMN confidence — только если колонки нет
+        (проверка через PRAGMA table_info(labels));
+      - CREATE TABLE IF NOT EXISTS domain_labels + индекс idx_domlbl_client_domain.
+    """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(labels)").fetchall()}
     if "confidence" not in cols:
         conn.execute("""
             ALTER TABLE labels
             ADD COLUMN confidence TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high'
         """)
+        log.info("Колонка labels.confidence добавлена (ALTER TABLE)")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS domain_labels (
@@ -166,60 +197,86 @@ def _migrate_labels(conn: sqlite3.Connection) -> int:
     return conn.total_changes
 
 
+def _verify_schema(conn: sqlite3.Connection) -> None:
+    """В конце миграции проверяет, что схема доведена до актуального состояния.
+
+    Логирует список таблиц и колонки labels, затем проверяет наличие
+    таблицы domain_labels и колонки confidence в labels. При отсутствии —
+    RuntimeError.
+    """
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()]
+    log.info("Таблицы в БД: %s", ", ".join(tables) or "<нет>")
+
+    label_cols = [row[1] for row in conn.execute("PRAGMA table_info(labels)").fetchall()]
+    log.info("Колонки labels: %s", ", ".join(label_cols))
+
+    if not _table_exists(conn, "domain_labels"):
+        raise RuntimeError("Схема не доведена: таблица domain_labels отсутствует")
+    if "confidence" not in label_cols:
+        raise RuntimeError("Схема не доведена: колонка labels.confidence отсутствует")
+
+
 def migrate(db_path: str) -> None:
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"БД не найдена: {db_path}")
 
     conn = _get_conn(db_path)
     try:
-        # Шаг 0: бэкап
+        # Шаг 0: бэкап (всегда)
         _backup_db(db_path)
-
-        # Если results нет — миграция не требуется
-        if not _table_exists(conn, "results"):
-            log.info("Таблица results не найдена в %s — миграция не требуется", db_path)
-            return
 
         log.info("Начинаю миграцию %s", db_path)
 
-        # Создаём новые таблицы
+        # Шаг 1: создаём полную схему (IF NOT EXISTS — безопасно для существующих)
         _create_new_schema(conn)
+
+        # Шаг 2: патчи для старых БД (confidence + domain_labels)
         _apply_schema_patches(conn)
 
-        # Авто-клиент default
+        # Шаг 3: авто-клиент default (всегда, идемпотентно)
         conn.execute(
             "INSERT OR IGNORE INTO clients (client_id, client_name) VALUES ('default', 'Default')"
         )
 
-        # Переносим данные
-        positions_count_before = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
-        _migrate_results_to_positions(conn)
-        positions_count_after = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
-        migrated_positions = positions_count_after - positions_count_before
+        # Шаг 4: перенос данных из results (только если legacy-таблица есть)
+        if _table_exists(conn, "results"):
+            positions_count_before = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+            _migrate_results_to_positions(conn)
+            positions_count_after = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+            migrated_positions = positions_count_after - positions_count_before
 
-        _migrate_labels(conn)
-        labels_count = conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
+            _migrate_labels(conn)
+            labels_count = conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
 
-        # Верификация
-        results_count = conn.execute("SELECT COUNT(*) FROM results").fetchone()[0]
-        final_positions_count = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+            # Верификация: COUNT(results) == COUNT(positions) после переноса
+            results_count = conn.execute("SELECT COUNT(*) FROM results").fetchone()[0]
+            final_positions_count = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
 
-        log.info("Верификация: results=%s, positions=%s", results_count, final_positions_count)
+            log.info("Верификация: results=%s, positions=%s", results_count, final_positions_count)
 
-        if results_count != final_positions_count:
-            raise RuntimeError(
-                f"Верификация не пройдена: results={results_count}, positions={final_positions_count}. "
-                "Откат: таблица results НЕ удалена."
+            if results_count != final_positions_count:
+                raise RuntimeError(
+                    f"Верификация не пройдена: results={results_count}, positions={final_positions_count}. "
+                    "Откат: таблица results НЕ удалена."
+                )
+
+            # DROP results только после успешной верификации
+            conn.execute("DROP TABLE results")
+            log.info(
+                "Перенесено позиций=%s, меток=%s, results удалена",
+                migrated_positions, labels_count,
             )
+        else:
+            log.info("Перенос данных не требуется (results отсутствует)")
 
-        # DROP results только после успешной верификации
-        conn.execute("DROP TABLE results")
         conn.commit()
 
-        log.info(
-            "Миграция завершена успешно: перенесено позиций=%s, меток=%s, results удалена",
-            migrated_positions, labels_count,
-        )
+        # Шаг 5: верификация схемы (всегда, в конце)
+        _verify_schema(conn)
+
+        log.info("Миграция завершена успешно")
     except Exception:
         conn.rollback()
         raise
