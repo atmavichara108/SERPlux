@@ -24,6 +24,7 @@ Row = {
     "sentiment": str | None, # "positive" | "negative" | "neutral" | None
     "label_mode": str | None,# "domains" | "snippets" | "full"
     "label_version": int | None,  # версия разметки (1, 2, 3...)
+    "confidence": str,       # "high" | "uncertain", дефолт "high"
     # --- мультитенантность (новые поля) ---
     "client_id": str,        # slug клиента, дефолт "default"
 }
@@ -58,20 +59,40 @@ Row = {
   — НОВАЯ функция. Возвращает все версии меток для позиции:
   `[{label_mode, label_version, sentiment, created_at}, ...]`.
 
+- `get_domain_label(client_id: str, domain: str, db_path: str = DB_PATH) -> dict | None`
+  — Возвращает `{sentiment, source, confidence}` из `domain_labels` по
+  `(client_id, domain)`, или `None` если домена нет в справочнике.
+  Поле `confidence` возвращается как `'high'` (константа), т.к. справочник
+  является источником истины для достоверно размеченных доменов.
+
+- `upsert_domain_label(client_id: str, domain: str, sentiment: str,
+                       source: str = "manual", db_path: str = DB_PATH) -> None`
+  — INSERT или UPDATE записи в `domain_labels` по `UNIQUE(client_id, domain)`.
+  При UPDATE обновляет `sentiment`, `source`, `updated_at`.
+
 - `_init_db(db_path: str = DB_PATH) -> None`
-  — Создаёт таблицы: clients, positions, labels.
+  — Создаёт таблицы: clients, positions, labels, domain_labels.
   Авто-клиент 'default' если таблица clients пуста.
 
 ## labeler.py
 
-- `label(rows: list[Row], db_path: str = DB_PATH, label_mode: str = "snippets", force_relabel: bool = False) -> list[Row]`
-  — Проставляет `sentiment` (и алиас `label`) каждой строке.
-  Новые параметры:
+- `label(rows: list[Row], db_path: str = DB_PATH, label_mode: str = "snippets",
+        force_relabel: bool = False) -> list[Row]`
+  — Проставляет `sentiment` (и алиас `label`), а также `confidence` каждой строке.
+  Параметры:
   - `label_mode`: режим разметки ("domains" | "snippets" | "full")
   - `force_relabel`: если True — игнорировать кэш, размечать всё заново
-  Сначала проверяет кэш (storage.get_cached_label), затем вызывает LLM.
-  Возвращает тот же список с заполненными sentiment/label.
-  **Режимы `domains` и `full` — заглушки, реализуются отдельно.**
+  Возвращает тот же список с заполненными `sentiment`/`label`/`confidence`.
+
+  Режимы:
+  - **domains** (реализован): для каждой строки берёт `domain`, ищет в справочнике
+    через `storage.get_domain_label(client_id, domain)`. Если найдено — ставит
+    `sentiment` из справочника, `confidence='high'`, LLM НЕ вызывается (нулевая
+    стоимость). Если домена нет в справочнике — `sentiment=None`
+    (помечается для ручной разметки, TBD).
+  - **snippets** (реализован): текущая логика — кэш (`storage.get_cached_label`)
+    → LLM по сниппету. `confidence='high'`.
+  - **full**: заглушка, v2. Заход на страницу + LLM по полному тексту.
 
 ## Важно
 
@@ -79,7 +100,7 @@ Row = {
 - `client_id` по умолчанию = "default" (для миграции с одноклиентной модели)
 - `update_labels()` → `insert_labels()`: INSERT новой версии, не UPDATE существующей
 - Таблица `labels` получила поле `confidence` (`'high' | 'uncertain'`), пока всегда `'high'`
-- Новая таблица `domain_labels` — справочник доменов для режима `domains`
+- Режим `domains` работает через справочник `domain_labels` (без LLM); режим `snippets` — через кэш + LLM
 
 ## Миграция схемы (domain_labels + confidence)
 
