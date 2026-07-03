@@ -1,6 +1,159 @@
 
 # Лог архитектурных решений (ADR)
 
+## 2026-07-03 — ADR: Схема данных разметки — версионирование + мультитенантность
+
+**Контекст:** Текущая схема хранит всё в одной таблице `results` с полем `label`.
+Функция `update_labels()` делает UPDATE по UNIQUE-ключу — перезатирает предыдущую метку.
+Повторная разметка той же выдачи теряет историю. Мультитенантность отсутствует.
+
+Требования заказчика:
+1. `label_mode` — один режим на прогон (domains/snippets/full), не конвейер
+2. Версионирование: повторная разметка НЕ перезатирает, новая = новая версия
+   с пометкой (режим + версия + timestamp)
+3. Тональность — явное поле
+4. Мультитенантность: таблица `clients`, `client_id` как FK во всех таблицах
+5. 64 pytest-теста не должны сломаться
+
+**Решение:**
+
+### Схема таблиц
+
+**`clients`** — профили клиентов:
+```sql
+CREATE TABLE clients (
+    client_id   TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    project_id  INTEGER,
+    sheet_id    TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+**`positions`** — выдача (сырые данные из Topvisor):
+```sql
+CREATE TABLE positions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id     TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+    date          TEXT NOT NULL,
+    searcher      TEXT NOT NULL,
+    query         TEXT NOT NULL,
+    geo           TEXT NOT NULL,
+    region_index  INTEGER NOT NULL,
+    position      INTEGER NOT NULL,
+    url           TEXT NOT NULL,
+    domain        TEXT NOT NULL,
+    snippet       TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(client_id, date, searcher, query, geo, position, url)
+);
+```
+
+**`labels`** — разметка (версионированная):
+```sql
+CREATE TABLE labels (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id    INTEGER NOT NULL REFERENCES positions(id) ON DELETE CASCADE,
+    client_id      TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+    label_mode     TEXT NOT NULL CHECK(label_mode IN ('domains','snippets','full')),
+    label_version  INTEGER NOT NULL,
+    sentiment      TEXT CHECK(sentiment IN ('positive','negative','neutral')),
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(position_id, label_mode, label_version)
+);
+```
+
+**Индексы:**
+```sql
+CREATE INDEX idx_pos_client_date ON positions(client_id, date);
+CREATE INDEX idx_pos_url_query   ON positions(url, query);
+CREATE INDEX idx_pos_client_url  ON positions(client_id, url);
+CREATE INDEX idx_lbl_position    ON labels(position_id);
+CREATE INDEX idx_lbl_client_mode ON labels(client_id, label_mode);
+CREATE INDEX idx_lbl_latest      ON labels(position_id, label_mode, label_version DESC);
+```
+
+### Версионирование
+
+Ключ: `(position_id, label_mode, label_version)` — составной UNIQUE.
+- `label_version` — монотонно растущий integer, вычисляется как `MAX(label_version) + 1`
+  для пары `(position_id, label_mode)` при вставке
+- Разные режимы = независимые ветки версий (snippets v2 не отменяет domains v1)
+- **label_version не сквозной между датами:** т.к. position_id включает `date`
+  в UNIQUE-ключ таблицы positions, при новом прогоне за новую дату создаётся
+  новый position_id и версии начинаются с 1. Это соответствует требованию
+  заказчика «версия за ту же дату».
+- «Текущая» метка = последняя по `created_at DESC`
+- История: `SELECT label_mode, label_version, sentiment, created_at FROM labels WHERE position_id = ?`
+
+### Атомарность версии
+
+`MAX(label_version)+1` подвержен гонке при конкурентных вставках (асинхронный /run).
+Два потока могут одновременно прочитать MAX=3 и оба вставить version=4 → UNIQUE violation.
+
+**Решение:** INSERT с retry на нарушение UNIQUE.
+- Перед вставкой: `SELECT COALESCE(MAX(label_version),0)+1 FROM labels WHERE position_id=? AND label_mode=?`
+- INSERT с вычисленным version. При `UNIQUE constraint failed` → повторить SELECT+INSERT (макс. 3 попытки).
+- Почему не BEGIN IMMEDIATE: SQLite в режиме WAL (docker-compose) допускает параллельные чтения;
+  IMMEDIATE блокирует всех читателей на время транзакции, что замедляет /status и get_history().
+  Retry на UNIQUE — дешевле и не блокирует.
+- При 3 неудачах — лог ERROR, метка пропускается (частичный сбой, не роняем прогон).
+
+### Тональность
+
+Поле `sentiment` в `labels` — явное, с CHECK-ограничением.
+NULL = «разметка запущена, но LLM вернул ошибку».
+В Row-дикте `label` сохраняется как алиас для обратной совместимости.
+
+### Миграция
+
+Новая БД → сразу три таблицы + авто-клиент `'default'`.
+Существующая БД:
+**Шаг 0:** `cp serplux.db serplux.db.bak.YYYY-MM-DD`. DROP results только после
+успешного переноса и верификации: `COUNT(*) results == COUNT(*) positions`.
+1. INSERT INTO clients ('default', 'Default')
+2. Создать positions, перенести данные из results
+3. Перенести метки в labels (version=1, mode='snippets')
+4. DROP TABLE results
+
+64 теста не ломаются: test_imports (импорт), test_config (константы),
+test_regions_map (JSON), test_parse_label (чистая логика) — не трогают схему БД.
+__main__-блоки storage.py/labeler.py используют изолированные тестовые БД —
+получат новую схему автоматически.
+
+### Влияние на /run
+
+Новые поля: `client_id` (дефолт 'default'), `label_mode` (дефолт 'snippets'),
+`force_relabel` (дефолт false). Обратная совместимость сохранена.
+
+### Влияние на get_history()
+
+Расширенный Row: добавлены `sentiment`, `label_mode`, `label_version`.
+По умолчанию — последняя метка на позицию (JOIN + MAX(created_at)).
+Фильтр `label_version='all'` — все версии. Фильтр `client_id` — по клиенту.
+
+**Последствия:**
+- (+) История разметки сохраняется, сравнение версий
+- (+) Мультитенантность заложена в схему
+- (+) Разделение positions/labels — чистая архитектура
+- (-) Все запросы к меткам требуют JOIN
+- (-) `update_labels()` → `insert_labels()` (INSERT, не UPDATE)
+- (-) Миграция существующей БД требует бэкапа
+
+**Альтернативы отвергнуты:**
+- Единая таблица с `label_version` — дублирование данных, нарушение нормализации
+- Единый счётчик версий (без label_mode) — режимы независимы, нельзя сравнивать параллельно
+- JSON-поле в `label_versions` — нет CHECK, сложно индексировать
+
+**Открытые вопросы:**
+- Q1: UI для сравнения версий в Sheets?
+- Q2: force_relabel — все строки или только дельта?
+- Q3: Дефолтный клиент 'default' — приемлемо?
+- Q4: Хранить стоимость разметки в labels?
+
+**Затронутые файлы:** storage.py, labeler.py, webhook.py, main.py, docs/contracts.md
+
 ## 2026-07-02 — Apps Script: мультиаккаунтный доступ через Installable Trigger
 
 Проблема: bound-скрипт авторизуется под аккаунтом владельца таблицы.
