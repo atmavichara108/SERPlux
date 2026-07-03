@@ -114,3 +114,24 @@
 - 108/108 тестов зелёные (9 + 4 новых, остальные старые)
 - Reviewer PASS: изменения соответствуют DoD
 - Коммит: `d5f6374 feat(api): расширить POST /run параметрами client_id, label_mode, force_relabel`
+
+---
+
+## T-005: CRUD /clients и storage client management
+
+**Статус:** ✅ Done (2026-07-03)
+**Приоритет:** высокий
+**Затронутые файлы:** storage.py, webhook.py, tests/test_webhook.py, tests/test_storage_schema.py, docs/contracts.md, docs/decisions.md, docs/progress.md
+
+### Что сделано:
+
+- **storage.py**: `list_clients()`, `get_client()`, `create_client()`, `update_client()` — CRUD над таблицей `clients`, обновляют `updated_at`, поднимают ValueError при дубле/отсутствии.
+- **webhook.py**: `GET /clients`, `POST /clients` (201, 409), `GET /clients/{id}` (200, 404), `PUT /clients/{id}` (200, 404) — все под Bearer-авторизацией.
+- **Тесты**: `TestClientManagement` (8 тестов) в `test_storage_schema.py`, `TestClientsEndpoint` (10 тестов) в `test_webhook.py`.
+- **requirements-dev.txt**: добавлен `httpx2>=2.5.0` для подавления StarletteDeprecationWarning.
+- **docs/contracts.md**: зафиксированы сигнатуры новых функций.
+- **docs/decisions.md**: обновлён статус ADR по `/clients`.
+
+### Результат:
+- 130/130 тестов зелёные, без warning
+- Коммит: `59214b1 feat: /clients CRUD endpoints and storage client management; add httpx2 dev dep to silence TestClient warning`
