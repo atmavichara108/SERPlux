@@ -540,6 +540,108 @@ def upsert_domain_label(
         conn.close()
 
 
+# ─── Управление профилями клиентов ────────────────────────────────────────────
+
+
+_CLIENT_COLUMNS = {"client_name", "project_id", "sheet_id"}
+
+
+def list_clients(db_path: str = DB_PATH) -> list[dict]:
+    """Возвращает список клиентов с полями client_id, client_name, project_id, sheet_id."""
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT client_id, client_name, project_id, sheet_id
+               FROM clients
+               ORDER BY client_id"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_client(client_id: str, db_path: str = DB_PATH) -> dict | None:
+    """Возвращает клиента по id или None, если не найден."""
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute(
+            """SELECT client_id, client_name, project_id, sheet_id
+               FROM clients
+               WHERE client_id = ?""",
+            (client_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_client(
+    client_id: str,
+    client_name: str,
+    project_id: int | None = None,
+    sheet_id: str | None = None,
+    db_path: str = DB_PATH,
+) -> None:
+    """Создаёт нового клиента. Выбрасывает ValueError, если client_id уже существует."""
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        conn.execute(
+            """INSERT INTO clients
+                   (client_id, client_name, project_id, sheet_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (client_id, client_name, project_id, sheet_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ValueError(f"client_id '{client_id}' already exists") from exc
+    finally:
+        conn.close()
+
+
+def update_client(client_id: str, db_path: str = DB_PATH, **fields) -> None:
+    """
+    Обновляет поля профиля клиента. Допустимые поля: client_name, project_id, sheet_id.
+    Обновляет updated_at. Выбрасывает ValueError, если клиент не найден
+    или переданы недопустимые поля.
+    """
+    unknown = set(fields) - _CLIENT_COLUMNS
+    if unknown:
+        raise ValueError(f"Недопустимые поля: {', '.join(sorted(unknown))}")
+
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        if fields:
+            set_clause = ", ".join(f"{col} = ?" for col in fields)
+            values = list(fields.values())
+            values.append(client_id)
+            cur = conn.execute(
+                f"""UPDATE clients
+                    SET {set_clause}, updated_at = datetime('now')
+                    WHERE client_id = ?""",
+                values,
+            )
+        else:
+            # Если полей нет — всё равно обновляем updated_at
+            cur = conn.execute(
+                """UPDATE clients
+                    SET updated_at = datetime('now')
+                    WHERE client_id = ?""",
+                (client_id,),
+            )
+
+        if cur.rowcount == 0:
+            raise ValueError(f"client_id '{client_id}' not found")
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     import os as _os
 

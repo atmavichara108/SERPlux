@@ -120,3 +120,129 @@ class TestRunAuth:
             headers={"Authorization": "Bearer wrong-secret"},
         )
         assert resp.status_code == 403
+
+
+@pytest.fixture
+def client_db(tmp_path, monkeypatch):
+    """Создаёт изолированную БД и подменяет storage.DB_PATH для тестов /clients."""
+    db_path = str(tmp_path / "clients.db")
+    import storage
+    storage._init_db(db_path)
+    monkeypatch.setattr(storage, "DB_PATH", db_path)
+    return db_path
+
+
+class TestClientsEndpoint:
+    """Тесты CRUD-эндпоинтов /clients."""
+
+    def test_list_clients_empty_only_default(self, client, client_db):
+        """GET /clients возвращает только дефолтного клиента."""
+        resp = client.get("/clients", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        assert body[0]["client_id"] == "default"
+
+    def test_list_clients_with_data(self, client, client_db):
+        """GET /clients возвращает созданного клиента вместе с default."""
+        import storage
+        storage.create_client("acme", "Acme Corp", project_id=123, sheet_id="abc", db_path=client_db)
+
+        resp = client.get("/clients", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 200
+        body = resp.json()
+        by_id = {c["client_id"]: c for c in body}
+        assert "acme" in by_id
+        assert by_id["acme"] == {
+            "client_id": "acme",
+            "client_name": "Acme Corp",
+            "project_id": 123,
+            "sheet_id": "abc",
+        }
+
+    def test_create_client(self, client, client_db):
+        """POST /clients создаёт клиента и возвращает 201."""
+        resp = client.post(
+            "/clients",
+            json={"client_id": "new", "client_name": "New Client", "project_id": 42},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["client_id"] == "new"
+
+    def test_create_client_optional_sheet_id(self, client, client_db):
+        """POST /clients без sheet_id работает."""
+        resp = client.post(
+            "/clients",
+            json={"client_id": "min", "client_name": "Min"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["sheet_id"] is None
+
+    def test_create_client_duplicate_returns_409(self, client, client_db):
+        """Повторный POST с тем же client_id возвращает 409."""
+        client.post(
+            "/clients",
+            json={"client_id": "dup", "client_name": "Dup"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        resp = client.post(
+            "/clients",
+            json={"client_id": "dup", "client_name": "Dup 2"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 409
+
+    def test_get_client_existing(self, client, client_db):
+        """GET /clients/{id} возвращает профиль существующего клиента."""
+        import storage
+        storage.create_client("one", "One", project_id=7, sheet_id="sh", db_path=client_db)
+
+        resp = client.get("/clients/one", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "client_id": "one",
+            "client_name": "One",
+            "project_id": 7,
+            "sheet_id": "sh",
+        }
+
+    def test_get_client_missing_returns_404(self, client, client_db):
+        """GET /clients/{id} для несуществующего клиента возвращает 404."""
+        resp = client.get("/clients/ghost", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 404
+
+    def test_update_client(self, client, client_db):
+        """PUT /clients/{id} обновляет поля клиента."""
+        import storage
+        storage.create_client("upd", "Old", project_id=1, sheet_id="old", db_path=client_db)
+
+        resp = client.put(
+            "/clients/upd",
+            json={"client_name": "New", "project_id": 2, "sheet_id": "new"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "client_id": "upd",
+            "client_name": "New",
+            "project_id": 2,
+            "sheet_id": "new",
+        }
+
+    def test_update_client_missing_returns_404(self, client, client_db):
+        """PUT /clients/{id} для несуществующего клиента возвращает 404."""
+        resp = client.put(
+            "/clients/ghost",
+            json={"client_name": "Ghost"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 404
+
+    def test_clients_missing_auth_returns_401(self, client, client_db):
+        """Все /clients-эндпоинты требуют авторизации."""
+        assert client.get("/clients").status_code == 401
+        assert client.post("/clients", json={"client_id": "x", "client_name": "X"}).status_code == 401
+        assert client.get("/clients/x").status_code == 401
+        assert client.put("/clients/x", json={}).status_code == 401

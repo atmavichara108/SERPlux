@@ -523,3 +523,116 @@ def test_default_client_created_on_init(init_db):
         assert row == ("default", "Default")
     finally:
         conn.close()
+
+
+# ─── Блок 7: управление клиентами ─────────────────────────────────────────────
+
+
+class TestClientManagement:
+    """Тесты CRUD-функций клиентов в storage.py."""
+
+    def test_list_clients_returns_default(self, init_db):
+        """list_clients возвращает только 'default' в пустой БД."""
+        clients = storage.list_clients(init_db)
+        assert clients == [{
+            "client_id": "default",
+            "client_name": "Default",
+            "project_id": None,
+            "sheet_id": None,
+        }]
+
+    def test_create_and_list_clients(self, init_db):
+        """create_client добавляет клиента; list_clients возвращает его."""
+        storage.create_client("acme", "Acme Corp", project_id=123, sheet_id="abc", db_path=init_db)
+        clients = storage.list_clients(init_db)
+        by_id = {c["client_id"]: c for c in clients}
+
+        assert "acme" in by_id
+        assert by_id["acme"] == {
+            "client_id": "acme",
+            "client_name": "Acme Corp",
+            "project_id": 123,
+            "sheet_id": "abc",
+        }
+        assert "default" in by_id
+
+    def test_create_client_optional_fields(self, init_db):
+        """project_id и sheet_id необязательны и по умолчанию None."""
+        storage.create_client("minimal", "Minimal Client", db_path=init_db)
+        client = storage.get_client("minimal", init_db)
+        assert client is not None
+        assert client["project_id"] is None
+        assert client["sheet_id"] is None
+
+    def test_create_client_duplicate_raises(self, init_db):
+        """Повторное создание клиента с тем же client_id вызывает ValueError."""
+        storage.create_client("dup", "Dup", db_path=init_db)
+        with pytest.raises(ValueError, match="already exists"):
+            storage.create_client("dup", "Dup 2", db_path=init_db)
+
+    def test_get_client_existing(self, init_db):
+        """get_client возвращает данные существующего клиента."""
+        storage.create_client("get", "Get Me", project_id=42, sheet_id="sh", db_path=init_db)
+        client = storage.get_client("get", init_db)
+        assert client == {
+            "client_id": "get",
+            "client_name": "Get Me",
+            "project_id": 42,
+            "sheet_id": "sh",
+        }
+
+    def test_get_client_missing_returns_none(self, init_db):
+        """get_client возвращает None для несуществующего клиента."""
+        assert storage.get_client("missing", init_db) is None
+
+    def test_update_client(self, init_db):
+        """update_client изменяет поля и обновляет updated_at."""
+        storage.create_client("upd", "Upd", project_id=1, sheet_id="old", db_path=init_db)
+
+        conn = sqlite3.connect(init_db)
+        try:
+            old_updated_at = conn.execute(
+                "SELECT updated_at FROM clients WHERE client_id = 'upd'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        # Пауза, чтобы updated_at гарантированно изменился (datetime('now') — секунды)
+        time.sleep(1.1)
+
+        storage.update_client(
+            "upd",
+            init_db,
+            client_name="Updated",
+            project_id=2,
+            sheet_id="new",
+        )
+
+        client = storage.get_client("upd", init_db)
+        assert client == {
+            "client_id": "upd",
+            "client_name": "Updated",
+            "project_id": 2,
+            "sheet_id": "new",
+        }
+
+        conn = sqlite3.connect(init_db)
+        try:
+            new_updated_at = conn.execute(
+                "SELECT updated_at FROM clients WHERE client_id = 'upd'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        assert new_updated_at > old_updated_at
+
+    def test_update_client_not_found_raises(self, init_db):
+        """update_client для несуществующего клиента вызывает ValueError."""
+        with pytest.raises(ValueError, match="not found"):
+            storage.update_client("ghost", init_db, client_name="Ghost")
+
+    def test_update_client_rejects_unknown_fields(self, init_db):
+        """update_client отклоняет недопустимые поля."""
+        storage.create_client("bad", "Bad", db_path=init_db)
+        with pytest.raises(ValueError, match="Недопустимые поля"):
+            storage.update_client("bad", init_db, unknown="x")

@@ -20,6 +20,8 @@ from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+import storage
+
 load_dotenv()
 
 LABEL_MODES = {"domains", "snippets", "full"}
@@ -50,6 +52,21 @@ class RunRequest(BaseModel):
             allowed = ", ".join(sorted(LABEL_MODES))
             raise ValueError(f"label_mode должен быть одним из: {allowed}; получено '{v}'")
         return v
+
+
+class ClientCreateRequest(BaseModel):
+    """Тело запроса на создание клиента."""
+    client_id: str
+    client_name: str
+    project_id: int | None = None
+    sheet_id: str | None = None
+
+
+class ClientUpdateRequest(BaseModel):
+    """Тело запроса на обновление клиента."""
+    client_name: str | None = None
+    project_id: int | None = None
+    sheet_id: str | None = None
 
 
 def _get_secret() -> str:
@@ -184,6 +201,79 @@ def trigger_run(
         {"accepted": True, "started_at": _last_run["started_at"]},
         status_code=status.HTTP_202_ACCEPTED,
     )
+
+
+@app.get("/clients")
+def list_clients(authorization: str | None = Header(default=None)) -> JSONResponse:
+    """Возвращает список зарегистрированных клиентов."""
+    _verify_token(authorization)
+    clients = storage.list_clients(storage.DB_PATH)
+    return JSONResponse(clients)
+
+
+@app.post("/clients", status_code=status.HTTP_201_CREATED)
+def create_client(
+    body: ClientCreateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Создаёт нового клиента. Возвращает 409, если client_id уже занят."""
+    _verify_token(authorization)
+    try:
+        storage.create_client(
+            client_id=body.client_id,
+            client_name=body.client_name,
+            project_id=body.project_id,
+            sheet_id=body.sheet_id,
+            db_path=storage.DB_PATH,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    client = storage.get_client(body.client_id, storage.DB_PATH)
+    return JSONResponse(client, status_code=status.HTTP_201_CREATED)
+
+
+@app.get("/clients/{client_id}")
+def get_client(
+    client_id: str,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Возвращает профиль конкретного клиента или 404."""
+    _verify_token(authorization)
+    client = storage.get_client(client_id, storage.DB_PATH)
+    if client is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Клиент '{client_id}' не найден",
+        )
+    return JSONResponse(client)
+
+
+@app.put("/clients/{client_id}")
+def update_client(
+    client_id: str,
+    body: ClientUpdateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Обновляет профиль клиента. Возвращает 404, если клиент не найден."""
+    _verify_token(authorization)
+    try:
+        storage.update_client(
+            client_id=client_id,
+            db_path=storage.DB_PATH,
+            client_name=body.client_name,
+            project_id=body.project_id,
+            sheet_id=body.sheet_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    client = storage.get_client(client_id, storage.DB_PATH)
+    return JSONResponse(client)
 
 
 if __name__ == "__main__":

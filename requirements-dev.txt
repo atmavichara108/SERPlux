@@ -2,3 +2,5 @@
 # Не включаются в Docker-образ
 -r requirements.txt
 pytest>=8.0
+# Starlette 1.3+ требует httpx2 для TestClient, иначе падает deprecation warning
+httpx2>=2.5.0

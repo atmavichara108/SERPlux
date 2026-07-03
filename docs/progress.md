@@ -5,6 +5,17 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **API `/clients` — CRUD профилей клиентов**
+  - `storage.py`: `list_clients`, `get_client`, `create_client`, `update_client`
+    — работают с таблицей `clients`, обновляют `updated_at`, поднимают понятные ошибки
+    при дубле или отсутствии клиента
+  - `webhook.py`: `GET /clients`, `POST /clients`, `GET /clients/{id}`, `PUT /clients/{id}`
+    — все под Bearer-авторизацией; `POST` возвращает `409` при дубле, `GET/PUT` — `404`
+    если клиент не найден
+  - Контракты зафиксированы в `docs/contracts.md`; статус ADR обновлён в `docs/decisions.md`
+  - Тесты: `TestClientManagement` в `tests/test_storage_schema.py` (8 тестов) +
+    `TestClientsEndpoint` в `tests/test_webhook.py` (10 тестов)
+  - `./venv/bin/python -m pytest -q` — **130 passed**
 - **ADR 2026-07-03 — дефолт label_mode = 'domains'** (решение Q4)
   - Зафиксировано в `docs/decisions.md`: внешние точки входа `/run` и `main.run()`
     по умолчанию используют `domains` (без LLM), `snippets`/`full` — явный выбор
