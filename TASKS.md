@@ -89,3 +89,28 @@
 - 111/111 тестов зелёные (3 новых + 108 старых)
 - `migrate.py` на любой БД (чистая / частично мигрированная / полностью мигрированная / legacy) отрабатывает корректно
 - Рабочее дерево чистое
+
+---
+
+## T-004: Расширение POST /run — client_id, label_mode, force_relabel
+
+**Статус:** ✅ Done (2026-07-03)
+**Приоритет:** высокий
+**Затронутые файлы:** webhook.py, main.py, tests/test_webhook.py, tests/test_main.py, docs/contracts.md, docs/decisions.md, docs/progress.md
+
+### Что сделано:
+
+- **webhook.py**: схема `RunRequest` расширена полями `client_id` (default `"default"`), `label_mode` (default `"domains"`), `force_relabel` (default `False`). Добавлена валидация `label_mode ∈ {domains, snippets, full}` через Pydantic `field_validator` — невалидное значение возвращает `422` с пояснением. Проброс всех полей в пайплайн.
+- **main.py**: `run(config)` извлекает и передаёт `client_id` в `save()`, а `label_mode`/`force_relabel`/`client_id` в `label()`.
+- **tests/test_webhook.py**: 9 тестов — старый контракт, новые поля, дефолт `domains`, валидные/невалидные режимы, авторизация.
+- **tests/test_main.py**: 4 теста — проброс `client_id` в `save`, параметров в `label`, дефолты, `with_labels=False`.
+- **docs/decisions.md**: ADR обновлён (дефолт `label_mode` для `/run` → `"domains"`).
+- **docs/contracts.md**: добавлено примечание о дефолте `/run` vs дефолте `labeler.label()`.
+- **docs/progress.md**: отражено расширение `/run`.
+- Bearer-авторизация `/run` не сломана.
+- `/status`, `/clients`, `/providers` не затронуты; `date`, `report_*`, `provider_chain`, `report_only` не добавлены; миграция не запускалась.
+
+### Результат:
+- 108/108 тестов зелёные (9 + 4 новых, остальные старые)
+- Reviewer PASS: изменения соответствуют DoD
+- Коммит: `d5f6374 feat(api): расширить POST /run параметрами client_id, label_mode, force_relabel`
