@@ -5,6 +5,16 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **ADR 2026-07-03 — дефолт label_mode = 'domains'** (решение Q4)
+  - Зафиксировано в `docs/decisions.md`: внешние точки входа `/run` и `main.run()`
+    по умолчанию используют `domains` (без LLM), `snippets`/`full` — явный выбор
+  - `webhook.py` и `main.py` уже реализовали поля `client_id`/`label_mode`/`force_relabel`
+  - `tests/test_webhook.py` (9 тестов) + `tests/test_main.py` (4 теста) покрывают
+    старый контракт, новые поля, валидацию 422 и проброс в `label()`
+  - `./venv/bin/python -m pytest -q` — **111 passed**
+- **AGENTS.md** — добавлено правило немедленного делегирования:
+  plan-агент сразу делегирует build/ui-dev/infra-dev при явном запросе пользователя,
+  не размышляет и не задаёт лишних вопросов, если ТЗ достаточно ясно
 - **ADR 2026-07-03 реализован**: новая схема данных clients/positions/labels
   - `storage.py`: DDL с FK/CASCADE/CHECK, все индексы из ADR, авто-клиент `default`
   - `insert_labels()`: INSERT новой версии, `label_version = MAX+1`, retry 3 попытки на UNIQUE
