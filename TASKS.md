@@ -45,3 +45,24 @@
 ### Критерий приёмки:
 - Все тесты проходят на изолированной БД (:memory:)
 - Ни один существующий тест не сломан (64 теста)
+
+---
+
+## T-002: Режим domains разметки + справочник доменов
+
+**Статус:** ✅ Done (2026-07-03)
+**Приоритет:** высокий
+**Затронутые файлы:** storage.py, labeler.py, migrate.py, tests/test_labeler_modes.py, docs/contracts.md, docs/progress.md
+
+### Что сделано:
+
+- **storage.py**: таблица `domain_labels` + `get_domain_label()` / `upsert_domain_label()`, поле `confidence` в `labels`
+- **labeler.py**: режим `domains` (справочник, без LLM), параметр `client_id`, `confidence='high'`
+- **migrate.py**: DDL-заплатки для `domain_labels` и `confidence`
+- **tests/test_labeler_modes.py**: 11 тестов (справочник, domains без LLM, snippets не сломан)
+- **docs/contracts.md**: обновлена сигнатура `label()`
+
+### Результат:
+- 95/95 тестов зелёные
+- LLM не вызывается в режиме `domains` (подтверждено моком)
+- Обратная совместимость `Row` (label=алиас) сохранена
