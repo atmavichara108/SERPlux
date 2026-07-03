@@ -34,6 +34,10 @@ def run(config: dict[str, Any]) -> int:
     log.info("=== Старт прогона ===")
     log.info("Параметры: %s", config)
 
+    client_id = config.get("client_id", "default")
+    label_mode = config.get("label_mode", "domains")
+    force_relabel = config.get("force_relabel", False)
+
     try:
         rows = collect(config)
     except Exception as e:
@@ -51,7 +55,7 @@ def run(config: dict[str, Any]) -> int:
 
     saved_count = 0
     try:
-        saved_count = save(rows)
+        saved_count = save(rows, client_id=client_id)
         log.info("Сохранено в БД: %s (новых)", saved_count)
     except Exception as e:
         log.error("Сбой save: %s", e)
@@ -61,7 +65,12 @@ def run(config: dict[str, Any]) -> int:
     labeled_rows = rows  # fallback: если labeler упал, используем сырые данные
     if config.get("with_labels", True):
         try:
-            labeled_rows = label(rows)
+            labeled_rows = label(
+                rows,
+                label_mode=label_mode,
+                force_relabel=force_relabel,
+                client_id=client_id,
+            )
             labeled_count = insert_labels(labeled_rows)
             log.info("Размечено и сохранено меток: %s", labeled_count)
         except Exception as e:

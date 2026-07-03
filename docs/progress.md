@@ -89,6 +89,12 @@
   - GET /status — статус последнего прогона
   - GET /health — health-check для мониторинга контейнера
   - Защита от параллельных прогонов (threading.Lock → 409 Conflict)
+- **Расширение POST /run (client_id, label_mode, force_relabel)**
+  - `webhook.py`: схема `RunRequest` с новыми полями и валидацией `label_mode`
+  - `main.py`: проброс `client_id` в `save()`, `label_mode`/`force_relabel`/`client_id` в `label()`
+  - Обратная совместимость со старым контрактом сохранена
+  - Тесты: `tests/test_webhook.py` (9 тестов) + `tests/test_main.py` (4 теста)
+  - Все 108 тестов зелёные
 - **apps_script.gs v0.4**: Installable Trigger для мультиаккаунтного доступа
   - Функция setupTriggers() — создаёт триггер под аккаунтом разработчика
   - Пункт меню "[!] Установить триггеры (1 раз)"
@@ -123,7 +129,6 @@
 - **AGENTS.md**: дополнены принципы — не расходовать токены впустую (обращаться к докам Волта), устойчивое развитие
 
 ## В работе
-- **В работе:** Расширение API /run — client_id, date, label_mode (см. techdebt)
 - Спецификация LLM-провайдеров (фолбек-цепочка, мониторинг, админ-управление) — docs/ui-spec.md §1.6, §5.5–5.6
 
 ## Заблокировано / ждёт

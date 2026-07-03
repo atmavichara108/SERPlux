@@ -18,9 +18,11 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 load_dotenv()
+
+LABEL_MODES = {"domains", "snippets", "full"}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -37,6 +39,17 @@ class RunRequest(BaseModel):
     regions_map: str = "regions_map.json"  # имя файла карты регионов
     with_labels: bool = True
     depth: int = 10
+    client_id: str = "default"
+    label_mode: str = "domains"
+    force_relabel: bool = False
+
+    @field_validator("label_mode")
+    @classmethod
+    def _validate_label_mode(cls, v: str) -> str:
+        if v not in LABEL_MODES:
+            allowed = ", ".join(sorted(LABEL_MODES))
+            raise ValueError(f"label_mode должен быть одним из: {allowed}; получено '{v}'")
+        return v
 
 
 def _get_secret() -> str:
@@ -61,18 +74,35 @@ def _verify_token(authorization: str | None) -> None:
         )
 
 
-def _run_pipeline(regions_map: str, with_labels: bool, depth: int) -> None:
+def _run_pipeline(
+    regions_map: str,
+    with_labels: bool,
+    depth: int,
+    client_id: str,
+    label_mode: str,
+    force_relabel: bool,
+) -> None:
     """Запускает полный пайплайн в фоновом потоке."""
     global _last_run
     _last_run["status"] = "running"
     _last_run["message"] = ""
-    log.info("Фоновый прогон запущен: regions_map=%s", regions_map)
+    log.info(
+        "Фоновый прогон запущен: regions_map=%s, client_id=%s, label_mode=%s, force_relabel=%s",
+        regions_map, client_id, label_mode, force_relabel,
+    )
 
     try:
         # Импортируем здесь, чтобы не тянуть тяжёлые зависимости при старте
         from main import run, DEFAULT_CONFIG
 
-        config = {**DEFAULT_CONFIG, "with_labels": with_labels, "depth": depth}
+        config = {
+            **DEFAULT_CONFIG,
+            "with_labels": with_labels,
+            "depth": depth,
+            "client_id": client_id,
+            "label_mode": label_mode,
+            "force_relabel": force_relabel,
+        }
 
         # Подменяем regions_map в collector через переменную окружения
         # (collector читает os.environ["REGIONS_MAP"] если задана)
@@ -134,12 +164,22 @@ def trigger_run(
 
     thread = threading.Thread(
         target=_run_pipeline,
-        args=(body.regions_map, body.with_labels, body.depth),
+        args=(
+            body.regions_map,
+            body.with_labels,
+            body.depth,
+            body.client_id,
+            body.label_mode,
+            body.force_relabel,
+        ),
         daemon=True,
     )
     thread.start()
 
-    log.info("Прогон принят в очередь: regions_map=%s", body.regions_map)
+    log.info(
+        "Прогон принят в очередь: regions_map=%s, client_id=%s, label_mode=%s, force_relabel=%s",
+        body.regions_map, body.client_id, body.label_mode, body.force_relabel,
+    )
     return JSONResponse(
         {"accepted": True, "started_at": _last_run["started_at"]},
         status_code=status.HTTP_202_ACCEPTED,
