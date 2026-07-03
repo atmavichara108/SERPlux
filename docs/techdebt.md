@@ -105,6 +105,16 @@
 
 ## Низкий приоритет (безопасность / чистота)
 
+### 2026-07-03 — Deprecation warning httpx/starlette в тестах
+
+**Проблема:** `test_webhook.py` выдаёт `StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead`. Не влияет на функциональность, но засоряет вывод pytest и может стать загадкой при обновлении зависимостей.
+
+**Где:** `tests/test_webhook.py` (через `fastapi.testclient`), `requirements.txt` / `requirements-dev.txt`
+
+**Что делать:** Обновить `httpx` до `httpx2` (или обновить `starlette`/`fastapi` до версии, где warning убран). Проверить совместимость с `TestClient`.
+
+---
+
 ### 2026-07-02 — Валидация тела /run происходит до проверки авторизации
 
 **Проблема:** FastAPI валидирует тело запроса (через Pydantic `RunRequest`) до вызова хендлера, где проверяется `Authorization`. Пустое тело даёт 422 Unprocessable Entity со структурой ожидаемых полей до проверки токена — утечка информации о форме запроса.
