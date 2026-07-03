@@ -10,34 +10,71 @@ Row — это обычный dict со строго этими ключами:
 
 ```python
 Row = {
-    "date": str,        # "2026-06-15" дата сбора (ISO)
-    "searcher": str,    # "google" | "yandex_ru" | "yandex_com"
-    "query": str,       # поисковый запрос
-    "geo": str,         # человекочитаемое гео, напр. "Москва" или "Tbilisi"
-    "region_index": int,# region_index topvisor для этого гео
-    "position": int,    # позиция в выдаче, 1..N
-    "url": str,         # найденный URL
-    "domain": str,      # домен из URL, напр. "example.com"
-    "snippet": str,     # сниппет из выдачи (может быть "")
-    "label": str | None # "positive" | "negative" | "neutral" | None
+    "date": str,             # "2026-06-15" дата сбора (ISO)
+    "searcher": str,         # "google" | "yandex_ru" | "yandex_com"
+    "query": str,            # поисковый запрос (субъект)
+    "geo": str,              # человекочитаемое гео, напр. "Москва"
+    "region_index": int,     # region_index topvisor
+    "position": int,         # позиция в выдаче, 1..N
+    "url": str,              # найденный URL
+    "domain": str,           # домен из URL
+    "snippet": str,          # сниппет из выдачи (может быть "")
+    "label": str | None,     # алиас последней sentiment (обратная совместимость)
+    # --- версионирование (новые поля) ---
+    "sentiment": str | None, # "positive" | "negative" | "neutral" | None
+    "label_mode": str | None,# "domains" | "snippets" | "full"
+    "label_version": int | None,  # версия разметки (1, 2, 3...)
+    # --- мультитенантность (новые поля) ---
+    "client_id": str,        # slug клиента, дефолт "default"
 }
+```
 
 ## storage.py
 
-- `save(rows: list[Row], db_path: str = DB_PATH) -> int` — INSERT OR IGNORE сырых данных,
-  возвращает кол-во вставленных. Не обновляет существующие строки.
-- `update_labels(rows: list[Row], db_path: str = DB_PATH) -> int` — UPDATE поля label
-  для существующих строк по UNIQUE-ключу (date, searcher, query, geo, position, url).
-  Строки с label=None пропускаются (не затирают существующие метки).
-  Возвращает кол-во обновлённых строк.
-- `get_cached_label(url: str, query: str, db_path: str = DB_PATH) -> str | None` — ищет
-  последнюю не-NULL метку по паре (url, query), сортировка по date DESC.
-- `get_history(filters: dict | None = None, db_path: str = DB_PATH) -> list[Row]` — возвращает
-  строки из БД с опциональными фильтрами (date, searcher, geo, query).
+- `save(rows: list[Row], db_path: str = DB_PATH, client_id: str = "default") -> int`
+  — INSERT OR IGNORE в `positions`. Возвращает кол-во вставленных.
+  Не обновляет существующие строки.
+
+- `insert_labels(rows: list[Row], db_path: str = DB_PATH) -> int`
+  — INSERT в `labels`. Вычисляет `label_version = MAX(version) + 1`
+  для каждой пары (position_id, label_mode). Строки с sentiment=None пропускаются.
+  Возвращает кол-во вставленных меток.
+  **Заменяет** `update_labels()` (которая делала UPDATE одной строки).
+
+- `update_labels(rows: list[Row], db_path: str = DB_PATH) -> int`
+  — **DEPRECATED**, оставлен для обратной совместимости. Вызывает `insert_labels()`.
+  Будет удалён после миграции всех вызовов.
+
+- `get_cached_label(url: str, query: str, db_path: str = DB_PATH) -> str | None`
+  — Ищет последнюю не-NULL `sentiment` по паре (url, query) через JOIN positions+labels.
+  Сортировка по labels.created_at DESC. Сигнатура НЕ меняется (обратная совместимость).
+
+- `get_history(filters: dict | None = None, db_path: str = DB_PATH) -> list[Row]`
+  — Возвращает строки из БД с JOIN labels (последняя метка на позицию).
+  Новые фильтры: `client_id`, `label_version` ("all" = все версии).
+  Row включает: sentiment, label_mode, label_version.
+
+- `get_label_history(position_id: int, db_path: str = DB_PATH) -> list[dict]`
+  — НОВАЯ функция. Возвращает все версии меток для позиции:
+  `[{label_mode, label_version, sentiment, created_at}, ...]`.
+
+- `_init_db(db_path: str = DB_PATH) -> None`
+  — Создаёт таблицы: clients, positions, labels.
+  Авто-клиент 'default' если таблица clients пуста.
 
 ## labeler.py
 
-- `label(rows: list[Row]) -> list[Row]` — проставляет поле label каждой строке.
-  Сначала проверяет кэш (storage.get_cached_label), затем вызывает LLM (Gemini).
-  При ошибке Gemini — фолбек на дешёвую модель. При ошибке обоих — label=None.
-  Возвращает тот же список с заполненными label.
+- `label(rows: list[Row], db_path: str = DB_PATH, label_mode: str = "snippets", force_relabel: bool = False) -> list[Row]`
+  — Проставляет `sentiment` (и алиас `label`) каждой строке.
+  Новые параметры:
+  - `label_mode`: режим разметки ("domains" | "snippets" | "full")
+  - `force_relabel`: если True — игнорировать кэш, размечать всё заново
+  Сначала проверяет кэш (storage.get_cached_label), затем вызывает LLM.
+  Возвращает тот же список с заполненными sentiment/label.
+  **Режимы `domains` и `full` — заглушки, реализуются отдельно.**
+
+## Важно
+
+- `label` в Row — алиас для `sentiment` (обратная совместимость с exporter, reporter, main.py)
+- `client_id` по умолчанию = "default" (для миграции с одноклиентной модели)
+- `update_labels()` → `insert_labels()`: INSERT новой версии, не UPDATE существующей
