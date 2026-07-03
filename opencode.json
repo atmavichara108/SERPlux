@@ -28,13 +28,6 @@
       "permission": {
         "task": { "*": "allow" }
       }
-    },
-    "plan": {
-      "mode": "primary",
-      "model": "opencode-go/glm-5.2",
-      "temperature": 0.1,
-      "steps": 20,
-      "permission": { "edit": "deny", "bash": "deny" }
     }
   }
 }
