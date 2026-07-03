@@ -5,6 +5,28 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **ADR 2026-07-03 реализован**: новая схема данных clients/positions/labels
+  - `storage.py`: DDL с FK/CASCADE/CHECK, все индексы из ADR, авто-клиент `default`
+  - `insert_labels()`: INSERT новой версии, `label_version = MAX+1`, retry 3 попытки на UNIQUE
+  - `get_cached_label()`: JOIN positions+labels, последняя не-NULL sentiment
+  - `get_history()`: расширенный Row (sentiment/label_mode/label_version), фильтры `label_version='all'` и `client_id`
+  - `update_labels()`: DEPRECATED, делегирует `insert_labels()`
+  - `main.py`: пайплайн использует `insert_labels` вместо `update_labels`
+  - `labeler.py`: проставляет `sentiment` + алиас `label`, параметры `label_mode`/`force_relabel`
+  - **Важно:** реально работает только `label_mode='snippets'`; `domains`/`full` — заглушки (отдельные задачи, вопросы к заказчику в ui-spec.md Q4–Q6). После миграции продукт функционально на том же уровне, но на чистой версионированной схеме.
+- **Миграционный скрипт `migrate.py`**:
+  - Принимает `--db <path>` (явный путь, не трогает боевую БД автоматически)
+  - Шаг 0: бэкап `cp <db> <db>.bak.YYYY-MM-DD`
+  - Перенос `results` → `positions` + `labels` (version=1, mode='snippets')
+  - Верификация `COUNT(results) == COUNT(positions)`; `DROP results` только при успехе
+- **T-001 тесты** (`tests/test_storage_schema.py`, 20 тестов):
+  - Миграция без потери строк
+  - Инкремент версий, независимые счётчики по режимам
+  - Гонка + retry, атомарность (3 попытки)
+  - `get_history` с фильтрами
+  - `get_cached_label` через JOIN
+  - `insert_labels`, DEPRECATED `update_labels`
+  - Все 84 теста зелёные (64 старых + 20 новых)
 - Настроена структура проекта, опенкод, агенты, плагины
 - AGENTS.md, контракты, выжимка API готовы
 - Инфраструктура: .env, credentials, таблица расшарена на service account

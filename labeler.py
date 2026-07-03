@@ -75,22 +75,52 @@ def _label_one_llm(row: dict) -> str | None:
         lbl = _parse_label(raw)
         log.info("zen: %s + '%s' -> %s", row["url"], row["query"], lbl)
         return lbl
-    log.error("Zen упал для %s, label=None", row["url"])
+    log.error("Zen упал для %s, sentiment=None", row["url"])
     return None
 
 
-def label(rows: list[dict], db_path: str = storage.DB_PATH) -> list[dict]:
+def label(
+    rows: list[dict],
+    db_path: str = storage.DB_PATH,
+    label_mode: str = "snippets",
+    force_relabel: bool = False,
+) -> list[dict]:
+    """
+    Проставляет sentiment (и алиас label) каждой строке.
+
+    Параметры:
+      - label_mode: "domains" | "snippets" | "full"
+      - force_relabel: если True — игнорировать кэш, размечать заново
+
+    Режимы domains/full — заглушки, реализуются отдельно.
+    """
     result = []
     last_real_call = 0.0
 
+    # Заглушки для не реализованных режимов.
+    # Реализация domains/full — отдельные задачи; см. ui-spec.md Q4–Q6.
+    if label_mode not in {"snippets"}:
+        log.warning("Режим разметки '%s' пока не реализован, sentiment оставлен None", label_mode)
+
     for row in rows:
-        # Проверяем кэш прямо здесь, чтобы не вызывать LLM и не ждать паузу
-        cached = storage.get_cached_label(row["url"], row["query"], db_path)
-        if cached is not None:
-            row["label"] = cached
-            log.info("из кэша: %s + '%s' -> %s", row["url"], row["query"], cached)
+        # Пробрасываем режим в каждую строку для последующего insert_labels
+        row["label_mode"] = label_mode
+
+        if label_mode != "snippets":
+            row["sentiment"] = None
+            row["label"] = None
             result.append(row)
             continue
+
+        # Проверяем кэш, если не force_relabel
+        if not force_relabel:
+            cached = storage.get_cached_label(row["url"], row["query"], db_path)
+            if cached is not None:
+                row["sentiment"] = cached
+                row["label"] = cached  # алиас для обратной совместимости
+                log.info("из кэша: %s + '%s' -> %s", row["url"], row["query"], cached)
+                result.append(row)
+                continue
 
         # Пауза только между реальными вызовами LLM
         now = time.time()
@@ -100,7 +130,9 @@ def label(rows: list[dict], db_path: str = storage.DB_PATH) -> list[dict]:
             log.debug("Пауза %.1fс между вызовами LLM", wait)
             time.sleep(wait)
 
-        row["label"] = _label_one_llm(row)
+        sentiment = _label_one_llm(row)
+        row["sentiment"] = sentiment
+        row["label"] = sentiment  # алиас
         last_real_call = time.time()
         result.append(row)
 
@@ -163,15 +195,18 @@ if __name__ == "__main__":
     for row in results:
         print(f"  {row['url']}")
         print(f"    query: {row['query']}")
-        print(f"    label: {row['label']}")
+        print(f"    sentiment: {row['sentiment']}")
+        print(f"    label (alias): {row['label']}")
         print()
+
+    # Сохраняем сырые данные и метки отдельно (как в пайплайне main.py)
+    storage.save(results, TEST_DB)
+    storage.insert_labels(results, TEST_DB)
 
     print("=== Тест кэша ===")
     no_cache = storage.get_cached_label("https://unknown.com", "unknown query", TEST_DB)
     print(f"  Несуществующая пара: {no_cache} (ожидалось None)")
     assert no_cache is None
-
-    storage.save(results, TEST_DB)
 
     cached = storage.get_cached_label("https://ivan-petrov.ru", "Ivan Petrov", TEST_DB)
     print(f"  Существующая пара: {cached} (ожидалось 'positive')")
@@ -182,6 +217,11 @@ if __name__ == "__main__":
     assert other_query is None
 
     print("\n✓ Кэш работает корректно по паре (url + query)")
+
+    print("\n=== Тест force_relabel ===")
+    relabeled = label(fake_rows, TEST_DB, force_relabel=True)
+    for row in relabeled:
+        print(f"  {row['url']}: sentiment={row['sentiment']}")
 
     if _os.path.exists(TEST_DB):
         _os.remove(TEST_DB)

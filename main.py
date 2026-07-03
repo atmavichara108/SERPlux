@@ -3,7 +3,7 @@ import sys
 from typing import Any
 
 from collector import collect
-from storage import save, update_labels, _ensure_db
+from storage import save, insert_labels, _ensure_db
 from labeler import label
 from exporter import export
 from reporter import build_report
@@ -62,8 +62,8 @@ def run(config: dict[str, Any]) -> int:
     if config.get("with_labels", True):
         try:
             labeled_rows = label(rows)
-            labeled_count = update_labels(labeled_rows)
-            log.info("Размечено и обновлено меток: %s", labeled_count)
+            labeled_count = insert_labels(labeled_rows)
+            log.info("Размечено и сохранено меток: %s", labeled_count)
         except Exception as e:
             log.error("Сбой labeler: %s", e)
     else:
