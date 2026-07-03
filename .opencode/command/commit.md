@@ -1,6 +1,7 @@
 ---
 description: Commit only after verifier PASS. Gate, not free action.
 agent: build
+model: opencode-go/deepseek-v4-flash
 subtask: true
 ---
 1. `git status` + `git diff --stat` — что коммитим.
