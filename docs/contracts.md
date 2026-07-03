@@ -77,11 +77,12 @@ Row = {
 ## labeler.py
 
 - `label(rows: list[Row], db_path: str = DB_PATH, label_mode: str = "snippets",
-        force_relabel: bool = False) -> list[Row]`
+         force_relabel: bool = False, client_id: str = "default") -> list[Row]`
   — Проставляет `sentiment` (и алиас `label`), а также `confidence` каждой строке.
   Параметры:
   - `label_mode`: режим разметки ("domains" | "snippets" | "full")
   - `force_relabel`: если True — игнорировать кэш, размечать всё заново
+  - `client_id`: slug клиента, передаётся в `storage.get_domain_label()`
   Возвращает тот же список с заполненными `sentiment`/`label`/`confidence`.
 
   Режимы:

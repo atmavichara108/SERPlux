@@ -110,6 +110,30 @@ def _create_new_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_latest      ON labels(position_id, label_mode, label_version DESC)")
 
 
+def _apply_schema_patches(conn: sqlite3.Connection) -> None:
+    """Дополняет схему: поле confidence в labels и справочник domain_labels."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(labels)").fetchall()}
+    if "confidence" not in cols:
+        conn.execute("""
+            ALTER TABLE labels
+            ADD COLUMN confidence TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high'
+        """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS domain_labels (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+            domain      TEXT NOT NULL,
+            sentiment   TEXT CHECK(sentiment IN ('positive','negative','neutral')),
+            source      TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','llm')),
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(client_id, domain)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_client_domain ON domain_labels(client_id, domain)")
+
+
 def _migrate_results_to_positions(conn: sqlite3.Connection) -> int:
     """Переносит строки из results в positions. Возвращает количество перенесённых."""
     conn.execute("""
@@ -160,6 +184,7 @@ def migrate(db_path: str) -> None:
 
         # Создаём новые таблицы
         _create_new_schema(conn)
+        _apply_schema_patches(conn)
 
         # Авто-клиент default
         conn.execute(

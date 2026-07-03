@@ -70,8 +70,23 @@ def _init_db(db_path: str = DB_PATH) -> None:
                 label_mode     TEXT NOT NULL CHECK(label_mode IN ('domains','snippets','full')),
                 label_version  INTEGER NOT NULL,
                 sentiment      TEXT CHECK(sentiment IN ('positive','negative','neutral')),
+                confidence     TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high',
                 created_at     TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(position_id, label_mode, label_version)
+            )
+        """)
+
+        # Справочник размеченных доменов (источник истины для режима domains)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS domain_labels (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+                domain      TEXT NOT NULL,
+                sentiment   TEXT CHECK(sentiment IN ('positive','negative','neutral')),
+                source      TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','llm')),
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(client_id, domain)
             )
         """)
 
@@ -82,6 +97,7 @@ def _init_db(db_path: str = DB_PATH) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_position    ON labels(position_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_client_mode ON labels(client_id, label_mode)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_latest      ON labels(position_id, label_mode, label_version DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_client_domain ON domain_labels(client_id, domain)")
 
         # Авто-клиент по умолчанию
         conn.execute("""
@@ -183,6 +199,7 @@ def _insert_one_label(
     client_id: str,
     label_mode: str,
     sentiment: str | None,
+    confidence: str = "high",
     max_retries: int = 3,
 ) -> int:
     """
@@ -196,9 +213,9 @@ def _insert_one_label(
             version = _next_label_version(conn, position_id, label_mode)
             conn.execute(
                 """INSERT INTO labels
-                   (position_id, client_id, label_mode, label_version, sentiment)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (position_id, client_id, label_mode, version, sentiment),
+                   (position_id, client_id, label_mode, label_version, sentiment, confidence)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (position_id, client_id, label_mode, version, sentiment, confidence),
             )
             conn.commit()
             return 1
@@ -260,6 +277,7 @@ def insert_labels(rows: list[Row], db_path: str = DB_PATH) -> int:
                 continue
 
             client_id = row.get("client_id", "default")
+            confidence = row.get("confidence", "high")
 
             # Убеждаемся, что клиент существует (autocommit при isolation_level=None)
             conn.execute(
@@ -276,7 +294,7 @@ def insert_labels(rows: list[Row], db_path: str = DB_PATH) -> int:
                 )
                 continue
 
-            inserted += _insert_one_label(conn, position_id, client_id, label_mode, sentiment)
+            inserted += _insert_one_label(conn, position_id, client_id, label_mode, sentiment, confidence)
 
         log.info("Вставлено %s меток из %s", inserted, len(rows))
     finally:
@@ -459,6 +477,65 @@ def get_label_history(position_id: int, db_path: str = DB_PATH) -> list[dict]:
             (position_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_domain_label(client_id: str, domain: str, db_path: str = DB_PATH) -> dict | None:
+    """
+    Возвращает {sentiment, source, confidence} из справочника domain_labels
+    по (client_id, domain), или None если домен не найден.
+    """
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute(
+            """SELECT sentiment, source
+               FROM domain_labels
+               WHERE client_id = ? AND domain = ?""",
+            (client_id, domain),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "sentiment": row["sentiment"],
+            "source": row["source"],
+            "confidence": "high",
+        }
+    finally:
+        conn.close()
+
+
+def upsert_domain_label(
+    client_id: str,
+    domain: str,
+    sentiment: str,
+    source: str = "manual",
+    db_path: str = DB_PATH,
+) -> None:
+    """
+    INSERT или UPDATE записи в domain_labels по UNIQUE(client_id, domain).
+    При UPDATE обновляет sentiment, source, updated_at.
+    """
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        # Гарантируем существование клиента, чтобы не нарушить FK
+        conn.execute(
+            "INSERT OR IGNORE INTO clients (client_id, client_name) VALUES (?, ?)",
+            (client_id, client_id),
+        )
+        conn.execute(
+            """INSERT INTO domain_labels
+                   (client_id, domain, sentiment, source, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(client_id, domain) DO UPDATE SET
+                   sentiment = excluded.sentiment,
+                   source = excluded.source,
+                   updated_at = datetime('now')""",
+            (client_id, domain, sentiment, source),
+        )
+        conn.commit()
     finally:
         conn.close()
 

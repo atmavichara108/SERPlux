@@ -10,23 +10,27 @@
   - `insert_labels()`: INSERT новой версии, `label_version = MAX+1`, retry 3 попытки на UNIQUE
   - `get_cached_label()`: JOIN positions+labels, последняя не-NULL sentiment
   - `get_history()`: расширенный Row (sentiment/label_mode/label_version), фильтры `label_version='all'` и `client_id`
+  - `get_domain_label()` / `upsert_domain_label()`: справочник размеченных доменов `domain_labels`
   - `update_labels()`: DEPRECATED, делегирует `insert_labels()`
   - `main.py`: пайплайн использует `insert_labels` вместо `update_labels`
-  - `labeler.py`: проставляет `sentiment` + алиас `label`, параметры `label_mode`/`force_relabel`
-  - **Важно:** реально работает только `label_mode='snippets'`; `domains`/`full` — заглушки (отдельные задачи, вопросы к заказчику в ui-spec.md Q4–Q6). После миграции продукт функционально на том же уровне, но на чистой версионированной схеме.
+  - `labeler.py`: проставляет `sentiment` + алиас `label` + `confidence`, параметры `label_mode`/`force_relabel`/`client_id`
+  - **Важно:** реализованы `snippets` (кэш+LLM) и `domains` (справочник без LLM); `full` остаётся заглушкой (v2)
 - **Миграционный скрипт `migrate.py`**:
   - Принимает `--db <path>` (явный путь, не трогает боевую БД автоматически)
   - Шаг 0: бэкап `cp <db> <db>.bak.YYYY-MM-DD`
   - Перенос `results` → `positions` + `labels` (version=1, mode='snippets')
   - Верификация `COUNT(results) == COUNT(positions)`; `DROP results` только при успехе
-- **T-001 тесты** (`tests/test_storage_schema.py`, 20 тестов):
+- **T-001 + T-00X тесты** (`tests/test_storage_schema.py`, 20 тестов; `tests/test_labeler_modes.py`, 11 тестов):
   - Миграция без потери строк
   - Инкремент версий, независимые счётчики по режимам
   - Гонка + retry, атомарность (3 попытки)
   - `get_history` с фильтрами
   - `get_cached_label` через JOIN
   - `insert_labels`, DEPRECATED `update_labels`
-  - Все 84 теста зелёные (64 старых + 20 новых)
+  - `get_domain_label` / `upsert_domain_label` (справочник доменов)
+  - Режим `domains` в `labeler.label()` без вызова LLM
+  - Режим `snippets` не сломан (кэш + force_relabel)
+  - Все 95 тестов зелёные (84 старых + 11 новых)
 - Настроена структура проекта, опенкод, агенты, плагины
 - AGENTS.md, контракты, выжимка API готовы
 - Инфраструктура: .env, credentials, таблица расшарена на service account

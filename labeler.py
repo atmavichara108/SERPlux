@@ -79,39 +79,69 @@ def _label_one_llm(row: dict) -> str | None:
     return None
 
 
+LABEL_MODES = {"domains", "snippets", "full"}
+
+
+def _label_domain(row: dict, client_id: str, db_path: str) -> str | None:
+    """Разметка по справочнику доменов. LLM не вызывается."""
+    domain = row.get("domain")
+    if not domain:
+        return None
+    found = storage.get_domain_label(client_id, domain, db_path)
+    if found is None:
+        return None
+    sentiment = found["sentiment"]
+    log.info("из справочника доменов: %s (client=%s) -> %s", domain, client_id, sentiment)
+    return sentiment
+
+
 def label(
     rows: list[dict],
     db_path: str = storage.DB_PATH,
     label_mode: str = "snippets",
     force_relabel: bool = False,
+    client_id: str = "default",
 ) -> list[dict]:
     """
-    Проставляет sentiment (и алиас label) каждой строке.
+    Проставляет sentiment (и алиас label), а также confidence каждой строке.
 
     Параметры:
       - label_mode: "domains" | "snippets" | "full"
       - force_relabel: если True — игнорировать кэш, размечать заново
+      - client_id: идентификатор клиента для справочника доменов
 
-    Режимы domains/full — заглушки, реализуются отдельно.
+    Режимы:
+      - domains: справочник domain_labels, без LLM.
+      - snippets: кэш (url+query) → LLM по сниппету.
+      - full: заглушка, sentiment=None.
     """
     result = []
     last_real_call = 0.0
 
-    # Заглушки для не реализованных режимов.
-    # Реализация domains/full — отдельные задачи; см. ui-spec.md Q4–Q6.
-    if label_mode not in {"snippets"}:
-        log.warning("Режим разметки '%s' пока не реализован, sentiment оставлен None", label_mode)
+    if label_mode not in LABEL_MODES:
+        log.warning("Неизвестный режим разметки '%s'", label_mode)
 
     for row in rows:
-        # Пробрасываем режим в каждую строку для последующего insert_labels
+        # Пробрасываем режим и клиента в каждую строку для последующего insert_labels
         row["label_mode"] = label_mode
+        row["client_id"] = client_id
+        row["confidence"] = "high"
 
-        if label_mode != "snippets":
+        if label_mode == "domains":
+            sentiment = _label_domain(row, client_id, db_path)
+            row["sentiment"] = sentiment
+            row["label"] = sentiment  # алиас для обратной совместимости
+            result.append(row)
+            continue
+
+        if label_mode == "full":
+            # Заглушка: полный текст страницы — отдельная задача (v2).
             row["sentiment"] = None
             row["label"] = None
             result.append(row)
             continue
 
+        # --- режим snippets ---
         # Проверяем кэш, если не force_relabel
         if not force_relabel:
             cached = storage.get_cached_label(row["url"], row["query"], db_path)
