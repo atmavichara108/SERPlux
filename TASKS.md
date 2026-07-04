@@ -5,46 +5,15 @@
 
 ## T-001: Тесты на новую схему БД
 
+**Статус:** ✅ Done (2026-07-03)
 **Приоритет:** высокий
 **Зависимость:** после миграции БД (ADR 2026-07-03)
 **Затронутые файлы:** tests/test_storage_schema.py, storage.py
 
-### Что покрыть:
-
-1. **Миграция без потери строк**
-   - COUNT(*) results == COUNT(*) positions после переноса
-   - Все UNIQUE-ключи сохранены
-   - Метки перенесены в labels (version=1, mode='snippets')
-   - DROP results только после верификации
-
-2. **Инкремент версий**
-   - Первая вставка → label_version=1
-   - Повторная вставка того же position_id + label_mode → label_version=2
-   - Другой label_mode → независимая ветка (version=1)
-   - Гонка: два параллельных INSERT → один UNIQUE violation, retry → success
-
-3. **get_history() с фильтрами**
-   - Без фильтров → последняя метка на каждую позицию
-   - filter client_id → только строки клиента
-   - filter label_version='all' → все версии (дубли позиций)
-   - filter date → строки за дату
-
-4. **get_cached_label()**
-   - Возвращает последнюю sentiment по (url, query) через JOIN
-   - Кэш переживает смену даты (ORDER BY created_at DESC)
-
-5. **insert_labels()**
-   - sentiment=None → пропускается
-   - Возвращает кол-во вставленных
-   - label_mode CHECK: только domains/snippets/full
-
-6. **Атомарность**
-   - Retry на UNIQUE violation (макс. 3 попытки)
-   - При 3 неудачах — ERROR log, не exception
-
-### Критерий приёмки:
-- Все тесты проходят на изолированной БД (:memory:)
-- Ни один существующий тест не сломан (64 теста)
+### Результат:
+- 20 тестов в `test_storage_schema.py` (миграция, версионирование, гонка, фильтры, insert_labels, атомарность)
+- Все 95 тестов зелёные
+- Коммит в рамках T-002/T-003
 
 ---
 
@@ -135,3 +104,63 @@
 ### Результат:
 - 130/130 тестов зелёные, без warning
 - Коммит: `59214b1 feat: /clients CRUD endpoints and storage client management; add httpx2 dev dep to silence TestClient warning`
+
+---
+
+## T-006: Apps Script UI по ui-spec.md §4 (single-table-per-client)
+
+**Статус:** ✅ Done (2026-07-04)
+**Приоритет:** высокий
+**Затронутые файлы:** apps_script.gs, docs/progress.md, docs/techdebt.md
+
+### Что сделано:
+
+- **apps_script.gs v1.0** (1093 строки, 21 функция):
+  - Меню «SERPlux» по §4.3: Запустить сбор / Проверить статус / Построить отчёт за дату / Клиенты (Показать список, Добавить) / Настройки (Установить секрет, URL, Инициализировать настройки, Триггеры, Показать профиль, Управление провайдерами)
+  - Лист «Настройки» по §4.2: 10 ключей + Data Validation
+  - `runCollection()`: валидация → подтверждение → POST /run (client_id, depth, with_labels, label_mode, force_relabel)
+  - `checkStatus()`: GET /status → маппинг idle/starting/running/ok/error → defensive stats
+  - `buildReportForDate()`: диалог даты → POST /run с report_only
+  - Клиенты: showClients/addClient/showProfile
+  - Провайдеры: manageProviders (GET + заглушки CRUD)
+  - `_updateStatusCell()`, `_appendLog()`, `_friendlyError()`
+
+### Результат:
+- Синтаксис валиден (node --check)
+- Тексты диалогов по §4.4
+- Bearer-авторизация во всех запросах
+- Defensive-обработка отсутствующих полей
+- Нет 4-байтных emoji в меню
+- Коммит: *(ожидает в текущей сессии вместе с T-007)*
+
+---
+
+## T-007: Серверные хвосты под UI-спеку (§5.2, §5.3) — report_only + finished_at/client_id
+
+**Статус:** ✅ Done (2026-07-04)
+**Приоритет:** высокий
+**Затронутые файлы:** webhook.py, tests/test_webhook.py, docs/contracts.md, docs/progress.md, docs/techdebt.md
+
+### Что сделано:
+
+- **webhook.py:**
+  - `POST /run`: новые поля `report_only: bool = False` и `report_date: str = "latest"` в `RunRequest`
+  - При `report_only=True`: пропускает collect/save/label/export, вызывает только `reporter.build_report(date, force=True)`
+  - `GET /status`: расширен `_last_run` полями `finished_at` (ISO, null пока идёт) и `client_id`
+  - `finished_at` сбрасывается при старте нового прогона, заполняется в `finally` блоке
+  - Ответ `/run` 202 теперь включает `client_id`
+  - Обратная совместимость с телами без `report_only`/`report_date`
+
+- **tests/test_webhook.py**: +8 тестов
+  - TestReportOnly (4): проброс report_only, дефолт false, вызов reporter vs collector
+  - TestStatusExtendedFields (4): finished_at/client_id в ответе, null во время прогона, начальное состояние
+
+- **docs/contracts.md**: полные сигнатуры всех webhook-эндпоинтов
+- **docs/techdebt.md**: удалена запись report_only (реализовано), обновлены записи stats и date/provider_chain
+- **docs/progress.md**: запись о реализации
+
+### Результат:
+- 144/144 тестов зелёные (8 новых)
+- report_only работает и тестирован
+- finished_at/client_id в /status работают и тестированы
+- Коммит: *(в текущей сессии, объединён с T-006)*

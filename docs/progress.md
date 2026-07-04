@@ -5,6 +5,36 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **webhook.py: report_only + finished_at/client_id (ui-spec §5.2-5.3)**
+  - `POST /run`: новые поля `report_only: bool = False` и `report_date: str = "latest"` в RunRequest
+  - При `report_only=true`: пропускает collect/save/label/export, вызывает только `reporter.build_report(date, force=True)`
+  - При `report_only=false` (дефолт): полный пайплайн (обратная совместимость)
+  - `GET /status`: расширен `_last_run` полями `finished_at` (ISO, null пока идёт) и `client_id`
+  - `finished_at` сбрасывается при старте нового прогона, заполняется в `finally` блоке
+  - `client_id` сохраняется из тела запроса `/run`
+  - Ответ `/run` 202 теперь включает `client_id`
+  - Тесты: `test_webhook.py` +8 (TestReportOnly: 4, TestStatusExtendedFields: 4)
+  - `./venv/bin/python -m pytest -q` — **144 passed**
+  - `docs/contracts.md`: полные сигнатуры всех webhook-эндпоинтов
+- **apps_script.gs v1.0 — полный UI по ui-spec.md §4** (single-table-per-client)
+  - Меню «SERPlux» по §4.3: Запустить сбор / Проверить статус / Построить отчёт за дату /
+    Клиенты (Показать список, Добавить) / Настройки (Установить секрет, URL,
+    Инициализировать настройки, Триггеры, Показать профиль, Управление провайдерами)
+  - Лист «Настройки» по §4.2: 10 ключей (client_id, depth, with_labels, label_mode,
+    date, force_relabel, force_rebuild_report, report_date, provider_chain, status)
+    с Data Validation (depth: 10/20/50/100; bool: true/false; label_mode: domains/snippets/full)
+  - `runCollection()`: валидация client_id/секрет → диалог подтверждения → POST /run
+    (client_id, depth, with_labels, label_mode, force_relabel) → обработка 202/409
+  - `checkStatus()`: GET /status → маппинг состояний (idle/starting/running/ok/error)
+    → defensive-доступ к stats (provider_used, collected, etc.)
+  - `buildReportForDate()`: диалог даты → POST /run с report_only (серверный хвост — см. techdebt)
+  - `showClients()` / `addClient()` / `showProfile()`: CRUD клиентов через API
+  - `manageProviders()`: GET /providers + заглушки (CRUD не реализован, ADR)
+  - `_updateStatusCell()`: цветовая заливка по §4.5 (серый/жёлтый/зелёный/красный)
+  - `_appendLog()`: дозапись в лист «Лог» (дата, клиент, статус, сообщение, провайдер)
+  - `_friendlyError()`: user-friendly ошибки без stack traces
+  - Bearer-авторизация во всех запросах, секрет из Script Properties
+  - Безопасные emoji (только BMP, без 4-байтных) в пунктах меню
 - **Провайдеры LLM в config.py + read-only /providers**
   - `config.py`: `PROVIDERS` dict (opencode-zen: endpoint, model, api_key_env_var, enabled, priority)
   - `labeler.py`: рефактор — цепочка провайдеров из `config.PROVIDERS` (фильтр enabled, сортировка priority), убран хардкод Zen/DeepSeek; `_call_provider` обобщён, `_label_one_llm` итерирует цепочку с фолбеком
@@ -158,7 +188,7 @@
 - **AGENTS.md**: дополнены принципы — не расходовать токены впустую (обращаться к докам Волта), устойчивое развитие
 
 ## В работе
-- Спецификация LLM-провайдеров (фолбек-цепочка, мониторинг, админ-управление) — docs/ui-spec.md §1.6, §5.5–5.6
+- Серверные хвосты для UI: /status.stats (provider_used, collected, cost_estimate) — отложены (см. techdebt)
 
 ## Заблокировано / ждёт
 - Широкий формат exporter — переработать контракт Row под него (низкий приоритет)
@@ -166,8 +196,8 @@
   timeout вынесен в config (дефолт 900 сек), при проблемах увеличить
 
 ## Дальше по порядку
-1. Мультиклиентность: профили клиентов в SQLite, API /clients
-2. Мультипровайдерность: фолбек-цепочка LLM, API /providers
+1. Закрытие серверных хвостов для UI (report_only, /status stats, provider CRUD)
+2. Мультиклиентность: расширение профиля (searchers, geos, subject_blocks в БД)
 3. Закрытие техдолга (docs/techdebt.md)
 
 ## Идеи на будущее (UI-этап)

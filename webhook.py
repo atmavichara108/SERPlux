@@ -34,7 +34,13 @@ app = FastAPI(title="SERPlux Webhook", version="1.0.0")
 
 # Глобальный флаг: не запускаем два прогона одновременно
 _run_lock = threading.Lock()
-_last_run: dict = {"started_at": None, "status": "idle", "message": ""}
+_last_run: dict = {
+    "started_at": None,
+    "finished_at": None,
+    "status": "idle",
+    "message": "",
+    "client_id": None,
+}
 
 
 class RunRequest(BaseModel):
@@ -45,6 +51,8 @@ class RunRequest(BaseModel):
     client_id: str = "default"
     label_mode: str = "domains"
     force_relabel: bool = False
+    report_only: bool = False  # если True — только построить отчёт, без сбора
+    report_date: str = "latest"  # дата для отчёта (YYYY-MM-DD или "latest")
 
     @field_validator("label_mode")
     @classmethod
@@ -99,47 +107,61 @@ def _run_pipeline(
     client_id: str,
     label_mode: str,
     force_relabel: bool,
+    report_only: bool = False,
+    report_date: str = "latest",
 ) -> None:
-    """Запускает полный пайплайн в фоновом потоке."""
+    """Запускает полный пайплайн или только построение отчёта в фоновом потоке."""
     global _last_run
     _last_run["status"] = "running"
     _last_run["message"] = ""
+    _last_run["client_id"] = client_id
     log.info(
-        "Фоновый прогон запущен: regions_map=%s, client_id=%s, label_mode=%s, force_relabel=%s",
-        regions_map, client_id, label_mode, force_relabel,
+        "Фоновый прогон запущен: regions_map=%s, client_id=%s, label_mode=%s, force_relabel=%s, report_only=%s",
+        regions_map, client_id, label_mode, force_relabel, report_only,
     )
 
     try:
-        # Импортируем здесь, чтобы не тянуть тяжёлые зависимости при старте
-        from main import run, DEFAULT_CONFIG
-
-        config = {
-            **DEFAULT_CONFIG,
-            "with_labels": with_labels,
-            "depth": depth,
-            "client_id": client_id,
-            "label_mode": label_mode,
-            "force_relabel": force_relabel,
-        }
-
-        # Подменяем regions_map в collector через переменную окружения
-        # (collector читает os.environ["REGIONS_MAP"] если задана)
-        os.environ["REGIONS_MAP"] = regions_map
-
-        exit_code = run(config)
-        if exit_code == 0:
+        if report_only:
+            # Только построение отчёта, без сбора/разметки
+            from reporter import build_report
+            date_arg = None if report_date == "latest" else report_date
+            log.info("Построение отчёта за %s (report_only=True)", date_arg or "последнюю доступную")
+            build_report(date=date_arg, force=True)
             _last_run["status"] = "ok"
-            _last_run["message"] = "Прогон завершён успешно"
-            log.info("Прогон завершён успешно")
+            _last_run["message"] = "Отчёт построен успешно"
+            log.info("Отчёт построен успешно")
         else:
-            _last_run["status"] = "error"
-            _last_run["message"] = "Прогон завершился с ошибкой (exit_code=%d)" % exit_code
-            log.error("Прогон завершился с ошибкой: exit_code=%d", exit_code)
+            # Полный пайплайн: collect → save → label → export → report
+            from main import run, DEFAULT_CONFIG
+
+            config = {
+                **DEFAULT_CONFIG,
+                "with_labels": with_labels,
+                "depth": depth,
+                "client_id": client_id,
+                "label_mode": label_mode,
+                "force_relabel": force_relabel,
+            }
+
+            # Подменяем regions_map в collector через переменную окружения
+            # (collector читает os.environ["REGIONS_MAP"] если задана)
+            os.environ["REGIONS_MAP"] = regions_map
+
+            exit_code = run(config)
+            if exit_code == 0:
+                _last_run["status"] = "ok"
+                _last_run["message"] = "Прогон завершён успешно"
+                log.info("Прогон завершён успешно")
+            else:
+                _last_run["status"] = "error"
+                _last_run["message"] = "Прогон завершился с ошибкой (exit_code=%d)" % exit_code
+                log.error("Прогон завершился с ошибкой: exit_code=%d", exit_code)
     except Exception as e:
         _last_run["status"] = "error"
         _last_run["message"] = str(e)
         log.exception("Необработанное исключение в пайплайне: %s", e)
     finally:
+        _last_run["finished_at"] = datetime.now(timezone.utc).isoformat()
         _run_lock.release()
 
 
@@ -162,10 +184,12 @@ def trigger_run(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     """
-    Запускает пайплайн сбора → разметки → выгрузки.
+    Запускает пайплайн сбора → разметки → выгрузки или только построение отчёта.
 
     Возвращает 202 Accepted сразу, прогон идёт в фоне.
     Повторный вызов пока идёт прогон возвращает 409 Conflict.
+
+    При report_only=true пропускает сбор/разметку и строит только отчёт за report_date.
     """
     _verify_token(authorization)
 
@@ -177,8 +201,10 @@ def trigger_run(
         )
 
     _last_run["started_at"] = datetime.now(timezone.utc).isoformat()
+    _last_run["finished_at"] = None  # сбрасываем при старте нового прогона
     _last_run["status"] = "starting"
     _last_run["message"] = ""
+    _last_run["client_id"] = body.client_id
 
     thread = threading.Thread(
         target=_run_pipeline,
@@ -189,17 +215,19 @@ def trigger_run(
             body.client_id,
             body.label_mode,
             body.force_relabel,
+            body.report_only,
+            body.report_date,
         ),
         daemon=True,
     )
     thread.start()
 
     log.info(
-        "Прогон принят в очередь: regions_map=%s, client_id=%s, label_mode=%s, force_relabel=%s",
-        body.regions_map, body.client_id, body.label_mode, body.force_relabel,
+        "Прогон принят в очередь: regions_map=%s, client_id=%s, label_mode=%s, force_relabel=%s, report_only=%s",
+        body.regions_map, body.client_id, body.label_mode, body.force_relabel, body.report_only,
     )
     return JSONResponse(
-        {"accepted": True, "started_at": _last_run["started_at"]},
+        {"accepted": True, "started_at": _last_run["started_at"], "client_id": body.client_id},
         status_code=status.HTTP_202_ACCEPTED,
     )
 

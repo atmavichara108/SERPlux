@@ -154,6 +154,169 @@ DEFAULT_PROVIDER: str = "opencode-zen"
     → LLM по сниппету. `confidence='high'`.
   - **full**: заглушка, v2. Заход на страницу + LLM по полному тексту.
 
+## webhook.py — API-эндпоинты
+
+### POST /run
+
+Запускает пайплайн сбора → разметки → выгрузки или только построение отчёта.
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Тело запроса:**
+```python
+{
+    "regions_map": str = "regions_map.json",  # имя файла карты регионов
+    "with_labels": bool = True,                # включить разметку
+    "depth": int = 10,                         # глубина сбора (10/20/50/100)
+    "client_id": str = "default",              # ID клиента
+    "label_mode": str = "domains",             # режим разметки (domains/snippets/full)
+    "force_relabel": bool = False,             # принудительная переразметка
+    "report_only": bool = False,               # если True — только построить отчёт
+    "report_date": str = "latest",             # дата для отчёта (YYYY-MM-DD или "latest")
+}
+```
+
+**Ответ 202 Accepted:**
+```json
+{
+    "accepted": true,
+    "started_at": "2026-07-04T10:00:00.123456+00:00",
+    "client_id": "sudheimer"
+}
+```
+
+**Ответ 409 Conflict:**
+```json
+{
+    "detail": "Прогон уже выполняется, подождите завершения"
+}
+```
+
+**Логика `report_only`:**
+- При `report_only=true`: пропускает сбор (topvisor/collector), разметку (labeler),
+  выгрузку (exporter) и вызывает только `reporter.build_report(date, force=True)`.
+- При `report_only=false` (дефолт): полный пайплайн collect → save → label → export → report.
+
+### GET /status
+
+Возвращает статус последнего прогона.
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Ответ:**
+```json
+{
+    "status": "ok",
+    "started_at": "2026-07-04T10:00:00.123456+00:00",
+    "finished_at": "2026-07-04T10:05:32.654321+00:00",
+    "client_id": "sudheimer",
+    "message": "Прогон завершён успешно"
+}
+```
+
+**Поля:**
+- `status`: `"idle"` | `"starting"` | `"running"` | `"ok"` | `"error"`
+- `started_at`: ISO-формат времени старта прогона (null если не было прогонов)
+- `finished_at`: ISO-формат времени завершения (null пока прогон идёт)
+- `client_id`: ID клиента из последнего/текущего прогона (null если не было прогонов)
+- `message`: текстовое сообщение о результате или ошибке
+
+### GET /health
+
+Health-check для мониторинга контейнера (без авторизации).
+
+**Ответ:**
+```json
+{
+    "status": "ok",
+    "service": "serplux-webhook"
+}
+```
+
+### GET /clients
+
+Возвращает список зарегистрированных клиентов.
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Ответ:**
+```json
+[
+    {
+        "client_id": "default",
+        "client_name": "Default Client",
+        "project_id": null,
+        "sheet_id": null
+    },
+    {
+        "client_id": "sudheimer",
+        "client_name": "Sudheimer Group",
+        "project_id": 12345,
+        "sheet_id": "1BxiMVs0XRA5nFMdKvZdBZqggm8A8k4"
+    }
+]
+```
+
+### POST /clients
+
+Создаёт нового клиента.
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Тело запроса:**
+```python
+{
+    "client_id": str,           # обязательный, уникальный
+    "client_name": str,         # обязательный
+    "project_id": int | None,   # опциональный
+    "sheet_id": str | None,     # опциональный
+}
+```
+
+**Ответ 201 Created:** возвращает созданный профиль клиента.
+
+**Ответ 409 Conflict:** если `client_id` уже занят.
+
+### GET /clients/{client_id}
+
+Возвращает профиль конкретного клиента или 404.
+
+### PUT /clients/{client_id}
+
+Обновляет профиль клиента. Возвращает 404, если клиент не найден.
+
+**Тело запроса:**
+```python
+{
+    "client_name": str | None,
+    "project_id": int | None,
+    "sheet_id": str | None,
+}
+```
+
+### GET /providers
+
+Возвращает список зарегистрированных провайдеров LLM (только чтение).
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Ответ:**
+```json
+[
+    {
+        "id": "opencode-zen",
+        "enabled": true,
+        "priority": 1,
+        "default_model": "deepseek-v4-flash-free",
+        "models": ["deepseek-v4-flash-free"]
+    }
+]
+```
+
+**Примечание:** POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: провайдеры в config.py, read-only).
+
+---
+
 ## Важно
 
 - `label` в Row — алиас для `sentiment` (обратная совместимость с exporter, reporter, main.py)

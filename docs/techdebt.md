@@ -56,13 +56,56 @@
 
 ## Средний приоритет (качество и UX)
 
-### 2026-07-02 — Расхождение: ui-spec хочет client_id/date/label_mode в /run, webhook не принимает
+### 2026-07-04 — /status не отдаёт stats (provider_used, collected, cost_estimate)
 
-**Проблема:** docs/ui-spec.md §5.2 описывает целевой контракт `/run` с полями `client_id`, `date`, `label_mode`, `force_relabel`, `force_rebuild_report`, `report_date`, `report_only`, `provider_chain`. Фактический webhook.py принимает только `{regions_map, with_labels, depth}`. apps_script.gs читает расширенные ключи из листа «Настройки», но НЕ отправляет их в /run — endpoint их проигнорирует.
+**Проблема:** UI (apps_script.gs → `checkStatus()`) ожидает `stats` в ответе GET /status
+(collected, saved_new, labeled, exported, provider_used, cost_estimate, fallback_triggered).
+Фактический `_last_run` в webhook.py содержит только `{started_at, finished_at, status, message, client_id}`.
+UI работает через defensive-доступ (`stats?.provider_used ?? '—'`), но статистика не отображается.
 
-**Где:** `webhook.py:35-39` (RunRequest), `apps_script.gs` → `_runPipeline()` (payload)
+**Где:** `webhook.py:37-43` (_last_run), `webhook.py:95-143` (_run_pipeline)
 
-**Что делать:** Расширить `RunRequest` в webhook.py и `_run_pipeline()` для приёма новых полей. Приоритет: `client_id` (высокий), `date` (средний), `label_mode` (средний). Требует доработки main.py, collector.py, labeler.py для использования этих параметров.
+**Статус:** `finished_at` и `client_id` реализованы (2026-07-04). Остальные поля stats отложены.
+
+**Что делать:** Расширить `_last_run` полем `stats: dict`. В `_run_pipeline()` собирать
+статистику из результатов `save()`, `labeler.label()`, `exporter.export()` и записывать
+в `_last_run["stats"]`. Записать `provider_used` из labeler (какой провайдер фактически
+использовался). Требует рефакторинга `_run_pipeline()` для возврата статистики из `main.run()`.
+
+---
+
+### 2026-07-04 — CRUD /providers не реализован (только read-only GET)
+
+**Проблема:** UI (apps_script.gs → `manageProviders()`) показывает список провайдеров
+из GET /providers, но кнопки управления (добавить, вкл/выкл, приоритет) — заглушки.
+POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: провайдеры в config.py).
+При 2+ провайдерах потребуется управление через API, а не правка config.py.
+
+**Где:** `webhook.py` (нет POST/PUT/DELETE /providers), `config.py` (PROVIDERS)
+
+**Что делать:** При появлении второго провайдера:
+1. Перенести PROVIDERS в SQLite (таблица `providers`)
+2. Реализовать POST/PUT/DELETE /providers в webhook.py
+3. Убрать заглушки в apps_script.gs → manageProviders()
+
+---
+
+### 2026-07-02 — date, force_rebuild_report, provider_chain не принимаются в /run
+
+**Проблема:** docs/ui-spec.md §5.2 описывает целевой контракт `/run` с полями `date`,
+`force_rebuild_report`, `provider_chain`. Фактический webhook.py принимает
+`client_id`, `label_mode`, `force_relabel`, `report_only`, `report_date` (реализовано),
+но НЕ принимает `date`, `force_rebuild_report`, `provider_chain`. apps_script.gs читает
+эти ключи из листа «Настройки», но сервер их проигнорирует.
+
+**Где:** `webhook.py:40-58` (RunRequest), `apps_script.gs` → `runCollection()` (payload)
+
+**Статус:** `report_only` и `report_date` реализованы (2026-07-04).
+Остальные поля (`date`, `force_rebuild_report`, `provider_chain`) отложены.
+
+**Что делать:** Расширить `RunRequest` полями `date`, `force_rebuild_report`,
+`provider_chain`. Требует доработки collector.py (передача date), reporter.py
+(force_rebuild_report), labeler.py (provider_chain).
 
 ---
 
