@@ -5,6 +5,12 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Инфраструктура деплоя (гибридная модель):**
+  - `Dockerfile`: добавлен `migrate.py` в блок COPY (доступен для `docker compose exec ... python migrate.py`)
+  - `docs/deploy.md`: создана полная инструкция деплоя на сервер (SSH → git pull → build → up → migrate → verify)
+  - `.opencode/command/deploy.md`: переписан под гибридную модель — infra-dev проверяет локальные файлы и готовит чек-лист, пользователь выполняет команды на сервере
+  - `.opencode/agents/infra-dev.md`: убрано непроверенное утверждение "Приложение задеплоено", заменено на описание ручного деплоя через SSH
+  - `docs/progress.md`: добавлен шаг 3.5 миграции БД в инструкцию первого тестового прогона
 - **webhook.py: report_only + finished_at/client_id (ui-spec §5.2-5.3)**
   - `POST /run`: новые поля `report_only: bool = False` и `report_date: str = "latest"` в RunRequest
   - При `report_only=true`: пропускает collect/save/label/export, вызывает только `reporter.build_report(date, force=True)`
@@ -268,6 +274,12 @@
    ```bash
    docker compose up -d
    ```
+
+3.5. **Миграция БД (если старая схема с таблицей results):**
+   ```bash
+   docker compose exec serplux python migrate.py --db /app/data/serplux.db
+   ```
+   migrate.py сделает бэкап, перенесёт данные, верифицирует, DROP results только при успехе.
 
 4. **Проверить health:**
    ```bash

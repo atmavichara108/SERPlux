@@ -42,6 +42,7 @@ COPY --chown=serplux:serplux \
     reporter.py \
     config.py \
     webhook.py \
+    migrate.py \
     ./
 
 # Копируем карты регионов

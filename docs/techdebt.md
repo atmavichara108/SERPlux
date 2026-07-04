@@ -148,6 +148,16 @@ POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: пров
 
 ## Низкий приоритет (безопасность / чистота)
 
+### 2026-07-04 — Поимённый COPY в Dockerfile хрупок
+
+**Проблема:** Блок `COPY --chown=serplux:serplux` в Dockerfile перечисляет модули поимённо (main.py, topvisor.py, ..., migrate.py). При добавлении нового .py-модуля его нужно не забыть добавить в список — иначе модуль не попадёт в образ, ошибка обнаружится только в рантайме. migrate.py был забыт и добавлен отдельным фиксом.
+
+**Где:** `Dockerfile:35-46` (блок COPY с перечислением файлов)
+
+**Что делать:** Рассмотреть переход на `COPY --chown=serplux:serplux *.py ./` (копировать все .py-файлы). Учесть: .dockerignore должен исключать тесты (tests/), venv, __pycache__. Альтернатива — оставить поимённый список, но добавить CI-проверку (сравнение списка .py в корне со списком в Dockerfile).
+
+---
+
 ### 2026-07-03 — Deprecation warning httpx/starlette в тестах
 
 **Проблема:** `test_webhook.py` выдаёт `StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead`. Не влияет на функциональность, но засоряет вывод pytest и может стать загадкой при обновлении зависимостей.
