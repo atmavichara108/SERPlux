@@ -196,9 +196,11 @@
   timeout вынесен в config (дефолт 900 сек), при проблемах увеличить
 
 ## Дальше по порядку
-1. Закрытие серверных хвостов для UI (report_only, /status stats, provider CRUD)
-2. Мультиклиентность: расширение профиля (searchers, geos, subject_blocks в БД)
-3. Закрытие техдолга (docs/techdebt.md)
+1. Первый тестовый прогон на боевом сервере (см. «Текущее состояние проекта» ниже)
+2. /status.stats (provider_used, collected, cost_estimate) — техдолг
+3. Мультиклиентность: расширение профиля (searchers, geos, subject_blocks в БД)
+4. date/force_rebuild_report/provider_chain в /run — техдолг
+5. CRUD /providers — техдолг
 
 ## Идеи на будущее (UI-этап)
 - **Календарь версий**: каждый прогон собирает выдачу под датой, в отчёте копятся
@@ -206,3 +208,116 @@
   кликабельные точки в календаре (по аналогии с панелью Topvisor «Для автоматизации»),
   клик → открывает соответствующую версию-блок. Бэкенд готов: в БД каждая строка
   с полем `date`, в отчёте каждый блок подписан датой. Нужен только UI-слой поверх.
+
+---
+
+## Текущее состояние проекта (для тестового прогона на сервере)
+
+**Дата:** 2026-07-04
+**Версия API:** 1.0.0
+**Тесты:** 144/144 passed
+**Ветка:** main
+
+### Что реализовано
+
+**Backend (Python/FastAPI):**
+- `POST /run` — запуск пайплайна сбора → разметки → выгрузки → отчёта
+  - Поля: `client_id`, `depth`, `with_labels`, `label_mode`, `force_relabel`, `report_only`, `report_date`
+  - `report_only=true` → только построение отчёта (пропускает сбор и разметку)
+  - Bearer-авторизация, защита от параллельных прогонов (→ 409)
+- `GET /status` — статус последнего прогона: `idle/starting/running/ok/error`, `started_at`, `finished_at`, `client_id`, `message`
+- `GET /clients`, `POST /clients`, `GET/PUT /clients/{id}` — CRUD профилей клиентов
+- `GET /providers` — read-only список LLM-провайдеров (из `config.py`)
+- `GET /health` — health-check
+
+**Google Sheets UI (Apps Script):**
+- Меню «SERPlux» в таблице: Запустить сбор / Проверить статус / Построить отчёт за дату / Клиенты / Настройки
+- Лист «Настройки» с 10 ключами и Data Validation
+- Лист «Лог» для истории запусков
+- Цветовая индикация статуса в ячейке
+
+**Core-пайплайн:**
+- topvisor → collector → storage → labeler (domains/snippets) → exporter → reporter
+- 144 тестов, все зелёные
+
+### Что НЕ реализовано (техдолг)
+- `/status.stats` — статистика прогона (provider_used, collected, cost_estimate)
+- `date` в /run — дата сбора для ретроспективных прогонов
+- `force_rebuild_report`, `provider_chain` в /run
+- CRUD /providers (POST/PUT/DELETE)
+- Режим `full` в labeler (заход на страницу)
+- Широкий формат exporter
+
+### Инструкция: первый тестовый прогон на сервере
+
+Вызов агента `infra-dev` командой `/deploy`:
+
+1. **Проверить docker-compose.yml** — актуален ли (последняя правка была до изменений webhook.py). Обратить внимание:
+   - `WEBHOOK_SECRET` задан в `.env`
+   - `GOOGLE_CREDENTIALS_PATH` указывает на credentials.json
+   - `GOOGLE_SHEET_ID` заполнен
+   - `DB_PATH=/app/data/serplux.db` с volume `serplux_data`
+   - `REGIONS_MAP=regions_map.json` (или переопределён для клиента)
+
+2. **Собрать образ:**
+   ```bash
+   docker compose build
+   ```
+
+3. **Запустить контейнер:**
+   ```bash
+   docker compose up -d
+   ```
+
+4. **Проверить health:**
+   ```bash
+   curl http://localhost:8000/health
+   # → {"status":"ok","service":"serplux-webhook"}
+   ```
+
+5. **Проверить авторизацию:**
+   ```bash
+   curl -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:8000/status
+   # → {"started_at":null,"finished_at":null,"status":"idle","message":"","client_id":null}
+   ```
+
+6. **Проверить запуск из Google Sheets:**
+   - Открыть таблицу → меню SERPlux
+   - Настройки → Инициализировать настройки
+   - Настройки → Установить URL сервера (https://serp.example.com)
+   - Настройки → Установить секрет (WEBHOOK_SECRET из .env)
+   - Заполнить `client_id` на листе Настройки
+   - Запустить сбор → Проверить статус
+
+7. **Проверить report_only:**
+   - SERPlux → Построить отчёт за дату...
+   - Ввести дату из уже собранных данных или оставить пустым
+
+8. **Проверить клиентов:**
+   - SERPlux → Клиенты → Показать список
+   - SERPlux → Клиенты → Добавить клиента
+
+### Docker-стек
+
+| Компонент | Значение |
+|-----------|----------|
+| Базовый образ | python:3.11-slim |
+| Рабочая директория | /app |
+| Точка входа | `uvicorn webhook:app --host 0.0.0.0 --port 8000` |
+| Health-check | GET /health |
+| Данные | volume `serplux_data:/app/data` |
+| Ресурсы | 512MB RAM (дефолт) |
+
+### Переменные окружения (.env)
+
+```
+WEBHOOK_SECRET=<токен>
+OPENCODE_API_KEY=<ключ>
+TOPVISOR_USERNAME=<email>
+TOPVISOR_PASSWORD=<пароль>
+TOPVISOR_PROJECT_ID=<id>
+GOOGLE_CREDENTIALS_PATH=credentials.json
+GOOGLE_SHEET_ID=<id таблицы>
+DB_PATH=/app/data/serplux.db
+REGIONS_MAP=regions_map.json
+```
