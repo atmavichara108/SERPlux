@@ -1,48 +1,34 @@
-
 ---
-description: Развернуть SERPlux на сервере: настройка, деплой, проверка. Запускает infra-dev.
+description: Подготовить чек-лист деплоя SERPlux на сервер. Запускает infra-dev.
 agent: infra-dev
 ---
 
-# Деплой SERPlux на сервер
+# Подготовка деплоя SERPlux
 
 ## Контекст
 !`cat docs/progress.md`
 !`cat docs/techdebt.md`
+!`cat docs/deploy.md`
 
-## Текущее состояние
-- Dockerfile и docker-compose.yml готовы
-- Приложение задеплоено на сервер с собственным доменом
-- Безопасность: тесты пройдены, критических дыр нет
+## Модель
+Агенты работают на ЛОКАЛЬНОЙ машине. Деплой на сервер выполняется пользователем вручную через SSH.
+infra-dev НЕ выполняет docker-команды на сервере.
 
 ## Задача
-### 1. Проверка текущего деплоя
-```
-!`docker compose ps`
-!`docker compose logs --tail=50 serplux`
-!`curl -s http://localhost:8000/health`
-```
+1. Проверить локальные файлы на консистентность:
+   - Dockerfile: все .py файлы копируются (включая migrate.py)
+   - docker-compose.yml: переменные, volumes, ports
+   - .env.example: все переменные проброшены
+2. Сформировать чек-лист команд для сервера (git pull, build, up, migrate, verify)
+3. Проверить, нужна ли миграция БД (старая схема results → новая)
+4. Выдать готовый чек-лист пользователю для копипаста в SSH-терминал
 
-### 2. Обновление (если нужно)
-- Backup SQLite БД
-- `docker compose pull` или `docker compose build`
-- `docker compose up -d`
-- Проверка health-check
-
-### 3. Reverse proxy и SSL
-- Настрой nginx/caddy перед контейнером
-- SSL через certbot (Let's Encrypt)
-- Проверь что /health доступен только локально
-
-### 4. Мониторинг
-- Health-check работает
-- Логи ротируются
-- Алерты при падении (опционально)
-
-### 5. Проверка
-- GET /health → 200
-- POST /run с валидным токеном → 202
-- GET /status → статус
-- Веб-интерфейс загружается (если реализован)
+## Чек-лист должен включать
+- Предпосылки (группа docker, .env, credentials, regions_map)
+- Обновление кода (git pull)
+- Сборка и запуск (docker compose build, up -d)
+- Миграция БД (docker compose exec serplux python migrate.py --db /app/data/serplux.db)
+- Проверки (health, status с авторизацией)
+- Внешний доступ (nginx/домен — отметить если неизвестно)
 
 Обнови docs/progress.md после завершения.
