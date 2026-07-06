@@ -141,13 +141,18 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
              len(rows), saved_count, labeled_count,
              stats["exported"], "OK" if report_ok else "FAIL")
 
-    # Сводка по каждому searcher
+    # Сводка по каждому searcher (строим по labeled_rows, чтобы не зависеть от in-place mutation)
     searcher_stats: dict[str, dict[str, int]] = {}
     for row in rows:
-        s = row.get("searcher", "unknown")
+        s = row.get("searcher") or "unknown"
         if s not in searcher_stats:
             searcher_stats[s] = {"collected": 0, "labeled": 0, "exported": 0}
         searcher_stats[s]["collected"] += 1
+
+    for row in labeled_rows:
+        s = row.get("searcher") or "unknown"
+        if s not in searcher_stats:
+            searcher_stats[s] = {"collected": 0, "labeled": 0, "exported": 0}
         if row.get("sentiment") is not None:
             searcher_stats[s]["labeled"] += 1
         # exported совпадает с collected, если export успешен

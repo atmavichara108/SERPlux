@@ -137,12 +137,16 @@ def _label_group(
     client_id: str,
     db_path: str,
     provider_chain: str | list[str] | None,
+    last_real_call_ref: list[float],
 ) -> list[dict]:
-    """Размечает одну группу строк (searcher×geo) с детальной статистикой."""
+    """Размечает одну группу строк (searcher×geo) с детальной статистикой.
+
+    last_real_call_ref — mutable-контейнер для глобального таймера паузы
+    между LLM-вызовами across all groups.
+    """
     result = []
-    last_real_call = 0.0
-    searcher = group_rows[0].get("searcher", "unknown")
-    geo = group_rows[0].get("geo", "unknown")
+    searcher = group_rows[0].get("searcher") or "unknown"
+    geo = group_rows[0].get("geo") or "unknown"
 
     stats = {
         "total": len(group_rows),
@@ -213,8 +217,9 @@ def _label_group(
                 result.append(row)
                 continue
 
-        # Пауза только между реальными вызовами LLM
+        # Пауза только между реальными вызовами LLM (глобально между всеми группами)
         now = time.time()
+        last_real_call = last_real_call_ref[0]
         elapsed = now - last_real_call
         if elapsed < LLM_PAUSE and last_real_call > 0:
             wait = LLM_PAUSE - elapsed
@@ -231,7 +236,7 @@ def _label_group(
             stats["success"] += 1
         row["sentiment"] = sentiment
         row["label"] = sentiment
-        last_real_call = time.time()
+        last_real_call_ref[0] = time.time()
         result.append(row)
 
     log.info(
@@ -272,12 +277,13 @@ def label(
     # Группируем по searcher×geo для структурного логирования
     groups: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
-        key = (row.get("searcher", "unknown"), row.get("geo", "unknown"))
+        key = (row.get("searcher") or "unknown", row.get("geo") or "unknown")
         groups.setdefault(key, []).append(row)
 
     log.info("Начало разметки: %s строк, mode=%s, групп=%s", len(rows), label_mode, len(groups))
 
     result = []
+    last_real_call_ref = [0.0]
     for (searcher, geo), group_rows in sorted(groups.items()):
         result.extend(_label_group(
             group_rows,
@@ -286,6 +292,7 @@ def label(
             client_id=client_id,
             db_path=db_path,
             provider_chain=provider_chain,
+            last_real_call_ref=last_real_call_ref,
         ))
 
     total_success = sum(1 for r in result if r.get("sentiment") is not None)
