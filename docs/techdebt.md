@@ -231,4 +231,36 @@ POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: пров
 
 ## Исправлено
 
+### 2026-07-07 — project_id зашит в .env, не передаётся через API
+
+**Статус:** ✔ Исправлено в Этапе 0.
+
+`client_id` передаётся в `/run`; `_build_client_config()` в `webhook.py` подтягивает `project_id` из профиля клиента в БД. Для каждого нового клиента больше не нужно править `.env`.
+
+### 2026-07-07 — date не принимается в теле /run
+
+**Статус:** ✔ Исправлено в Этапе 1.
+
+`RunRequest` в `webhook.py` принимает `date`; `_run_pipeline` и `main.run()` обрабатывают `date`. UI (apps_script.gs) передаёт `date` в `runCollection()`.
+
+### 2026-07-07 — regions_map и project_id рассинхронизированы по источникам
+
+**Статус:** ✔ Исправлено в Этапе 0.
+
+Все параметры клиента (`project_id`, `sheet_id`, `searchers`, `geos`, `regions_map`) теперь хранятся в профиле клиента в таблице `clients`. При передаче `client_id` в `/run` остальные параметры подтягиваются из профиля.
+
+### 2026-07-07 — date, force_rebuild_report, provider_chain не принимаются в /run
+
+**Статус:** ✔ Исправлено в Этапе 1.
+
+`RunRequest` расширен полями `date`, `force_rebuild_report`, `provider_chain`. `main.py` пробрасывает их в `reporter.build_report()` и `labeler.label()`. UI передаёт их в `runCollection()`.
+
+### 2026-07-07 — Default `db_path` в `storage.py` захвачен при импорте
+
+**Статус:** ✔ Обходной фикс применён в Этапе 1.
+
+Во всех вызовах из `webhook.py`, `main.py`, `reporter.py` явно передаётся `db_path=storage.DB_PATH`. Тесты `160/160 passed`. Надёжное решение (рефакторинг default-аргументов в `storage.py`) оставлено как потенциальная задача, но текущий обходной фикс закрывает баг.
+
+---
+
 (пусто)

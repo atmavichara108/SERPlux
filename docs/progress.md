@@ -39,6 +39,22 @@
   - Тесты: 151/151 passed; добавлены тесты на профиль клиента, sheet_id,
     searchers/geos/project_id в `test_webhook.py` и `test_main.py`
   - `docs/contracts.md`: обновлены сигнатуры `clients` CRUD и `RunRequest`
+- **Этап 3: Документация — user-guide.md, сверка contracts.md, закрытие techdebt**
+  - Обновлен `docs/user-guide.md`:
+    - Меню SERPlux приведено в соответствие с `apps_script.gs` (новые пункты: «Разметить собранные данные», «Разметить за дату...», «Обновить список клиентов», «Обновить гео из Topvisor...»)
+    - Лист «Настройки»: описаны выпадающие списки `client_id` и `provider_chain`
+    - Добавлены сценарии использования: сбор за дату, разметка без сбора (`label_only`), разметка за дату, построение отчёта за дату, добавление клиента с гео из Topvisor, обновление гео клиента
+    - Расширено описание параметров `date`, `force_rebuild_report`, `provider_chain`
+    - Раздел «Клиенты» дополнен полями `searchers`, `geos`, `regions_map`
+    - Из «Будущих возможностей» убраны уже реализованные пункты (`date`, `force_rebuild_report`, `provider_chain`)
+  - `docs/contracts.md`: финальная сверка — все сигнатуры Этапов 0–2 актуальны (`RunRequest`, `/clients/{id}/dates`, `/topvisor/regions`, `label()` с `provider_chain`, `storage.get_dates()`)
+  - `docs/techdebt.md`: исправленные пункты перенесены в раздел «Исправлено»:
+    - project_id из .env → профиль клиента
+    - date в `/run`
+    - regions_map + project_id рассинхронизация
+    - date/force_rebuild_report/provider_chain в `/run`
+    - default `db_path` — обходной фикс применён
+  - Коммит: `feat(docs): user guide scenarios, contracts sync, techdebt cleanup`
 - **Этап 2: UI Google Sheets — выпадающие списки, label-only, гео из Topvisor**
   - Проблема: UI не использовал новые возможности Этапа 1 (date, label_only, provider_chain, force_rebuild_report); добавление клиента требовало ручного ввода гео; не было быстрого доступа к списку дат для отчёта/разметки
   - Решение:
