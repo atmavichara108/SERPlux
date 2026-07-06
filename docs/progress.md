@@ -39,6 +39,23 @@
   - Тесты: 151/151 passed; добавлены тесты на профиль клиента, sheet_id,
     searchers/geos/project_id в `test_webhook.py` и `test_main.py`
   - `docs/contracts.md`: обновлены сигнатуры `clients` CRUD и `RunRequest`
+- **Этап 2: UI Google Sheets — выпадающие списки, label-only, гео из Topvisor**
+  - Проблема: UI не использовал новые возможности Этапа 1 (date, label_only, provider_chain, force_rebuild_report); добавление клиента требовало ручного ввода гео; не было быстрого доступа к списку дат для отчёта/разметки
+  - Решение:
+    - Меню SERPlux расширено: «Разметить собранные данные» (label_only=true), «Разметить за дату…» (label_only + выбор даты), «Обновить список клиентов», «Обновить гео из Topvisor»
+    - `refreshClientList()`: GET /clients → Data Validation dropdown на ячейке client_id; автоматически вызывает `refreshProviderChain()`
+    - `refreshProviderChain()`: GET /providers → Data Validation dropdown на ячейке provider_chain
+    - `labelOnly()`: POST /run с label_only=true, использует настройки из листа
+    - `labelOnlyForDate()`: GET /clients/{id}/dates → выбор даты → POST /run с label_only + date + label_mode + force_relabel
+    - `buildReportForDate()`: GET /clients/{id}/dates → выпадающий список дат (вместо свободного ввода); убран disclaimer про report_only
+    - `runCollection()`: передаёт date, force_rebuild_report, provider_chain в POST /run
+    - `addClient()`: расширен до 6 шагов — после project_id → GET /topvisor/regions → мультивыбор гео (нумерованный список) + выбор сорсеров (google/yandex_ru/yandex_com) → POST /clients с geos+searchers
+    - `updateClientGeos()`: для существующих клиентов — GET /topvisor/regions → мультивыбор → PUT /clients/{id}
+    - Defensive: если /topvisor/regions вернул 502 → диалог «Не удалось получить гео из Topvisor, введите вручную» (fallback на ручной ввод)
+    - Bearer-авторизация во всех новых запросах
+  - Синтаксис: `node --check` пройден (через копирование в .js)
+  - `docs/progress.md`: добавлена секция Этапа 2
+  - Коммит: `feat(ui): client dropdown, geos/searchers from Topvisor, label-only flows, date pickers`
 - **Этап 1: date/label_only/provider_chain/force_rebuild_report + новые read-only endpoint'ы**
   - Проблема: UI-спека требует выбора даты, разметки без повторного сбора,
     выбора провайдера и принудительного перестроения отчёта; не хватало
