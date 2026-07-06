@@ -558,6 +558,25 @@ def upsert_domain_label(
 # ─── Управление профилями клиентов ────────────────────────────────────────────
 
 
+def get_dates(client_id: str | None = None, db_path: str = DB_PATH) -> list[str]:
+    """Возвращает уникальные даты из positions, отсортированные по убыванию."""
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        if client_id:
+            rows = conn.execute(
+                "SELECT DISTINCT date FROM positions WHERE client_id = ? ORDER BY date DESC",
+                (client_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT date FROM positions ORDER BY date DESC"
+            ).fetchall()
+        return [r["date"] for r in rows]
+    finally:
+        conn.close()
+
+
 import json as _json
 
 _CLIENT_COLUMNS = {"client_name", "project_id", "sheet_id", "searchers", "geos", "regions_map"}

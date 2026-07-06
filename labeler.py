@@ -38,14 +38,37 @@ def _parse_label(raw: str) -> str:
     return "neutral"
 
 
-def _get_provider_chain() -> list[tuple[str, dict]]:
+def _normalize_provider_chain(provider_chain: str | list[str] | None) -> list[str] | None:
+    """Превращает provider_chain в список id: строку через запятую или list[str]."""
+    if provider_chain is None:
+        return None
+    if isinstance(provider_chain, str):
+        ids = [p.strip() for p in provider_chain.split(",") if p.strip()]
+        return ids if ids else None
+    if isinstance(provider_chain, list):
+        return [p.strip() for p in provider_chain if isinstance(p, str) and p.strip()]
+    return None
+
+
+def _get_provider_chain(provider_chain: str | list[str] | None = None) -> list[tuple[str, dict]]:
     """Возвращает список (provider_id, config) включённых провайдеров,
-    отсортированный по priority."""
+    отсортированный по priority. provider_chain позволяет переопределить набор id."""
+    explicit_ids = _normalize_provider_chain(provider_chain)
+
     chain: list[tuple[str, dict]] = []
     for pid, cfg in config.PROVIDERS.items():
-        if cfg.get("enabled", False):
-            chain.append((pid, cfg))
-    chain.sort(key=lambda x: x[1].get("priority", 999))
+        if not cfg.get("enabled", False):
+            continue
+        if explicit_ids is not None and pid not in explicit_ids:
+            continue
+        chain.append((pid, cfg))
+
+    # Если передана explicit цепочка — сохраняем её порядок; иначе сортируем по priority
+    if explicit_ids is not None:
+        order = {pid: idx for idx, pid in enumerate(explicit_ids)}
+        chain.sort(key=lambda x: order.get(x[0], 999))
+    else:
+        chain.sort(key=lambda x: x[1].get("priority", 999))
     return chain
 
 
@@ -77,11 +100,11 @@ def _call_provider(provider_id: str, provider_cfg: dict, prompt: str) -> str | N
         return None
 
 
-def _label_one_llm(row: dict) -> str | None:
+def _label_one_llm(row: dict, provider_chain: str | list[str] | None = None) -> str | None:
     """Вызывает LLM для разметки по цепочке провайдеров
     (без проверки кэша — кэш проверяет label())."""
     prompt = _build_prompt(row["query"], row["url"], row.get("snippet", ""))
-    chain = _get_provider_chain()
+    chain = _get_provider_chain(provider_chain)
     for provider_id, provider_cfg in chain:
         raw = _call_provider(provider_id, provider_cfg, prompt)
         if raw is not None:
@@ -114,6 +137,7 @@ def label(
     label_mode: str = "snippets",
     force_relabel: bool = False,
     client_id: str = "default",
+    provider_chain: str | list[str] | None = None,
 ) -> list[dict]:
     """
     Проставляет sentiment (и алиас label), а также confidence каждой строке.
@@ -122,6 +146,7 @@ def label(
       - label_mode: "domains" | "snippets" | "full"
       - force_relabel: если True — игнорировать кэш, размечать заново
       - client_id: идентификатор клиента для справочника доменов
+      - provider_chain: переопределение цепочки провайдеров (id через запятую или list)
 
     Режимы:
       - domains: справочник domain_labels, без LLM.
@@ -173,7 +198,7 @@ def label(
             log.debug("Пауза %.1fс между вызовами LLM", wait)
             time.sleep(wait)
 
-        sentiment = _label_one_llm(row)
+        sentiment = _label_one_llm(row, provider_chain=provider_chain)
         row["sentiment"] = sentiment
         row["label"] = sentiment  # алиас
         last_real_call = time.time()

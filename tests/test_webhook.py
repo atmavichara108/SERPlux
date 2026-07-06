@@ -53,12 +53,13 @@ class TestRunEndpoint:
         """Старый контракт работает, новые поля подставляются дефолтом."""
         resp = client.post(
             "/run",
-            json={"regions_map": "map.json", "with_labels": True, "depth": 5},
+            json={"regions_map": "map.json", "with_labels": True, "depth": 10},
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 202
         assert pipeline_spy["args"] == (
-            "map.json", True, 5, "default", "domains", False, False, "latest",
+            "map.json", True, 10, "default", "domains", False, False, "latest",
+            "today", False, None, False,
         )
 
     def test_run_new_fields_passed(self, client, pipeline_spy):
@@ -70,12 +71,17 @@ class TestRunEndpoint:
                 "client_id": "acme",
                 "label_mode": "snippets",
                 "force_relabel": True,
+                "date": "2026-07-01",
+                "force_rebuild_report": True,
+                "provider_chain": "zen",
+                "label_only": True,
             },
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 202
         assert pipeline_spy["args"] == (
             "map.json", True, 10, "acme", "snippets", True, False, "latest",
+            "2026-07-01", True, "zen", True,
         )
 
     def test_run_default_label_mode_is_domains(self, client, pipeline_spy):
@@ -110,6 +116,97 @@ class TestRunEndpoint:
         body = resp.json()
         detail = str(body)
         assert any(m in detail for m in ["domains", "snippets", "full"])
+
+    def test_run_invalid_depth_returns_422(self, client):
+        """Невалидный depth возвращает 422."""
+        resp = client.post(
+            "/run",
+            json={"depth": 5},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 422
+        detail = str(resp.json())
+        assert any(d in detail for d in ["10", "20", "50", "100"])
+
+    def test_run_invalid_date_returns_422(self, client):
+        """Невалидная date возвращает 422."""
+        resp = client.post(
+            "/run",
+            json={"date": "07-01-2026"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 422
+        detail = str(resp.json())
+        assert "YYYY-MM-DD" in detail or "today" in detail
+
+    def test_run_label_only_runs_label_pipeline(self, monkeypatch, client_db):
+        """label_only=true размечает существующие данные без сбора."""
+        import storage
+        import main
+
+        storage.create_client("acme", "Acme Corp", db_path=client_db)
+        monkeypatch.setattr(storage, "DB_PATH", client_db)
+
+        # Подготовка данных в БД
+        fake_rows = [
+            {
+                "date": "2026-07-01",
+                "searcher": "google",
+                "query": "subject X",
+                "geo": "Литва",
+                "region_index": 1300,
+                "position": 1,
+                "url": "https://example.com/page",
+                "domain": "example.com",
+                "snippet": "snippet",
+            }
+        ]
+        storage.save(fake_rows, client_id="acme", db_path=client_db)
+
+        label_called = {"n": 0}
+        report_called: dict = {"args": None}
+
+        def fake_label(rows, **kwargs):
+            label_called["n"] += 1
+            for r in rows:
+                r["sentiment"] = "positive"
+                r["label"] = "positive"
+                r["label_mode"] = kwargs.get("label_mode", "snippets")
+                r["client_id"] = kwargs.get("client_id", "default")
+                r["confidence"] = "high"
+            return rows
+
+        def fake_build_report(**kwargs):
+            report_called["args"] = kwargs
+
+        monkeypatch.setattr(main, "run", lambda config: {"exit_code": 0, "stats": {}})
+        import labeler
+        monkeypatch.setattr(labeler, "label", fake_label)
+        import reporter
+        monkeypatch.setattr(reporter, "build_report", fake_build_report)
+
+        # _run_pipeline ожидает захваченный lock
+        webhook._run_lock.acquire()
+        try:
+            webhook._run_pipeline(
+                regions_map="map.json",
+                with_labels=True,
+                depth=10,
+                client_id="acme",
+                label_mode="snippets",
+                force_relabel=False,
+                label_only=True,
+                date="2026-07-01",
+                force_rebuild_report=True,
+            )
+        finally:
+            if webhook._run_lock.locked():
+                webhook._run_lock.release()
+
+        assert label_called["n"] == 1
+        assert report_called["args"] is not None
+        assert report_called["args"]["date"] == "2026-07-01"
+        assert report_called["args"]["force"] is True
 
 
 class TestRunAuth:
@@ -268,6 +365,77 @@ class TestClientsEndpoint:
         assert client.post("/clients", json={"client_id": "x", "client_name": "X"}).status_code == 401
         assert client.get("/clients/x").status_code == 401
         assert client.put("/clients/x", json={}).status_code == 401
+
+    def test_get_client_dates(self, client, client_db):
+        """GET /clients/{id}/dates возвращает даты, за которые есть данные."""
+        import storage
+        storage.create_client("acme", "Acme", project_id=1, sheet_id="sh", db_path=client_db)
+        storage.save(
+            [
+                {
+                    "date": "2026-07-01",
+                    "searcher": "google",
+                    "query": "q1",
+                    "geo": "Литва",
+                    "region_index": 1300,
+                    "position": 1,
+                    "url": "https://a.com/1",
+                    "domain": "a.com",
+                    "snippet": "s1",
+                },
+                {
+                    "date": "2026-07-03",
+                    "searcher": "google",
+                    "query": "q2",
+                    "geo": "Литва",
+                    "region_index": 1300,
+                    "position": 2,
+                    "url": "https://a.com/2",
+                    "domain": "a.com",
+                    "snippet": "s2",
+                },
+            ],
+            client_id="acme",
+            db_path=client_db,
+        )
+
+        resp = client.get("/clients/acme/dates", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["dates"] == ["2026-07-03", "2026-07-01"]
+
+    def test_get_client_dates_missing_client_returns_404(self, client, client_db):
+        """GET /clients/{id}/dates для несуществующего клиента возвращает 404."""
+        resp = client.get("/clients/ghost/dates", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 404
+
+
+class TestTopvisorRegionsEndpoint:
+    """Тесты эндпоинта /topvisor/regions."""
+
+    def test_list_topvisor_regions(self, client, monkeypatch):
+        """GET /topvisor/regions возвращает регионы из Topvisor API."""
+        import topvisor
+
+        def fake_list_regions(project_id):
+            return [
+                {"index": 1300, "name": "Литва"},
+                {"index": 1301, "name": "Вильнюс"},
+            ]
+
+        monkeypatch.setattr(topvisor, "list_regions", fake_list_regions)
+
+        resp = client.get("/topvisor/regions?project_id=123", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["project_id"] == 123
+        assert len(body["regions"]) == 2
+        assert body["regions"][0]["name"] == "Литва"
+
+    def test_list_topvisor_regions_missing_auth_returns_401(self, client):
+        """GET /topvisor/regions без Bearer возвращает 401."""
+        resp = client.get("/topvisor/regions?project_id=123")
+        assert resp.status_code == 401
 
 
 class TestProvidersEndpoint:

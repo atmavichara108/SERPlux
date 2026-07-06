@@ -94,6 +94,10 @@ Row = {
   `regions_map` и `updated_at`. Выбрасывает `ValueError`, если клиент не найден
   или переданы недопустимые поля.
 
+- `get_dates(client_id: str | None = None, db_path: str = DB_PATH) -> list[str]`
+  — Возвращает уникальные даты из `positions`, отсортированные по убыванию.
+  Если `client_id` задан — фильтрует по клиенту.
+
 ## config.py — провайдеры LLM
 
 Провайдеры LLM описываются словарём `PROVIDERS`, считываются **только** из `config.py`
@@ -141,12 +145,15 @@ DEFAULT_PROVIDER: str = "opencode-zen"
 ## labeler.py
 
 - `label(rows: list[Row], db_path: str = DB_PATH, label_mode: str = "snippets",
-         force_relabel: bool = False, client_id: str = "default") -> list[Row]`
+         force_relabel: bool = False, client_id: str = "default",
+         provider_chain: str | None = None) -> list[Row]`
   — Проставляет `sentiment` (и алиас `label`), а также `confidence` каждой строке.
   Параметры:
   - `label_mode`: режим разметки ("domains" | "snippets" | "full")
   - `force_relabel`: если True — игнорировать кэш, размечать всё заново
   - `client_id`: slug клиента, передаётся в `storage.get_domain_label()`
+  - `provider_chain`: строка или список идентификаторов провайдеров через запятую;
+    фильтрует `config.PROVIDERS` перед фолбек-цепочкой
   Возвращает тот же список с заполненными `sentiment`/`label`/`confidence`.
 
   Режимы:
@@ -184,6 +191,10 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
     "force_relabel": bool = False,             # принудительная переразметка
     "report_only": bool = False,               # если True — только построить отчёт
     "report_date": str = "latest",             # дата для отчёта (YYYY-MM-DD или "latest")
+    "date": str = "today",                     # дата сбора/разметки (YYYY-MM-DD или "today")
+    "label_only": bool = False,                # если True — только разметить существующие данные
+    "force_rebuild_report": bool = False,      # перестроить отчёт с нуля
+    "provider_chain": str | None = None,       # фильтр провайдеров LLM (через запятую)
 }
 ```
 
@@ -277,10 +288,13 @@ Health-check для мониторинга контейнера (без авто
 **Тело запроса:**
 ```python
 {
-    "client_id": str,           # обязательный, уникальный
-    "client_name": str,         # обязательный
-    "project_id": int | None,   # опциональный
-    "sheet_id": str | None,     # опциональный
+    "client_id": str,                 # обязательный, уникальный
+    "client_name": str,               # обязательный
+    "project_id": int | None,         # опциональный
+    "sheet_id": str | None,           # опциональный
+    "searchers": list[str] | None,    # опциональный, напр. ["google", "yandex_ru"]
+    "geos": list[str] | None,         # опциональный, напр. ["Литва", "Германия"]
+    "regions_map": str | None,        # опциональный, имя файла карты регионов
 }
 ```
 
@@ -302,8 +316,54 @@ Health-check для мониторинга контейнера (без авто
     "client_name": str | None,
     "project_id": int | None,
     "sheet_id": str | None,
+    "searchers": list[str] | None,
+    "geos": list[str] | None,
+    "regions_map": str | None,
 }
 ```
+
+### GET /clients/{client_id}/dates
+
+Возвращает список дат, за которые есть данные для клиента.
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Ответ 200 OK:**
+```json
+{
+    "dates": ["2026-07-03", "2026-07-01"]
+}
+```
+
+**Ответ 404 Not Found:** если клиент не найден.
+
+### GET /topvisor/regions
+
+Возвращает доступные регионы проекта Topvisor.
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Query-параметры:**
+```python
+{
+    "project_id": int  # обязательный
+}
+```
+
+**Ответ 200 OK:**
+```json
+{
+    "project_id": 12345,
+    "regions": [
+        {"index": 1300, "name": "Литва"},
+        {"index": 1301, "name": "Вильнюс"}
+    ]
+}
+```
+
+**Ответ 404 Not Found:** если регионы для проекта не найдены.
+
+**Ответ 502 Bad Gateway:** при ошибке связи с Topvisor.
 
 ### GET /providers
 

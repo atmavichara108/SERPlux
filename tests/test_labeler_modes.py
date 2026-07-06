@@ -197,7 +197,7 @@ def test_snippets_mode_force_relabel_calls_llm(init_db, sample_row, monkeypatch)
     storage.save([sample_row], init_db)
     storage.insert_labels([{**sample_row, "sentiment": "neutral", "label_mode": "snippets"}], init_db)
 
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "negative")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="snippets", force_relabel=True)

@@ -39,6 +39,26 @@
   - Тесты: 151/151 passed; добавлены тесты на профиль клиента, sheet_id,
     searchers/geos/project_id в `test_webhook.py` и `test_main.py`
   - `docs/contracts.md`: обновлены сигнатуры `clients` CRUD и `RunRequest`
+- **Этап 1: date/label_only/provider_chain/force_rebuild_report + новые read-only endpoint'ы**
+  - Проблема: UI-спека требует выбора даты, разметки без повторного сбора,
+    выбора провайдера и принудительного перестроения отчёта; не хватало
+    endpoint'ов для списка дат клиента и регионов Topvisor
+  - Решение:
+    - `webhook.py`: `RunRequest` расширен полями `date`, `label_only`,
+      `provider_chain`, `force_rebuild_report`; валидаторы для `depth` и `date`
+    - `webhook.py`: `GET /clients/{client_id}/dates` → `{"dates": [...]}`
+    - `webhook.py`: `GET /topvisor/regions?project_id=...` → `{"project_id", "regions"}`
+    - `main.py`: `run()` возвращает `dict {"exit_code", "stats"}`; проброс
+      `force_rebuild_report` в `reporter.build_report()` и `provider_chain` в `labeler.label()`
+    - `labeler.py`: `label()` принимает `provider_chain` и фильтрует `config.PROVIDERS`
+    - `storage.py`: добавлена `get_dates(client_id)`
+    - `topvisor.py`: добавлена `list_regions(project_id)`
+    - Исправлен баг с default-значением `db_path`: `main.py`, `reporter.py`,
+      `webhook.py` теперь явно передают `storage.DB_PATH` в вызовы storage,
+      иначе monkeypatch/изменение env не доходили до функций с захваченным default
+  - Тесты: `160/160 passed`; добавлены тесты на валидацию `date`/`depth`,
+    `label_only`, новые endpoint'ы, проброс `provider_chain`/`force_rebuild_report`
+  - `docs/contracts.md`, `docs/techdebt.md`: обновлены сигнатуры и заметка про `db_path`
 - **webhook.py: report_only + finished_at/client_id (ui-spec §5.2-5.3)**
   - `POST /run`: новые поля `report_only: bool = False` и `report_date: str = "latest"` в RunRequest
   - При `report_only=true`: пропускает collect/save/label/export, вызывает только `reporter.build_report(date, force=True)`

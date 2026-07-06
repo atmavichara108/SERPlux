@@ -2,6 +2,7 @@ import logging
 import sys
 from typing import Any
 
+import storage
 from collector import collect
 from storage import save, insert_labels, _ensure_db
 from labeler import label
@@ -30,7 +31,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
-def run(config: dict[str, Any]) -> int:
+def run(config: dict[str, Any]) -> dict[str, Any]:
+    """
+    Запускает полный пайплайн.
+
+    Возвращает dict:
+        {
+            "exit_code": int,
+            "stats": {
+                "collected": int,
+                "saved_new": int,
+                "labeled": int,
+                "exported": int,
+            }
+        }
+    """
     log.info("=== Старт прогона ===")
     log.info("Параметры: %s", config)
 
@@ -38,6 +53,8 @@ def run(config: dict[str, Any]) -> int:
     label_mode = config.get("label_mode", "domains")
     force_relabel = config.get("force_relabel", False)
     sheet_id = config.get("sheet_id")
+    force_rebuild_report = config.get("force_rebuild_report", False)
+    provider_chain = config.get("provider_chain")
 
     # Наполняем config значениями из профиля клиента / fallback DEFAULT_CONFIG
     runtime_config = {
@@ -48,25 +65,34 @@ def run(config: dict[str, Any]) -> int:
         "geos": config.get("geos") or DEFAULT_CONFIG["geos"],
     }
 
+    stats = {
+        "collected": 0,
+        "saved_new": 0,
+        "labeled": 0,
+        "exported": 0,
+    }
+
     try:
         rows = collect(runtime_config)
     except Exception as e:
         log.error("Сбой collect: %s", e)
-        return 1
+        return {"exit_code": 1, "stats": stats}
 
     if not rows:
         log.warning("Нет данных для обработки")
-        return 0
+        return {"exit_code": 0, "stats": stats}
 
     log.info("Собрано строк: %s", len(rows))
+    stats["collected"] = len(rows)
 
     # Инициализируем БД перед первой записью
-    _ensure_db()
+    _ensure_db(db_path=storage.DB_PATH)
 
     saved_count = 0
     try:
-        saved_count = save(rows, client_id=client_id)
+        saved_count = save(rows, client_id=client_id, db_path=storage.DB_PATH)
         log.info("Сохранено в БД: %s (новых)", saved_count)
+        stats["saved_new"] = saved_count
     except Exception as e:
         log.error("Сбой save: %s", e)
 
@@ -75,14 +101,17 @@ def run(config: dict[str, Any]) -> int:
     labeled_rows = rows  # fallback: если labeler упал, используем сырые данные
     if config.get("with_labels", True):
         try:
-            labeled_rows = label(
-                rows,
-                label_mode=label_mode,
-                force_relabel=force_relabel,
-                client_id=client_id,
-            )
-            labeled_count = insert_labels(labeled_rows)
+            label_kwargs = {
+                "label_mode": label_mode,
+                "force_relabel": force_relabel,
+                "client_id": client_id,
+            }
+            if provider_chain is not None:
+                label_kwargs["provider_chain"] = provider_chain
+            labeled_rows = label(rows, **label_kwargs)
+            labeled_count = insert_labels(labeled_rows, db_path=storage.DB_PATH)
             log.info("Размечено и сохранено меток: %s", labeled_count)
+            stats["labeled"] = labeled_count
         except Exception as e:
             log.error("Сбой labeler: %s", e)
     else:
@@ -93,13 +122,14 @@ def run(config: dict[str, Any]) -> int:
         export(labeled_rows, sheet_id=sheet_id)
         export_ok = True
         log.info("Выгружено в Sheet: %s строк", len(rows))
+        stats["exported"] = len(rows)
     except Exception as e:
         log.error("Сбой export: %s", e)
 
     # Построение отчёта
     report_ok = False
     try:
-        build_report(sheet_id=sheet_id)
+        build_report(force=force_rebuild_report, sheet_id=sheet_id)
         report_ok = True
         log.info("Отчёт построен")
     except Exception as e:
@@ -112,9 +142,9 @@ def run(config: dict[str, Any]) -> int:
     else:
         log.info("Собрано: %s | Сохранено (новых): %s | Меток: %s | Выгрузка не удалась | Отчёт: %s",
                   len(rows), saved_count, labeled_count, "OK" if report_ok else "FAIL")
-    return 0
+    return {"exit_code": 0, "stats": stats}
 
 
 if __name__ == "__main__":
-    exit_code = run(DEFAULT_CONFIG)
-    sys.exit(exit_code)
+    result = run(DEFAULT_CONFIG)
+    sys.exit(result["exit_code"])

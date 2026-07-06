@@ -89,19 +89,20 @@ def _post(service: str, method: str, payload: dict) -> dict | None:
     return data.get("result")
 
 
-def list_regions() -> list[dict[str, Any]]:
+def list_regions(project_id: int | None = None) -> list[dict[str, Any]]:
     """
     Получает карту параметров всех регионов проекта.
     Возвращает плоский список dict, по одному на каждую связку ПС×регион:
       searcher_key, searcher_name, region_key, region_lang, region_device,
       region_index, name, type, country_code, domain
     """
+    pid = project_id if project_id is not None else _get_credentials()["project_id"]
     result = _post("get", "projects_2/projects", {
         "show_searchers_and_regions": 2,
-        "filters": [{"name": "id", "operator": "EQUALS", "values": [_get_credentials()["project_id"]]}],
+        "filters": [{"name": "id", "operator": "EQUALS", "values": [pid]}],
     })
     if not result:
-        log.error("Проект %s не найден", _get_credentials()["project_id"])
+        log.error("Проект %s не найден", pid)
         return []
     project = result[0] if isinstance(result, list) else result
     searchers = project.get("searchers", [])
@@ -125,6 +126,11 @@ def list_regions() -> list[dict[str, Any]]:
     log.info("Проект %s (id=%s): %s связок ПС×регион",
              project.get("name"), project.get("id"), len(region_map))
     return region_map
+
+
+def list_regions_for_project(project_id: int) -> list[dict[str, Any]]:
+    """Явный алиас для list_regions(project_id) — для webhook-обёртки."""
+    return list_regions(project_id=project_id)
 
 
 def run_check(project_id: int, depth: int, region_indexes: list[int]) -> list[int]:

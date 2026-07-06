@@ -7,6 +7,7 @@ import gspread
 from dotenv import load_dotenv
 from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound, APIError
 
+import storage
 from storage import get_history
 from config import SUBJECT_BLOCKS, COLS, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH, REPORT_DEPTH
 
@@ -109,7 +110,7 @@ def _apply_label_colors(spreadsheet, sheet_id: int,
 
 def build_report(date: str | None = None, force: bool = False, sheet_id: str | None = None) -> None:
     if date is None:
-        all_rows = get_history()
+        all_rows = get_history(db_path=storage.DB_PATH)
         if not all_rows:
             log.warning("Нет данных в базе")
             return
@@ -119,7 +120,7 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
     if date is None:
         raise ValueError("Дата не определена и нет данных в базе")
 
-    rows = get_history(filters={"date": date})
+    rows = get_history(filters={"date": date}, db_path=storage.DB_PATH)
     if not rows:
         log.warning("Нет данных за дату %s", date)
         return
