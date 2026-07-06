@@ -1,14 +1,15 @@
 import os
-import logging
 from typing import Any
 
 import gspread
 from dotenv import load_dotenv
 from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound, APIError
 
+import config
+
 load_dotenv()
 
-log = logging.getLogger(__name__)
+log = config.setup_logging(__name__)
 
 Row = dict[str, Any]
 
@@ -126,7 +127,7 @@ def export(rows: list[Row], sheet_id: str | None = None) -> None:
 if __name__ == "__main__":
     from datetime import datetime, timedelta
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    log = config.setup_logging(__name__)
 
     today = datetime.now().strftime("%Y-%m-%d")
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")

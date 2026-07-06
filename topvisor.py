@@ -1,15 +1,16 @@
 import os
 import time
-import logging
 from urllib.parse import urlparse
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
 
+import config
+
 load_dotenv()
 
-log = logging.getLogger(__name__)
+log = config.setup_logging(__name__)
 
 BASE_URL = "https://api.topvisor.com/v2/json"
 

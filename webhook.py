@@ -10,7 +10,6 @@ webhook.py — FastAPI endpoint для запуска пайплайна из Go
     WEBHOOK_PORT   — порт для uvicorn (по умолчанию 8000)
 """
 
-import logging
 import os
 import re
 import threading
@@ -33,8 +32,7 @@ LABEL_MODES = {"domains", "snippets", "full"}
 DEPTH_VALUES = {10, 20, 50, 100}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-log = logging.getLogger(__name__)
+log = config.setup_logging(__name__)
 
 app = FastAPI(title="SERPlux Webhook", version="1.0.0")
 

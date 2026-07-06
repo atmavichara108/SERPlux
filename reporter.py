@@ -1,4 +1,3 @@
-import logging
 import os
 from datetime import datetime
 from typing import Any
@@ -9,12 +8,11 @@ from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound, APIError
 
 import storage
 from storage import get_history
-from config import SUBJECT_BLOCKS, COLS, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH, REPORT_DEPTH
+from config import SUBJECT_BLOCKS, COLS, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH, REPORT_DEPTH, setup_logging
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-log = logging.getLogger(__name__)
+log = setup_logging(__name__)
 
 SEARCHER_MAP = {
     "google": "Google",
@@ -258,7 +256,7 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    setup_logging()
 
     print("=== Тест reporter.py ===\n")
     print("Построение отчёта по данным из базы (без топвизора)...\n")

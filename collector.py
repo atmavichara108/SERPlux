@@ -1,9 +1,9 @@
 import json
-import logging
 import os
 from datetime import date as date_type
 from typing import Any
 
+import config
 from topvisor import (
     Row,
     get_project_id,
@@ -20,7 +20,7 @@ def _get_project_id(config: dict[str, Any]) -> int:
         return int(config["project_id"])
     return get_project_id()
 
-log = logging.getLogger(__name__)
+log = config.setup_logging(__name__)
 
 
 def collect(config: dict[str, Any]) -> list[Row]:
@@ -59,6 +59,9 @@ def collect(config: dict[str, Any]) -> list[Row]:
         return []
 
     log.info("Найдено %s связок для сбора", len(filtered))
+    for idx, region in enumerate(filtered, 1):
+        log.info("Связка %s/%s: searcher=%s geo=%s region_index=%s",
+                 idx, len(filtered), region["searcher"], region["geo_name"], region["region_index"])
 
     all_rows: list[Row] = []
     today = config.get("date") or date_type.today().isoformat()

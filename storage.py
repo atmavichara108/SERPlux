@@ -1,10 +1,11 @@
 import os
 import sqlite3
-import logging
 import time
 from typing import Any
 
-log = logging.getLogger(__name__)
+import config
+
+log = config.setup_logging(__name__)
 
 # Путь к БД: env DB_PATH > дефолт (для контейнера задаётся через docker-compose)
 DB_PATH = os.environ.get("DB_PATH", "serplux.db")

@@ -5,6 +5,21 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Подробное структурное логирование пайплайна в stdout**
+  - `config.py`: добавлена `setup_logging(name)` — единая настройка логирования
+    - Уровень из env `LOG_LEVEL` (дефолт `INFO`)
+    - Формат: `timestamp | module | level | message`
+    - Вывод в `stdout` для `docker compose logs`
+    - `propagate=False` для модульных логгеров — uvicorn не глушит аппликационные логи
+  - `main.py`, `webhook.py`, `collector.py`, `labeler.py`, `exporter.py`, `reporter.py`, `storage.py`, `topvisor.py`: переведены на `config.setup_logging(__name__)`
+  - `collector.py`: явное логирование каждой связки `searcher×geo` (`Связка N/M: searcher=... geo=...`)
+  - `labeler.py`: разметка группируется по `searcher×geo`, логируется подробная статистика по каждой группе
+    - total / cached / llm_calls / success
+    - причины пропусков: `empty_snippet`, `provider_error`, `domain_missing`, `other_skip`
+    - WARNING/ERROR для пустых сниппетов, недоступных провайдеров, отсутствующих доменов
+  - `main.py`: итоговая сводка прогона с разбивкой по `searcher` (`collected`/`labeled`/`exported`)
+  - `.env.example`: добавлен `LOG_LEVEL=INFO`
+  - Коммит: `feat(logging): structured pipeline logging (searcher/geo, label reasons) to stdout`
 - **deploy.sh — автоматический скрипт деплоя (infra)**
   - `deploy.sh`: полный цикл обновления — git pull → бэкап БД → build → up → health-check → migrate → финальный health-check
   - Безопасность: `set -euo pipefail`, health-gated миграция (если контейнер не поднялся — миграция НЕ выполняется), бэкап ДО миграции

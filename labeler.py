@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import logging
 from dotenv import load_dotenv
 import requests
 
@@ -10,7 +9,7 @@ load_dotenv()
 import config
 import storage
 
-log = logging.getLogger(__name__)
+log = config.setup_logging(__name__)
 
 LLM_PAUSE = 1  # секунд между вызовами LLM
 
@@ -131,6 +130,120 @@ def _label_domain(row: dict, client_id: str, db_path: str) -> str | None:
     return sentiment
 
 
+def _label_group(
+    group_rows: list[dict],
+    label_mode: str,
+    force_relabel: bool,
+    client_id: str,
+    db_path: str,
+    provider_chain: str | list[str] | None,
+) -> list[dict]:
+    """Размечает одну группу строк (searcher×geo) с детальной статистикой."""
+    result = []
+    last_real_call = 0.0
+    searcher = group_rows[0].get("searcher", "unknown")
+    geo = group_rows[0].get("geo", "unknown")
+
+    stats = {
+        "total": len(group_rows),
+        "cached": 0,
+        "llm_calls": 0,
+        "success": 0,
+        "empty_snippet": 0,
+        "provider_error": 0,
+        "domain_missing": 0,
+        "other_skip": 0,
+    }
+
+    log.info("Разметка группы searcher=%s geo=%s строк=%s mode=%s",
+             searcher, geo, len(group_rows), label_mode)
+
+    for row in group_rows:
+        # Пробрасываем режим и клиента в каждую строку для последующего insert_labels
+        row["label_mode"] = label_mode
+        row["client_id"] = client_id
+        row["confidence"] = "high"
+
+        if label_mode == "domains":
+            domain = row.get("domain")
+            if not domain:
+                log.warning("domains: пустой domain, пропускаю url=%s", row.get("url", "—"))
+                row["sentiment"] = None
+                row["label"] = None
+                stats["other_skip"] += 1
+                result.append(row)
+                continue
+            sentiment = _label_domain(row, client_id, db_path)
+            if sentiment is None:
+                stats["domain_missing"] += 1
+                log.warning("domains: домен не найден в справочнике: %s", domain)
+            else:
+                stats["success"] += 1
+            row["sentiment"] = sentiment
+            row["label"] = sentiment
+            result.append(row)
+            continue
+
+        if label_mode == "full":
+            # Заглушка: полный текст страницы — отдельная задача (v2).
+            row["sentiment"] = None
+            row["label"] = None
+            result.append(row)
+            continue
+
+        # --- режим snippets ---
+        snippet = row.get("snippet", "")
+        if not snippet or not snippet.strip():
+            log.warning("snippets: пустой сниппет для url=%s query='%s'",
+                        row.get("url", "—"), row.get("query", "—"))
+            row["sentiment"] = None
+            row["label"] = None
+            stats["empty_snippet"] += 1
+            result.append(row)
+            continue
+
+        # Проверяем кэш, если не force_relabel
+        if not force_relabel:
+            cached = storage.get_cached_label(row["url"], row["query"], db_path)
+            if cached is not None:
+                row["sentiment"] = cached
+                row["label"] = cached
+                stats["cached"] += 1
+                stats["success"] += 1
+                result.append(row)
+                continue
+
+        # Пауза только между реальными вызовами LLM
+        now = time.time()
+        elapsed = now - last_real_call
+        if elapsed < LLM_PAUSE and last_real_call > 0:
+            wait = LLM_PAUSE - elapsed
+            log.debug("Пауза %.1fс между вызовами LLM", wait)
+            time.sleep(wait)
+
+        stats["llm_calls"] += 1
+        sentiment = _label_one_llm(row, provider_chain=provider_chain)
+        if sentiment is None:
+            stats["provider_error"] += 1
+            log.error("snippets: не удалось разметить url=%s query='%s' (все провайдеры отказали)",
+                      row.get("url", "—"), row.get("query", "—"))
+        else:
+            stats["success"] += 1
+        row["sentiment"] = sentiment
+        row["label"] = sentiment
+        last_real_call = time.time()
+        result.append(row)
+
+    log.info(
+        "Группа searcher=%s geo=%s: total=%s cached=%s llm_calls=%s success=%s "
+        "empty_snippet=%s provider_error=%s domain_missing=%s other_skip=%s",
+        searcher, geo, stats["total"], stats["cached"], stats["llm_calls"],
+        stats["success"], stats["empty_snippet"], stats["provider_error"],
+        stats["domain_missing"], stats["other_skip"]
+    )
+    return result
+
+
 def label(
     rows: list[dict],
     db_path: str = storage.DB_PATH,
@@ -153,57 +266,30 @@ def label(
       - snippets: кэш (url+query) → LLM по сниппету.
       - full: заглушка, sentiment=None.
     """
-    result = []
-    last_real_call = 0.0
-
     if label_mode not in LABEL_MODES:
         log.warning("Неизвестный режим разметки '%s'", label_mode)
 
+    # Группируем по searcher×geo для структурного логирования
+    groups: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
-        # Пробрасываем режим и клиента в каждую строку для последующего insert_labels
-        row["label_mode"] = label_mode
-        row["client_id"] = client_id
-        row["confidence"] = "high"
+        key = (row.get("searcher", "unknown"), row.get("geo", "unknown"))
+        groups.setdefault(key, []).append(row)
 
-        if label_mode == "domains":
-            sentiment = _label_domain(row, client_id, db_path)
-            row["sentiment"] = sentiment
-            row["label"] = sentiment  # алиас для обратной совместимости
-            result.append(row)
-            continue
+    log.info("Начало разметки: %s строк, mode=%s, групп=%s", len(rows), label_mode, len(groups))
 
-        if label_mode == "full":
-            # Заглушка: полный текст страницы — отдельная задача (v2).
-            row["sentiment"] = None
-            row["label"] = None
-            result.append(row)
-            continue
+    result = []
+    for (searcher, geo), group_rows in sorted(groups.items()):
+        result.extend(_label_group(
+            group_rows,
+            label_mode=label_mode,
+            force_relabel=force_relabel,
+            client_id=client_id,
+            db_path=db_path,
+            provider_chain=provider_chain,
+        ))
 
-        # --- режим snippets ---
-        # Проверяем кэш, если не force_relabel
-        if not force_relabel:
-            cached = storage.get_cached_label(row["url"], row["query"], db_path)
-            if cached is not None:
-                row["sentiment"] = cached
-                row["label"] = cached  # алиас для обратной совместимости
-                log.info("из кэша: %s + '%s' -> %s", row["url"], row["query"], cached)
-                result.append(row)
-                continue
-
-        # Пауза только между реальными вызовами LLM
-        now = time.time()
-        elapsed = now - last_real_call
-        if elapsed < LLM_PAUSE and last_real_call > 0:
-            wait = LLM_PAUSE - elapsed
-            log.debug("Пауза %.1fс между вызовами LLM", wait)
-            time.sleep(wait)
-
-        sentiment = _label_one_llm(row, provider_chain=provider_chain)
-        row["sentiment"] = sentiment
-        row["label"] = sentiment  # алиас
-        last_real_call = time.time()
-        result.append(row)
-
+    total_success = sum(1 for r in result if r.get("sentiment") is not None)
+    log.info("Разметка завершена: %s/%s строк с sentiment", total_success, len(rows))
     return result
 
 

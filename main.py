@@ -1,7 +1,7 @@
-import logging
 import sys
 from typing import Any
 
+import config
 import storage
 from collector import collect
 from storage import save, insert_labels, _ensure_db
@@ -9,8 +9,7 @@ from labeler import label
 from exporter import export
 from reporter import build_report
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-log = logging.getLogger(__name__)
+log = config.setup_logging(__name__)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "depth": 10,
@@ -138,12 +137,29 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         log.error("Сбой reporter: %s", e)
 
     log.info("=== Итог прогона ===")
-    if export_ok:
-        log.info("Собрано: %s | Сохранено (новых): %s | Меток: %s | Выгружено: %s | Отчёт: %s",
-                  len(rows), saved_count, labeled_count, len(rows), "OK" if report_ok else "FAIL")
-    else:
-        log.info("Собрано: %s | Сохранено (новых): %s | Меток: %s | Выгрузка не удалась | Отчёт: %s",
-                  len(rows), saved_count, labeled_count, "OK" if report_ok else "FAIL")
+    log.info("Общая статистика: collected=%s saved_new=%s labeled=%s exported=%s report=%s",
+             len(rows), saved_count, labeled_count,
+             stats["exported"], "OK" if report_ok else "FAIL")
+
+    # Сводка по каждому searcher
+    searcher_stats: dict[str, dict[str, int]] = {}
+    for row in rows:
+        s = row.get("searcher", "unknown")
+        if s not in searcher_stats:
+            searcher_stats[s] = {"collected": 0, "labeled": 0, "exported": 0}
+        searcher_stats[s]["collected"] += 1
+        if row.get("sentiment") is not None:
+            searcher_stats[s]["labeled"] += 1
+        # exported совпадает с collected, если export успешен
+        if export_ok:
+            searcher_stats[s]["exported"] += 1
+
+    if searcher_stats:
+        log.info("Статистика по searcher:")
+        for s, st in sorted(searcher_stats.items()):
+            log.info("  %s: collected=%s labeled=%s exported=%s",
+                     s, st["collected"], st["labeled"], st["exported"])
+
     return {"exit_code": 0, "stats": stats}
 
 
