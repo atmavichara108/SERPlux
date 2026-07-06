@@ -21,12 +21,12 @@ SEARCHER_MAP = {
 HEADER = ["Дата", "Поисковая система", "Субъект/Запрос", "Гео", "Позиция", "URL", "Домен", "Сниппет", "Метка"]
 
 
-def _get_sheet():
+def _get_sheet(sheet_id: str | None = None):
     credentials_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    sheet_id = sheet_id or os.environ.get("GOOGLE_SHEET_ID")
 
     if not sheet_id:
-        log.error("GOOGLE_SHEET_ID не установлен в .env")
+        log.error("GOOGLE_SHEET_ID не установлен в .env и не передан в параметрах")
         return None
 
     if not os.path.exists(credentials_path):
@@ -75,12 +75,12 @@ def _row_to_list(row: Row) -> list[str]:
     ]
 
 
-def export(rows: list[Row]) -> None:
+def export(rows: list[Row], sheet_id: str | None = None) -> None:
     if not rows:
         log.warning("Нет строк для экспорта")
         return
 
-    worksheet = _get_sheet()
+    worksheet = _get_sheet(sheet_id=sheet_id)
     if worksheet is None:
         return
 

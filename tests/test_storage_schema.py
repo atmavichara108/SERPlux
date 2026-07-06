@@ -539,6 +539,9 @@ class TestClientManagement:
             "client_name": "Default",
             "project_id": None,
             "sheet_id": None,
+            "searchers": None,
+            "geos": None,
+            "regions_map": None,
         }]
 
     def test_create_and_list_clients(self, init_db):
@@ -553,8 +556,34 @@ class TestClientManagement:
             "client_name": "Acme Corp",
             "project_id": 123,
             "sheet_id": "abc",
+            "searchers": None,
+            "geos": None,
+            "regions_map": None,
         }
         assert "default" in by_id
+
+    def test_create_client_with_searchers_geos_regions_map(self, init_db):
+        """create_client сериализует searchers/geos и сохраняет regions_map."""
+        storage.create_client(
+            "full",
+            "Full Client",
+            project_id=456,
+            sheet_id="sh",
+            searchers=["google", "yandex_ru"],
+            geos=["Литва", "Германия"],
+            regions_map="regions_map_full.json",
+            db_path=init_db,
+        )
+        client = storage.get_client("full", init_db)
+        assert client == {
+            "client_id": "full",
+            "client_name": "Full Client",
+            "project_id": 456,
+            "sheet_id": "sh",
+            "searchers": ["google", "yandex_ru"],
+            "geos": ["Литва", "Германия"],
+            "regions_map": "regions_map_full.json",
+        }
 
     def test_create_client_optional_fields(self, init_db):
         """project_id и sheet_id необязательны и по умолчанию None."""
@@ -579,6 +608,9 @@ class TestClientManagement:
             "client_name": "Get Me",
             "project_id": 42,
             "sheet_id": "sh",
+            "searchers": None,
+            "geos": None,
+            "regions_map": None,
         }
 
     def test_get_client_missing_returns_none(self, init_db):
@@ -606,6 +638,9 @@ class TestClientManagement:
             client_name="Updated",
             project_id=2,
             sheet_id="new",
+            searchers=["google"],
+            geos=["Литва"],
+            regions_map="regions_map_upd.json",
         )
 
         client = storage.get_client("upd", init_db)
@@ -614,6 +649,9 @@ class TestClientManagement:
             "client_name": "Updated",
             "project_id": 2,
             "sheet_id": "new",
+            "searchers": ["google"],
+            "geos": ["Литва"],
+            "regions_map": "regions_map_upd.json",
         }
 
         conn = sqlite3.connect(init_db)

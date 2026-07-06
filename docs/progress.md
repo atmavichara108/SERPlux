@@ -23,6 +23,22 @@
   - Зафиксировано в `docs/decisions.md`: агенты работают на локальной машине,
     пользователь выполняет деплой на сервере вручную через SSH
   - Ответ на Q13 в `docs/ui-spec.md`: описан ручной деплой и статус zero-downtime
+- **Этап 0: config из профиля клиента (build)**
+  - Проблема: `main.py` хардкодил `DEFAULT_CONFIG` (searchers/geos), а `collector`
+    брал `project_id` из env — выбор клиента не долетал до Topvisor
+  - Решение:
+    - `storage.py`: таблица `clients` расширена полями `searchers`, `geos`, `regions_map`
+      (JSON-списки + имя файла карты); автомиграция через `ALTER TABLE ADD COLUMN`
+    - `webhook.py`: `_build_client_config()` собирает runtime-config из
+      `DEFAULT_CONFIG` → параметров запроса → профиля клиента
+    - `webhook.py`: `_run_pipeline()` передаёт client-aware config в `main.run()`
+    - `collector.py`: `project_id` берётся из `config["project_id"]`, fallback на env
+    - `exporter.py` / `reporter.py`: `sheet_id` берётся из параметров/config,
+      fallback на `GOOGLE_SHEET_ID`
+    - `main.py`: `run()` строит `runtime_config` из `DEFAULT_CONFIG` + `config`
+  - Тесты: 151/151 passed; добавлены тесты на профиль клиента, sheet_id,
+    searchers/geos/project_id в `test_webhook.py` и `test_main.py`
+  - `docs/contracts.md`: обновлены сигнатуры `clients` CRUD и `RunRequest`
 - **webhook.py: report_only + finished_at/client_id (ui-spec §5.2-5.3)**
   - `POST /run`: новые поля `report_only: bool = False` и `report_date: str = "latest"` в RunRequest
   - При `report_only=true`: пропускает collect/save/label/export, вызывает только `reporter.build_report(date, force=True)`

@@ -14,6 +14,7 @@ import logging
 import os
 import threading
 from datetime import datetime, timezone
+from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, status
@@ -69,6 +70,9 @@ class ClientCreateRequest(BaseModel):
     client_name: str
     project_id: int | None = None
     sheet_id: str | None = None
+    searchers: list[str] | None = None
+    geos: list[str] | None = None
+    regions_map: str | None = None
 
 
 class ClientUpdateRequest(BaseModel):
@@ -76,6 +80,9 @@ class ClientUpdateRequest(BaseModel):
     client_name: str | None = None
     project_id: int | None = None
     sheet_id: str | None = None
+    searchers: list[str] | None = None
+    geos: list[str] | None = None
+    regions_map: str | None = None
 
 
 def _get_secret() -> str:
@@ -98,6 +105,49 @@ def _verify_token(authorization: str | None) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Неверный токен",
         )
+
+
+def _build_client_config(
+    client_id: str,
+    request_params: dict[str, Any],
+) -> dict[str, Any]:
+    """Собирает runtime-config: DEFAULT_CONFIG → параметры запроса → профиль клиента."""
+    from main import DEFAULT_CONFIG
+
+    # Параметры запроса, которые пользователь может переопределить вручную
+    runtime_overrides = {
+        "with_labels",
+        "depth",
+        "label_mode",
+        "force_relabel",
+    }
+
+    config = dict(DEFAULT_CONFIG)
+    config["client_id"] = client_id
+
+    # 1. Параметры запроса, не относящиеся к профилю (например, regions_map из старого контракта)
+    config.update({k: v for k, v in request_params.items() if k not in runtime_overrides})
+
+    # 2. Профиль клиента из БД перекрывает дефолты и legacy-поля
+    client = storage.get_client(client_id, storage.DB_PATH)
+    if client:
+        log.info("Профиль клиента найден: %s", client_id)
+        if client.get("project_id") is not None:
+            config["project_id"] = client["project_id"]
+        if client.get("sheet_id"):
+            config["sheet_id"] = client["sheet_id"]
+        if client.get("searchers"):
+            config["searchers"] = client["searchers"]
+        if client.get("geos"):
+            config["geos"] = client["geos"]
+        if client.get("regions_map"):
+            config["regions_map"] = client["regions_map"]
+    else:
+        log.warning("Профиль клиента '%s' не найден, используем fallback", client_id)
+
+    # 3. Явные runtime-параметры запроса перекрывают профиль
+    config.update({k: v for k, v in request_params.items() if k in runtime_overrides})
+    return config
 
 
 def _run_pipeline(
@@ -126,26 +176,31 @@ def _run_pipeline(
             from reporter import build_report
             date_arg = None if report_date == "latest" else report_date
             log.info("Построение отчёта за %s (report_only=True)", date_arg or "последнюю доступную")
-            build_report(date=date_arg, force=True)
+
+            client = storage.get_client(client_id, storage.DB_PATH)
+            sheet_id = client.get("sheet_id") if client else None
+
+            build_report(date=date_arg, force=True, sheet_id=sheet_id)
             _last_run["status"] = "ok"
             _last_run["message"] = "Отчёт построен успешно"
             log.info("Отчёт построен успешно")
         else:
             # Полный пайплайн: collect → save → label → export → report
-            from main import run, DEFAULT_CONFIG
+            from main import run
 
-            config = {
-                **DEFAULT_CONFIG,
+            request_params = {
                 "with_labels": with_labels,
                 "depth": depth,
-                "client_id": client_id,
                 "label_mode": label_mode,
                 "force_relabel": force_relabel,
             }
+            # regions_map из тела запроса пока сохраняем для обратной совместимости,
+            # но профиль клиента может его перекрыть
+            if regions_map:
+                request_params["regions_map"] = regions_map
 
-            # Подменяем regions_map в collector через переменную окружения
-            # (collector читает os.environ["REGIONS_MAP"] если задана)
-            os.environ["REGIONS_MAP"] = regions_map
+            config = _build_client_config(client_id, request_params)
+            log.info("Конфиг прогона: %s", config)
 
             exit_code = run(config)
             if exit_code == 0:
@@ -253,6 +308,9 @@ def create_client(
             client_name=body.client_name,
             project_id=body.project_id,
             sheet_id=body.sheet_id,
+            searchers=body.searchers,
+            geos=body.geos,
+            regions_map=body.regions_map,
             db_path=storage.DB_PATH,
         )
     except ValueError as exc:
@@ -289,12 +347,20 @@ def update_client(
     """Обновляет профиль клиента. Возвращает 404, если клиент не найден."""
     _verify_token(authorization)
     try:
+        update_fields = {
+            "client_name": body.client_name,
+            "project_id": body.project_id,
+            "sheet_id": body.sheet_id,
+            "searchers": body.searchers,
+            "geos": body.geos,
+            "regions_map": body.regions_map,
+        }
+        # Убираем None-поля чтобы не затереть существующие значения
+        update_fields = {k: v for k, v in update_fields.items() if v is not None}
         storage.update_client(
             client_id=client_id,
             db_path=storage.DB_PATH,
-            client_name=body.client_name,
-            project_id=body.project_id,
-            sheet_id=body.sheet_id,
+            **update_fields,
         )
     except ValueError as exc:
         raise HTTPException(

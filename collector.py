@@ -13,6 +13,13 @@ from topvisor import (
     snapshot_exists,
 )
 
+
+def _get_project_id(config: dict[str, Any]) -> int:
+    """project_id из config['project_id'], fallback на env/get_project_id()."""
+    if config.get("project_id") is not None:
+        return int(config["project_id"])
+    return get_project_id()
+
 log = logging.getLogger(__name__)
 
 
@@ -32,7 +39,7 @@ def collect(config: dict[str, Any]) -> list[Row]:
     searchers = config.get("searchers", [])
     geos = config.get("geos", [])
     timeout_sec = config.get("timeout_sec", 900)
-    project_id = get_project_id()
+    project_id = _get_project_id(config)
 
     # Путь к карте регионов: аргумент config > env REGIONS_MAP > дефолт
     regions_map_path = (

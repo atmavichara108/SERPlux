@@ -37,9 +37,19 @@ def run(config: dict[str, Any]) -> int:
     client_id = config.get("client_id", "default")
     label_mode = config.get("label_mode", "domains")
     force_relabel = config.get("force_relabel", False)
+    sheet_id = config.get("sheet_id")
+
+    # Наполняем config значениями из профиля клиента / fallback DEFAULT_CONFIG
+    runtime_config = {
+        **DEFAULT_CONFIG,
+        **config,
+        # Явно берём из config, если заданы; иначе из DEFAULT_CONFIG выше
+        "searchers": config.get("searchers") or DEFAULT_CONFIG["searchers"],
+        "geos": config.get("geos") or DEFAULT_CONFIG["geos"],
+    }
 
     try:
-        rows = collect(config)
+        rows = collect(runtime_config)
     except Exception as e:
         log.error("Сбой collect: %s", e)
         return 1
@@ -80,7 +90,7 @@ def run(config: dict[str, Any]) -> int:
 
     export_ok = False
     try:
-        export(labeled_rows)
+        export(labeled_rows, sheet_id=sheet_id)
         export_ok = True
         log.info("Выгружено в Sheet: %s строк", len(rows))
     except Exception as e:
@@ -89,7 +99,7 @@ def run(config: dict[str, Any]) -> int:
     # Построение отчёта
     report_ok = False
     try:
-        build_report()
+        build_report(sheet_id=sheet_id)
         report_ok = True
         log.info("Отчёт построен")
     except Exception as e:

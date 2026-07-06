@@ -75,19 +75,24 @@ Row = {
   Авто-клиент 'default' если таблица clients пуста.
 
 - `list_clients(db_path: str = DB_PATH) -> list[dict]`
-  — Возвращает список клиентов: `client_id`, `client_name`, `project_id`, `sheet_id`.
+  — Возвращает список клиентов: `client_id`, `client_name`, `project_id`, `sheet_id`,
+  `searchers`, `geos`, `regions_map`.
 
 - `get_client(client_id: str, db_path: str = DB_PATH) -> dict | None`
-  — Возвращает одного клиента с полями `client_id`, `client_name`, `project_id`, `sheet_id`
-  или `None`, если клиент не найден.
+  — Возвращает одного клиента с полями `client_id`, `client_name`, `project_id`, `sheet_id`,
+  `searchers`, `geos`, `regions_map` или `None`, если клиент не найден.
 
 - `create_client(client_id: str, client_name: str, project_id: int | None = None,
-                 sheet_id: str | None = None, db_path: str = DB_PATH) -> None`
-  — Создаёт клиента. Выбрасывает `ValueError`, если `client_id` уже существует.
+                 sheet_id: str | None = None, searchers: list[str] | None = None,
+                 geos: list[str] | None = None, regions_map: str | None = None,
+                 db_path: str = DB_PATH) -> None`
+  — Создаёт клиента. `searchers` и `geos` сериализуются в JSON.
+  Выбрасывает `ValueError`, если `client_id` уже существует.
 
 - `update_client(client_id: str, db_path: str = DB_PATH, **fields) -> None`
-  — Обновляет поля `client_name`, `project_id`, `sheet_id` и `updated_at`.
-  Выбрасывает `ValueError`, если клиент не найден или переданы недопустимые поля.
+  — Обновляет поля `client_name`, `project_id`, `sheet_id`, `searchers`, `geos`,
+  `regions_map` и `updated_at`. Выбрасывает `ValueError`, если клиент не найден
+  или переданы недопустимые поля.
 
 ## config.py — провайдеры LLM
 
@@ -162,10 +167,16 @@ DEFAULT_PROVIDER: str = "opencode-zen"
 
 **Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
 
+**Сборка config:**
+`webhook.py` по `client_id` загружает профиль клиента из БД (`storage.get_client`).
+Runtime-config собирается как `DEFAULT_CONFIG` → параметры запроса → профиль клиента
+(`project_id`, `sheet_id`, `searchers`, `geos`, `regions_map`) → runtime-параметры
+запроса (`with_labels`, `depth`, `label_mode`, `force_relabel`).
+
 **Тело запроса:**
 ```python
 {
-    "regions_map": str = "regions_map.json",  # имя файла карты регионов
+    "regions_map": str = "regions_map.json",  # legacy: имя файла карты регионов
     "with_labels": bool = True,                # включить разметку
     "depth": int = 10,                         # глубина сбора (10/20/50/100)
     "client_id": str = "default",              # ID клиента

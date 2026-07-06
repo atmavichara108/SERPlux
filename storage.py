@@ -33,14 +33,29 @@ def _init_db(db_path: str = DB_PATH) -> None:
         # Клиенты
         conn.execute("""
             CREATE TABLE IF NOT EXISTS clients (
-                client_id   TEXT PRIMARY KEY,
-                client_name TEXT NOT NULL,
-                project_id  INTEGER,
-                sheet_id    TEXT,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                client_id     TEXT PRIMARY KEY,
+                client_name   TEXT NOT NULL,
+                project_id    INTEGER,
+                sheet_id      TEXT,
+                searchers     TEXT,                      -- JSON список, напр. ["google","yandex_ru"]
+                geos          TEXT,                      -- JSON список гео
+                regions_map   TEXT,                      -- имя файла карты регионов
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
+
+        # Миграция: добавляем колонки если их нет (для старых БД)
+        for col, dtype in [
+            ("searchers", "TEXT"),
+            ("geos", "TEXT"),
+            ("regions_map", "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE clients ADD COLUMN {col} {dtype}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
         # Позиции (сырые данные из Topvisor)
         conn.execute("""
@@ -543,20 +558,48 @@ def upsert_domain_label(
 # ─── Управление профилями клиентов ────────────────────────────────────────────
 
 
-_CLIENT_COLUMNS = {"client_name", "project_id", "sheet_id"}
+import json as _json
+
+_CLIENT_COLUMNS = {"client_name", "project_id", "sheet_id", "searchers", "geos", "regions_map"}
+
+
+def _serialize_json_field(value: list[str] | None) -> str | None:
+    """Сериализует список в JSON-строку или возвращает None."""
+    if value is None:
+        return None
+    return _json.dumps(value, ensure_ascii=False)
+
+
+def _deserialize_json_field(value: str | None) -> list[str] | None:
+    """Десериализует JSON-строку в список или возвращает None."""
+    if value is None:
+        return None
+    try:
+        result = _json.loads(value)
+        return result if isinstance(result, list) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _hydrate_client(row: sqlite3.Row) -> dict:
+    """Превращает строку clients в dict, раскрывая JSON-поля searchers/geos."""
+    client = dict(row)
+    client["searchers"] = _deserialize_json_field(client.get("searchers"))
+    client["geos"] = _deserialize_json_field(client.get("geos"))
+    return client
 
 
 def list_clients(db_path: str = DB_PATH) -> list[dict]:
-    """Возвращает список клиентов с полями client_id, client_name, project_id, sheet_id."""
+    """Возвращает список клиентов с полями профиля."""
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     try:
         rows = conn.execute(
-            """SELECT client_id, client_name, project_id, sheet_id
+            """SELECT client_id, client_name, project_id, sheet_id, searchers, geos, regions_map
                FROM clients
                ORDER BY client_id"""
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_hydrate_client(r) for r in rows]
     finally:
         conn.close()
 
@@ -567,12 +610,12 @@ def get_client(client_id: str, db_path: str = DB_PATH) -> dict | None:
     conn = _get_conn(db_path)
     try:
         row = conn.execute(
-            """SELECT client_id, client_name, project_id, sheet_id
+            """SELECT client_id, client_name, project_id, sheet_id, searchers, geos, regions_map
                FROM clients
                WHERE client_id = ?""",
             (client_id,),
         ).fetchone()
-        return dict(row) if row else None
+        return _hydrate_client(row) if row else None
     finally:
         conn.close()
 
@@ -582,17 +625,32 @@ def create_client(
     client_name: str,
     project_id: int | None = None,
     sheet_id: str | None = None,
+    searchers: list[str] | None = None,
+    geos: list[str] | None = None,
+    regions_map: str | None = None,
     db_path: str = DB_PATH,
 ) -> None:
-    """Создаёт нового клиента. Выбрасывает ValueError, если client_id уже существует."""
+    """
+    Создаёт нового клиента. searchers/geos передаются как списки,
+    сериализуются в JSON. Выбрасывает ValueError, если client_id уже существует.
+    """
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     try:
         conn.execute(
             """INSERT INTO clients
-                   (client_id, client_name, project_id, sheet_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
-            (client_id, client_name, project_id, sheet_id),
+                   (client_id, client_name, project_id, sheet_id,
+                    searchers, geos, regions_map, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                client_id,
+                client_name,
+                project_id,
+                sheet_id,
+                _serialize_json_field(searchers),
+                _serialize_json_field(geos),
+                regions_map,
+            ),
         )
         conn.commit()
     except sqlite3.IntegrityError as exc:
@@ -604,7 +662,8 @@ def create_client(
 
 def update_client(client_id: str, db_path: str = DB_PATH, **fields) -> None:
     """
-    Обновляет поля профиля клиента. Допустимые поля: client_name, project_id, sheet_id.
+    Обновляет поля профиля клиента. Допустимые поля: client_name, project_id, sheet_id,
+    searchers, geos, regions_map. searchers/geos принимаются как списки.
     Обновляет updated_at. Выбрасывает ValueError, если клиент не найден
     или переданы недопустимые поля.
     """
@@ -612,12 +671,20 @@ def update_client(client_id: str, db_path: str = DB_PATH, **fields) -> None:
     if unknown:
         raise ValueError(f"Недопустимые поля: {', '.join(sorted(unknown))}")
 
+    # Сериализуем JSON-поля перед записью в БД
+    processed_fields = {}
+    for key, value in fields.items():
+        if key in ("searchers", "geos"):
+            processed_fields[key] = _serialize_json_field(value)
+        else:
+            processed_fields[key] = value
+
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     try:
-        if fields:
-            set_clause = ", ".join(f"{col} = ?" for col in fields)
-            values = list(fields.values())
+        if processed_fields:
+            set_clause = ", ".join(f"{col} = ?" for col in processed_fields)
+            values = list(processed_fields.values())
             values.append(client_id)
             cur = conn.execute(
                 f"""UPDATE clients

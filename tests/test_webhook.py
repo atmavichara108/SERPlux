@@ -164,6 +164,9 @@ class TestClientsEndpoint:
             "client_name": "Acme Corp",
             "project_id": 123,
             "sheet_id": "abc",
+            "searchers": None,
+            "geos": None,
+            "regions_map": None,
         }
 
     def test_create_client(self, client, client_db):
@@ -212,6 +215,9 @@ class TestClientsEndpoint:
             "client_name": "One",
             "project_id": 7,
             "sheet_id": "sh",
+            "searchers": None,
+            "geos": None,
+            "regions_map": None,
         }
 
     def test_get_client_missing_returns_404(self, client, client_db):
@@ -226,7 +232,14 @@ class TestClientsEndpoint:
 
         resp = client.put(
             "/clients/upd",
-            json={"client_name": "New", "project_id": 2, "sheet_id": "new"},
+            json={
+                "client_name": "New",
+                "project_id": 2,
+                "sheet_id": "new",
+                "searchers": ["google"],
+                "geos": ["Литва"],
+                "regions_map": "regions_map_upd.json",
+            },
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 200
@@ -235,6 +248,9 @@ class TestClientsEndpoint:
             "client_name": "New",
             "project_id": 2,
             "sheet_id": "new",
+            "searchers": ["google"],
+            "geos": ["Литва"],
+            "regions_map": "regions_map_upd.json",
         }
 
     def test_update_client_missing_returns_404(self, client, client_db):
@@ -415,3 +431,93 @@ class TestStatusExtendedFields:
         assert body["finished_at"] is None
         assert body["client_id"] is None
         assert body["status"] == "idle"
+
+
+class TestClientProfilePipeline:
+    """Тесты сборки config из профиля клиента в webhook.py."""
+
+    def test_build_client_config_uses_profile(self, monkeypatch):
+        """_build_client_config берёт project_id/searchers/geos/regions_map/sheet_id из профиля."""
+        import storage
+
+        def fake_get_client(client_id, db_path):
+            return {
+                "client_id": "acme",
+                "client_name": "Acme Corp",
+                "project_id": 999,
+                "sheet_id": "acme-sheet",
+                "searchers": ["google"],
+                "geos": ["Литва"],
+                "regions_map": "regions_map_acme.json",
+            }
+
+        monkeypatch.setattr(storage, "get_client", fake_get_client)
+
+        config = webhook._build_client_config("acme", {"depth": 50})
+        assert config["project_id"] == 999
+        assert config["sheet_id"] == "acme-sheet"
+        assert config["searchers"] == ["google"]
+        assert config["geos"] == ["Литва"]
+        assert config["regions_map"] == "regions_map_acme.json"
+        # Параметры запроса перекрывают профиль
+        assert config["depth"] == 50
+        # Fallback DEFAULT_CONFIG для остального
+        assert "timeout_sec" in config
+
+    def test_build_client_config_fallback_when_profile_missing(self, monkeypatch):
+        """Если профиль не найден, используем DEFAULT_CONFIG + env fallback."""
+        import storage
+        monkeypatch.setattr(storage, "get_client", lambda cid, db_path: None)
+        monkeypatch.setenv("TOPVISOR_PROJECT_ID", "777")
+
+        config = webhook._build_client_config("missing", {"depth": 20})
+        assert config["depth"] == 20
+        assert config["client_id"] == "missing"
+        assert config["searchers"] == ["google", "yandex_ru", "yandex_com"]
+
+    def test_run_pipeline_passes_client_config_to_main(self, monkeypatch, client_db):
+        """_run_pipeline передаёт в main.run() config с полями из профиля клиента."""
+        import storage
+        import main
+
+        storage.create_client(
+            "acme", "Acme Corp",
+            project_id=999,
+            sheet_id="acme-sheet",
+            searchers=["google"],
+            geos=["Литва"],
+            regions_map="regions_map_acme.json",
+            db_path=client_db,
+        )
+        monkeypatch.setattr(storage, "DB_PATH", client_db)
+
+        captured = {}
+
+        def fake_run(config):
+            captured["config"] = config
+            return 0
+
+        monkeypatch.setattr(main, "run", fake_run)
+
+        # _run_pipeline ожидает, что lock уже захвачен (как в trigger_run)
+        webhook._run_lock.acquire()
+        try:
+            webhook._run_pipeline(
+                regions_map="regions_map_default.json",
+                with_labels=True,
+                depth=10,
+                client_id="acme",
+                label_mode="domains",
+                force_relabel=False,
+            )
+        finally:
+            if webhook._run_lock.locked():
+                webhook._run_lock.release()
+
+        cfg = captured["config"]
+        assert cfg["project_id"] == 999
+        assert cfg["sheet_id"] == "acme-sheet"
+        assert cfg["searchers"] == ["google"]
+        assert cfg["geos"] == ["Литва"]
+        assert cfg["regions_map"] == "regions_map_acme.json"
+        assert cfg["client_id"] == "acme"

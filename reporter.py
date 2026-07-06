@@ -34,12 +34,12 @@ def _get_geo_display(geo: str) -> str:
     return GEO_DISPLAY.get(geo, geo)
 
 
-def _get_spreadsheet():
+def _get_spreadsheet(sheet_id: str | None = None):
     credentials_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    sheet_id = sheet_id or os.environ.get("GOOGLE_SHEET_ID")
 
     if not sheet_id:
-        log.error("GOOGLE_SHEET_ID не установлен в .env")
+        log.error("GOOGLE_SHEET_ID не установлен в .env и не передан в параметрах")
         return None
 
     if not os.path.exists(credentials_path):
@@ -107,7 +107,7 @@ def _apply_label_colors(spreadsheet, sheet_id: int,
         log.error("Ошибка при применении цветов: %s", e)
 
 
-def build_report(date: str | None = None, force: bool = False) -> None:
+def build_report(date: str | None = None, force: bool = False, sheet_id: str | None = None) -> None:
     if date is None:
         all_rows = get_history()
         if not all_rows:
@@ -205,7 +205,7 @@ def build_report(date: str | None = None, force: bool = False) -> None:
         report_data.append([""] * COLS)
         report_data.append([""] * COLS)
 
-    spreadsheet = _get_spreadsheet()
+    spreadsheet = _get_spreadsheet(sheet_id=sheet_id)
     if spreadsheet is None:
         return
 
@@ -246,8 +246,8 @@ def build_report(date: str | None = None, force: bool = False) -> None:
         log.info("Вставляю %s строк отчёта на лист '%s'", len(report_data), REPORT_SHEET_NAME)
         worksheet.insert_rows(report_data, 1)
 
-        sheet_id = worksheet.id
-        _apply_label_colors(spreadsheet, sheet_id, format_cells)
+        worksheet_id = worksheet.id
+        _apply_label_colors(spreadsheet, worksheet_id, format_cells)
 
         log.info("Отчёт успешно построен")
     except APIError as e:

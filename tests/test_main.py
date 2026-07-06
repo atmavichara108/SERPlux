@@ -99,3 +99,70 @@ class TestMainPipelineParams:
         exit_code = main_module.run({"with_labels": False})
         assert exit_code == 0
         label_spy.assert_not_called()
+
+    def test_run_passes_sheet_id_to_export_and_report(self, monkeypatch, sample_rows):
+        """sheet_id из config попадает в export() и build_report()."""
+        monkeypatch.setattr(main_module, "collect", lambda config: sample_rows)
+        monkeypatch.setattr(main_module, "_ensure_db", lambda: None)
+        monkeypatch.setattr(main_module, "save", lambda rows, client_id="default": len(rows))
+        monkeypatch.setattr(main_module, "label", lambda rows, **kwargs: sample_rows)
+        monkeypatch.setattr(main_module, "insert_labels", lambda rows: len(rows))
+
+        export_spy = MagicMock()
+        report_spy = MagicMock()
+        monkeypatch.setattr(main_module, "export", export_spy)
+        monkeypatch.setattr(main_module, "build_report", report_spy)
+
+        exit_code = main_module.run({"client_id": "acme", "sheet_id": "acme-sheet-id"})
+        assert exit_code == 0
+
+        export_spy.assert_called_once()
+        assert export_spy.call_args.kwargs["sheet_id"] == "acme-sheet-id"
+
+        report_spy.assert_called_once()
+        assert report_spy.call_args.kwargs["sheet_id"] == "acme-sheet-id"
+
+    def test_run_passes_searchers_geos_project_id_to_collector(self, monkeypatch, sample_rows):
+        """searchers, geos, project_id из config попадают в collect()."""
+        collect_spy = MagicMock(return_value=sample_rows)
+        monkeypatch.setattr(main_module, "collect", collect_spy)
+        monkeypatch.setattr(main_module, "_ensure_db", lambda: None)
+        monkeypatch.setattr(main_module, "save", lambda rows, client_id="default": len(rows))
+        monkeypatch.setattr(main_module, "label", lambda rows, **kwargs: sample_rows)
+        monkeypatch.setattr(main_module, "insert_labels", lambda rows: len(rows))
+        monkeypatch.setattr(main_module, "export", lambda rows, sheet_id=None: None)
+        monkeypatch.setattr(main_module, "build_report", lambda sheet_id=None: None)
+
+        exit_code = main_module.run({
+            "client_id": "acme",
+            "project_id": 999,
+            "searchers": ["google"],
+            "geos": ["Литва"],
+            "regions_map": "regions_map_acme.json",
+        })
+        assert exit_code == 0
+
+        collect_spy.assert_called_once()
+        cfg = collect_spy.call_args.args[0]
+        assert cfg["project_id"] == 999
+        assert cfg["searchers"] == ["google"]
+        assert cfg["geos"] == ["Литва"]
+        assert cfg["regions_map"] == "regions_map_acme.json"
+
+    def test_run_uses_default_searchers_geos_when_missing(self, monkeypatch, sample_rows):
+        """Если searchers/geos не заданы, используются DEFAULT_CONFIG."""
+        collect_spy = MagicMock(return_value=sample_rows)
+        monkeypatch.setattr(main_module, "collect", collect_spy)
+        monkeypatch.setattr(main_module, "_ensure_db", lambda: None)
+        monkeypatch.setattr(main_module, "save", lambda rows, client_id="default": len(rows))
+        monkeypatch.setattr(main_module, "label", lambda rows, **kwargs: sample_rows)
+        monkeypatch.setattr(main_module, "insert_labels", lambda rows: len(rows))
+        monkeypatch.setattr(main_module, "export", lambda rows, sheet_id=None: None)
+        monkeypatch.setattr(main_module, "build_report", lambda sheet_id=None: None)
+
+        exit_code = main_module.run({"client_id": "default"})
+        assert exit_code == 0
+
+        cfg = collect_spy.call_args.args[0]
+        assert cfg["searchers"] == ["google", "yandex_ru", "yandex_com"]
+        assert "Литва" in cfg["geos"]
