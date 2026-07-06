@@ -49,7 +49,7 @@ var SETTINGS_TEMPLATE = [
   ["force_relabel",        "false",    "Принудительная переразметка: true или false"],
   ["force_rebuild_report", "false",    "Перестроить отчёт: true или false"],
   ["report_date",          "latest",   "Дата отчёта: latest или YYYY-MM-DD"],
-  ["provider_chain",       "zen",      "Цепочка провайдеров LLM (через запятую)"],
+  ["provider_chain",       "opencode-zen", "Цепочка провайдеров LLM (через запятую)"],
   ["status",               "idle",     "Статус последнего прогона (обновляется автоматически)"]
 ];
 
@@ -617,7 +617,7 @@ function buildReportForDate() {
     client_id: settings.clientId,
     report_only: true,
     report_date: reportDate,
-    force_rebuild_report: settings.forceRebuildReport || true
+    force_rebuild_report: settings.forceRebuildReport
   };
 
   _updateStatusCell("starting");
@@ -1305,7 +1305,6 @@ function refreshClientList() {
  * GET /providers → Data Validation dropdown.
  */
 function refreshProviderChain() {
-  var ui = SpreadsheetApp.getUi();
   var secret = _getSecret();
   if (!secret) {
     // Тихо выходим если нет секрета (вызывается из refreshClientList)

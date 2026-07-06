@@ -105,6 +105,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
                 "label_mode": label_mode,
                 "force_relabel": force_relabel,
                 "client_id": client_id,
+                "db_path": storage.DB_PATH,
             }
             if provider_chain is not None:
                 label_kwargs["provider_chain"] = provider_chain
@@ -125,6 +126,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         stats["exported"] = len(rows)
     except Exception as e:
         log.error("Сбой export: %s", e)
+        stats["exported"] = 0
 
     # Построение отчёта
     report_ok = False

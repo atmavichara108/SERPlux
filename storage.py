@@ -271,9 +271,6 @@ def insert_labels(rows: list[Row], db_path: str = DB_PATH) -> int:
     if not rows:
         return 0
 
-    if not rows:
-        return 0
-
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     # Ручное управление транзакциями, чтобы _insert_one_label мог делать

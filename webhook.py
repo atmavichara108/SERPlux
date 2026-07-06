@@ -246,6 +246,8 @@ def _run_pipeline(
                 label_mode=label_mode,
                 force_relabel=force_relabel,
                 client_id=client_id,
+                provider_chain=provider_chain,
+                db_path=storage.DB_PATH,
             )
             storage.insert_labels(labeled_rows, db_path=storage.DB_PATH)
 

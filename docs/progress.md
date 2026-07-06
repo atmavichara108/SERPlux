@@ -44,7 +44,7 @@
     - Меню SERPlux приведено в соответствие с `apps_script.gs` (новые пункты: «Разметить собранные данные», «Разметить за дату...», «Обновить список клиентов», «Обновить гео из Topvisor...»)
     - Лист «Настройки»: описаны выпадающие списки `client_id` и `provider_chain`
     - Добавлены сценарии использования: сбор за дату, разметка без сбора (`label_only`), разметка за дату, построение отчёта за дату, добавление клиента с гео из Topvisor, обновление гео клиента
-    - Расширено описание параметров `date`, `force_rebuild_report`, `provider_chain`
+    - Расширено описание параметров `date`, добавлены `force_rebuild_report`, `provider_chain`
     - Раздел «Клиенты» дополнен полями `searchers`, `geos`, `regions_map`
     - Из «Будущих возможностей» убраны уже реализованные пункты (`date`, `force_rebuild_report`, `provider_chain`)
   - `docs/contracts.md`: финальная сверка — все сигнатуры Этапов 0–2 актуальны (`RunRequest`, `/clients/{id}/dates`, `/topvisor/regions`, `label()` с `provider_chain`, `storage.get_dates()`)
@@ -55,6 +55,17 @@
     - date/force_rebuild_report/provider_chain в `/run`
     - default `db_path` — обходной фикс применён
   - Коммит: `feat(docs): user guide scenarios, contracts sync, techdebt cleanup`
+- **Багфиксы по результатам code review (Stages 0–2)**
+  - `apps_script.gs`: default `provider_chain` изменён с `zen` на `opencode-zen` (соответствует реальному ID провайдера в `config.py`)
+  - `apps_script.gs`: исправлено `force_rebuild_report: settings.forceRebuildReport || true` → всегда `true` из-за JS; теперь используется значение из листа «Настройки»
+  - `webhook.py`: в `_run_pipeline(label_only)` теперь пробрасывается `provider_chain` и `db_path=storage.DB_PATH` в `labeler.label()`
+  - `main.py`: в полном пайплайне `label()` теперь вызывается с `db_path=storage.DB_PATH`
+  - `main.py`: `stats["exported"]` теперь устанавливается только при успешном `export()`; при ошибке сбрасывается в `0`
+  - `storage.py`: убран дублирующийся `if not rows: return 0` в `insert_labels()`
+  - `apps_script.gs`: убрана неиспользуемая переменная `ui` в `refreshProviderChain()`
+  - `docs/progress.md`: убран устаревший пункт `date/force_rebuild_report/provider_chain в /run` из «Дальше по порядку»; обновлено «Текущее состояние проекта»
+  - Тесты: `160/160 passed`; `node --check` для `apps_script.gs` пройден
+  - Коммит: `fix(review): provider defaults, db_path in labeler, exported stats`
 - **Этап 2: UI Google Sheets — выпадающие списки, label-only, гео из Topvisor**
   - Проблема: UI не использовал новые возможности Этапа 1 (date, label_only, provider_chain, force_rebuild_report); добавление клиента требовало ручного ввода гео; не было быстрого доступа к списку дат для отчёта/разметки
   - Решение:
@@ -285,9 +296,8 @@
 ## Дальше по порядку
 1. Первый тестовый прогон на боевом сервере (см. «Текущее состояние проекта» ниже)
 2. /status.stats (provider_used, collected, cost_estimate) — техдолг
-3. Мультиклиентность: расширение профиля (searchers, geos, subject_blocks в БД)
-4. date/force_rebuild_report/provider_chain в /run — техдолг
-5. CRUD /providers — техдолг
+3. Мультиклиентность: subject_blocks в БД и настройка под клиента
+4. CRUD /providers — техдолг
 
 ## Идеи на будущее (UI-этап)
 - **Календарь версий**: каждый прогон собирает выдачу под датой, в отчёте копятся
@@ -300,9 +310,9 @@
 
 ## Текущее состояние проекта (для тестового прогона на сервере)
 
-**Дата:** 2026-07-04
+**Дата:** 2026-07-07
 **Версия API:** 1.0.0
-**Тесты:** 144/144 passed
+**Тесты:** 160/160 passed
 **Ветка:** main
 
 ### Что реализовано
