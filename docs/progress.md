@@ -11,6 +11,14 @@
   - `.opencode/command/deploy.md`: переписан под гибридную модель — infra-dev проверяет локальные файлы и готовит чек-лист, пользователь выполняет команды на сервере
   - `.opencode/agents/infra-dev.md`: убрано непроверенное утверждение "Приложение задеплоено", заменено на описание ручного деплоя через SSH
   - `docs/progress.md`: добавлен шаг 3.5 миграции БД в инструкцию первого тестового прогона
+- **Руководство пользователя `docs/user-guide.md`: полный гайд для заказчика**
+  - Описание всех листов таблицы (Настройки, Лог, Данные, Отчёт)
+  - Меню SERPlux и пошаговая инструкция запуска сбора/отчёта
+  - Параметры прогона: depth, with_labels, label_mode, force_relabel, date, report_date
+  - Режимы разметки (domains/snippets/full) с указанием стоимости
+  - Провайдеры LLM, мультиклиентность, отчёт-матрица, версионность, безопасность
+  - Блок «Будущие возможности» на основе `docs/techdebt.md` (без выдумывания)
+  - FAQ с типовыми проблемами и решениями
 - **webhook.py: report_only + finished_at/client_id (ui-spec §5.2-5.3)**
   - `POST /run`: новые поля `report_only: bool = False` и `report_date: str = "latest"` в RunRequest
   - При `report_only=true`: пропускает collect/save/label/export, вызывает только `reporter.build_report(date, force=True)`
