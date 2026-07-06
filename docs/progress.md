@@ -19,6 +19,10 @@
   - Провайдеры LLM, мультиклиентность, отчёт-матрица, версионность, безопасность
   - Блок «Будущие возможности» на основе `docs/techdebt.md` (без выдумывания)
   - FAQ с типовыми проблемами и решениями
+- **ADR: Гибридная модель деплоя (2026-07-06)**
+  - Зафиксировано в `docs/decisions.md`: агенты работают на локальной машине,
+    пользователь выполняет деплой на сервере вручную через SSH
+  - Ответ на Q13 в `docs/ui-spec.md`: описан ручной деплой и статус zero-downtime
 - **webhook.py: report_only + finished_at/client_id (ui-spec §5.2-5.3)**
   - `POST /run`: новые поля `report_only: bool = False` и `report_date: str = "latest"` в RunRequest
   - При `report_only=true`: пропускает collect/save/label/export, вызывает только `reporter.build_report(date, force=True)`
