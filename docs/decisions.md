@@ -1,6 +1,63 @@
 
 # Лог архитектурных решений (ADR)
 
+## 2026-07-08 — ADR: Полный профиль клиента в БД заменяет hardcoded config + файловый свап
+
+**Контекст:** Три параметра, специфичных для конкретного клиента, оставались
+в коде/окружении: `project_id` из `.env`, `SUBJECT_BLOCKS` (список субъектов)
+в `config.py`, `regions_map` — имя файла-свапа (`regions_map_client1.json`).
+Для интерпрайз-мультиклиентности это неприемлемо: код не должен содержать
+данных конкретного клиента, а переключение между клиентами не должно требовать
+пересборки Docker или правки файлов.
+
+**Решение:**
+1. Таблица `clients` расширена полями профиля: `queries` (JSON-массив
+   `{key, display}`), `regions_map` (JSON-массив регионов), `searchers`
+   (JSON-список), `project_id`.
+2. `migrate.py` делает идемпотентный `ADD COLUMN IF NOT EXISTS` и выполняет
+   разовый seed клиента `28938353` (`Sudheimer Group`) из:
+   - `queries` — `config.SUBJECT_BLOCKS` (только `key`/`display`, без `pos`/`url`);
+   - `regions_map` — файла `regions_map_client1.json`;
+   - `searchers` — уникальных `searcher` из `regions_map_client1.json`;
+   - `project_id` — `TOPVISOR_PROJECT_ID` из `.env`.
+3. Seed существующего клиента (`28938353` уже есть в БД с пустым профилем)
+   выполняется через `UPDATE`, не создавая дубликат.
+4. Боевые данные с мусорного `client_id='default'` переносятся на `28938353`
+   через `UPDATE` с предварительным `GROUP BY client_id` и разрешением
+   дубликатов. Перед `DELETE` мусорного клиента выполняется верификация,
+   что у него 0 дочерних записей — каскадное удаление исключено.
+5. `storage.get_client` возвращает распарсенные JSON-поля; defensive: пустое
+   значение → `[]`. `regions_map` может быть JSON-массивом или legacy-строкой
+   (имя файла) — для обратной совместимости.
+6. `webhook._build_client_config` и `main.py` строят рабочий конфиг из профиля
+   клиента (`get_client`), fallback на `DEFAULT_CONFIG`/`env` только если
+   поле в профиле пустое.
+7. `collector.py` получает `regions_map` как список напрямую из профиля; если
+   передана строка (legacy) — читает файл, fallback на `REGIONS_MAP` env →
+   `regions_map.json`.
+
+**Почему:**
+- Фабричное решение: код не содержит данных клиента, профиль хранится в БД.
+- Идемпотентность: повторный `migrate` не плодит дубликатов и не ломает данные.
+- Безопасность переноса: бэкап `.preseed` + проверка GROUP BY + верификация
+  отсутствия дочерних записей перед DELETE исключают потерю боевых данных.
+- Обратная совместимость: legacy-строка `regions_map` и пустой профиль
+  продолжают работать.
+
+**Последствия:**
+- `config.SUBJECT_BLOCKS` остаётся в `config.py`, но теперь используется
+  только как источник `queries` при seed и как раскладка отчёта (`pos`/`url`
+  для `reporter.py`). Данные клиента (`key`/`display`) дублируются в профиле БД.
+- `regions_map_client1.json` продолжает лежать в репо, но его содержимое
+  копируется в БД при seed; файл остаётся эталоном/резервной копией.
+- Новые клиенты добавляются через API `/clients` с полным профилем,
+  без правки кода.
+
+**Затронутые файлы:** `migrate.py`, `storage.py`, `webhook.py`, `main.py`,
+`collector.py`, `tests/test_migrate_idempotent.py`, `tests/test_storage_schema.py`,
+`tests/test_webhook.py`, `tests/test_collector.py`, `docs/contracts.md`,
+`docs/decisions.md`, `docs/progress.md`, `docs/techdebt.md`, `docs/deploy.md`.
+
 ## 2026-07-06 — ADR: Гибридная модель деплоя — агенты локально, пользователь через SSH
 
 **Контекст:** Возникла путаница с деплоем: команда `/deploy` и агент `infra-dev`

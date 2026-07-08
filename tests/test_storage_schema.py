@@ -144,10 +144,17 @@ def test_migration_preserves_row_count(db_path, sample_rows):
         labels_count = conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
         assert labels_count == 1  # только одна не-NULL метка
 
-        default_client = conn.execute(
-            "SELECT client_id, client_name FROM clients WHERE client_id = 'default'"
+        # default удалён seed, данные перенесены на 28938353
+        assert conn.execute(
+            "SELECT 1 FROM clients WHERE client_id = 'default'"
+        ).fetchone() is None
+        client = conn.execute(
+            "SELECT client_id, client_name FROM clients WHERE client_id = '28938353'"
         ).fetchone()
-        assert default_client == ("default", "Default")
+        assert client == ("28938353", "Sudheimer Group")
+        assert conn.execute(
+            "SELECT client_id FROM positions"
+        ).fetchone()[0] == "28938353"
     finally:
         conn.close()
 
@@ -539,9 +546,10 @@ class TestClientManagement:
             "client_name": "Default",
             "project_id": None,
             "sheet_id": None,
-            "searchers": None,
-            "geos": None,
-            "regions_map": None,
+            "searchers": [],
+            "geos": [],
+            "regions_map": [],
+            "queries": [],
         }]
 
     def test_create_and_list_clients(self, init_db):
@@ -556,9 +564,10 @@ class TestClientManagement:
             "client_name": "Acme Corp",
             "project_id": 123,
             "sheet_id": "abc",
-            "searchers": None,
-            "geos": None,
-            "regions_map": None,
+            "searchers": [],
+            "geos": [],
+            "regions_map": [],
+            "queries": [],
         }
         assert "default" in by_id
 
@@ -583,6 +592,7 @@ class TestClientManagement:
             "searchers": ["google", "yandex_ru"],
             "geos": ["Литва", "Германия"],
             "regions_map": "regions_map_full.json",
+            "queries": [],
         }
 
     def test_create_client_optional_fields(self, init_db):
@@ -608,9 +618,10 @@ class TestClientManagement:
             "client_name": "Get Me",
             "project_id": 42,
             "sheet_id": "sh",
-            "searchers": None,
-            "geos": None,
-            "regions_map": None,
+            "searchers": [],
+            "geos": [],
+            "regions_map": [],
+            "queries": [],
         }
 
     def test_get_client_missing_returns_none(self, init_db):
@@ -652,6 +663,7 @@ class TestClientManagement:
             "searchers": ["google"],
             "geos": ["Литва"],
             "regions_map": "regions_map_upd.json",
+            "queries": [],
         }
 
         conn = sqlite3.connect(init_db)

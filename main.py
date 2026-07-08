@@ -63,6 +63,10 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         "searchers": config.get("searchers") or DEFAULT_CONFIG["searchers"],
         "geos": config.get("geos") or DEFAULT_CONFIG["geos"],
     }
+    if config.get("queries"):
+        runtime_config["queries"] = config["queries"]
+    if config.get("regions_map"):
+        runtime_config["regions_map"] = config["regions_map"]
 
     stats = {
         "collected": 0,

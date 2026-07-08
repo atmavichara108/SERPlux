@@ -76,23 +76,28 @@ Row = {
 
 - `list_clients(db_path: str = DB_PATH) -> list[dict]`
   — Возвращает список клиентов: `client_id`, `client_name`, `project_id`, `sheet_id`,
-  `searchers`, `geos`, `regions_map`.
+  `searchers`, `geos`, `regions_map`, `queries`.
 
 - `get_client(client_id: str, db_path: str = DB_PATH) -> dict | None`
   — Возвращает одного клиента с полями `client_id`, `client_name`, `project_id`, `sheet_id`,
-  `searchers`, `geos`, `regions_map` или `None`, если клиент не найден.
+  `searchers`, `geos`, `regions_map`, `queries` или `None`, если клиент не найден.
+  JSON-поля десериализуются; при пустом/невалидном значении возвращается `[]`.
+  `regions_map`: если в БД хранится JSON-массив — возвращается `list[dict]`;
+  если legacy-строка (имя файла) — возвращается исходная строка + WARNING.
 
 - `create_client(client_id: str, client_name: str, project_id: int | None = None,
                  sheet_id: str | None = None, searchers: list[str] | None = None,
-                 geos: list[str] | None = None, regions_map: str | None = None,
-                 db_path: str = DB_PATH) -> None`
-  — Создаёт клиента. `searchers` и `geos` сериализуются в JSON.
+                 geos: list[str] | None = None, regions_map: list[dict] | str | None = None,
+                 queries: list[dict] | None = None, db_path: str = DB_PATH) -> None`
+  — Создаёт клиента. `searchers`, `geos`, `queries` сериализуются в JSON.
+  `regions_map` может быть JSON-массивом (сериализуется) или legacy-строкой (сохраняется as-is).
   Выбрасывает `ValueError`, если `client_id` уже существует.
 
 - `update_client(client_id: str, db_path: str = DB_PATH, **fields) -> None`
   — Обновляет поля `client_name`, `project_id`, `sheet_id`, `searchers`, `geos`,
-  `regions_map` и `updated_at`. Выбрасывает `ValueError`, если клиент не найден
-  или переданы недопустимые поля.
+  `regions_map`, `queries` и `updated_at`. `searchers`/`geos`/`queries` принимаются как списки
+  и сериализуются; `regions_map` — JSON-массив или legacy-строка.
+  Выбрасывает `ValueError`, если клиент не найден или переданы недопустимые поля.
 
 - `get_dates(client_id: str | None = None, db_path: str = DB_PATH) -> list[str]`
   — Возвращает уникальные даты из `positions`, отсортированные по убыванию.
@@ -183,18 +188,18 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
 **Тело запроса:**
 ```python
 {
-    "regions_map": str = "regions_map.json",  # legacy: имя файла карты регионов
-    "with_labels": bool = True,                # включить разметку
-    "depth": int = 10,                         # глубина сбора (10/20/50/100)
-    "client_id": str = "default",              # ID клиента
-    "label_mode": str = "domains",             # режим разметки (domains/snippets/full)
-    "force_relabel": bool = False,             # принудительная переразметка
-    "report_only": bool = False,               # если True — только построить отчёт
-    "report_date": str = "latest",             # дата для отчёта (YYYY-MM-DD или "latest")
-    "date": str = "today",                     # дата сбора/разметки (YYYY-MM-DD или "today")
-    "label_only": bool = False,                # если True — только разметить существующие данные
-    "force_rebuild_report": bool = False,      # перестроить отчёт с нуля
-    "provider_chain": str | None = None,       # фильтр провайдеров LLM (через запятую)
+    "regions_map": str | list = "regions_map.json",  # legacy-имя файла или JSON-массив из профиля
+    "with_labels": bool = True,                       # включить разметку
+    "depth": int = 10,                                # глубина сбора (10/20/50/100)
+    "client_id": str = "default",                     # ID клиента
+    "label_mode": str = "domains",                    # режим разметки (domains/snippets/full)
+    "force_relabel": bool = False,                    # принудительная переразметка
+    "report_only": bool = False,                      # если True — только построить отчёт
+    "report_date": str = "latest",                    # дата для отчёта (YYYY-MM-DD или "latest")
+    "date": str = "today",                            # дата сбора/разметки (YYYY-MM-DD или "today")
+    "label_only": bool = False,                       # если True — только разметить существующие данные
+    "force_rebuild_report": bool = False,             # перестроить отчёт с нуля
+    "provider_chain": str | None = None,              # фильтр провайдеров LLM (через запятую)
 }
 ```
 
@@ -288,13 +293,14 @@ Health-check для мониторинга контейнера (без авто
 **Тело запроса:**
 ```python
 {
-    "client_id": str,                 # обязательный, уникальный
-    "client_name": str,               # обязательный
-    "project_id": int | None,         # опциональный
-    "sheet_id": str | None,           # опциональный
-    "searchers": list[str] | None,    # опциональный, напр. ["google", "yandex_ru"]
-    "geos": list[str] | None,         # опциональный, напр. ["Литва", "Германия"]
-    "regions_map": str | None,        # опциональный, имя файла карты регионов
+    "client_id": str,                          # обязательный, уникальный
+    "client_name": str,                        # обязательный
+    "project_id": int | None,                  # опциональный
+    "sheet_id": str | None,                    # опциональный
+    "searchers": list[str] | None,             # опциональный, напр. ["google", "yandex_ru"]
+    "geos": list[str] | None,                  # опциональный, напр. ["Литва", "Германия"]
+    "regions_map": list[dict] | str | None,    # опциональный, JSON-массив регионов или имя файла (legacy)
+    "queries": list[dict] | None,              # опциональный, субъекты [{key, display}]
 }
 ```
 

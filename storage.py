@@ -40,7 +40,8 @@ def _init_db(db_path: str = DB_PATH) -> None:
                 sheet_id      TEXT,
                 searchers     TEXT,                      -- JSON список, напр. ["google","yandex_ru"]
                 geos          TEXT,                      -- JSON список гео
-                regions_map   TEXT,                      -- имя файла карты регионов
+                regions_map   TEXT,                      -- JSON массив регионов или имя файла (legacy)
+                queries       TEXT,                      -- JSON массив субъектов [{key, display}]
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
             )
@@ -51,6 +52,7 @@ def _init_db(db_path: str = DB_PATH) -> None:
             ("searchers", "TEXT"),
             ("geos", "TEXT"),
             ("regions_map", "TEXT"),
+            ("queries", "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE clients ADD COLUMN {col} {dtype}")
@@ -577,32 +579,62 @@ def get_dates(client_id: str | None = None, db_path: str = DB_PATH) -> list[str]
 
 import json as _json
 
-_CLIENT_COLUMNS = {"client_name", "project_id", "sheet_id", "searchers", "geos", "regions_map"}
+_CLIENT_COLUMNS = {"client_name", "project_id", "sheet_id", "searchers", "geos", "regions_map", "queries"}
 
 
-def _serialize_json_field(value: list[str] | None) -> str | None:
+def _serialize_json_field(value: list | None) -> str | None:
     """Сериализует список в JSON-строку или возвращает None."""
     if value is None:
         return None
     return _json.dumps(value, ensure_ascii=False)
 
 
-def _deserialize_json_field(value: str | None) -> list[str] | None:
-    """Десериализует JSON-строку в список или возвращает None."""
+def _serialize_json_list_or_str(value: list | str | None) -> str | None:
+    """Сериализует список в JSON-строку; строку оставляет как есть (legacy)."""
     if value is None:
         return None
+    if isinstance(value, list):
+        return _json.dumps(value, ensure_ascii=False)
+    return value  # legacy-строка имени файла
+
+
+def _deserialize_json_field(value: str | None) -> list:
+    """Десериализует JSON-строку в список. Пустое/невалидное -> []."""
+    if not value:
+        return []
     try:
         result = _json.loads(value)
-        return result if isinstance(result, list) else None
+        return result if isinstance(result, list) else []
     except (ValueError, TypeError):
-        return None
+        return []
+
+
+def _deserialize_regions_map(value: str | None) -> list[dict] | str | list:
+    """
+    Десериализует regions_map.
+    - JSON-массив -> список dict
+    - None/пустое -> []
+    - Строка (legacy-имя файла) -> исходная строка + WARNING
+    """
+    if not value:
+        return []
+    try:
+        result = _json.loads(value)
+        if isinstance(result, list):
+            return result
+        return []
+    except (ValueError, TypeError):
+        log.warning("regions_map хранится как строка (legacy): %s", value)
+        return value
 
 
 def _hydrate_client(row: sqlite3.Row) -> dict:
-    """Превращает строку clients в dict, раскрывая JSON-поля searchers/geos."""
+    """Превращает строку clients в dict, раскрывая JSON-поля."""
     client = dict(row)
     client["searchers"] = _deserialize_json_field(client.get("searchers"))
     client["geos"] = _deserialize_json_field(client.get("geos"))
+    client["queries"] = _deserialize_json_field(client.get("queries"))
+    client["regions_map"] = _deserialize_regions_map(client.get("regions_map"))
     return client
 
 
@@ -612,7 +644,7 @@ def list_clients(db_path: str = DB_PATH) -> list[dict]:
     conn = _get_conn(db_path)
     try:
         rows = conn.execute(
-            """SELECT client_id, client_name, project_id, sheet_id, searchers, geos, regions_map
+            """SELECT client_id, client_name, project_id, sheet_id, searchers, geos, regions_map, queries
                FROM clients
                ORDER BY client_id"""
         ).fetchall()
@@ -627,7 +659,7 @@ def get_client(client_id: str, db_path: str = DB_PATH) -> dict | None:
     conn = _get_conn(db_path)
     try:
         row = conn.execute(
-            """SELECT client_id, client_name, project_id, sheet_id, searchers, geos, regions_map
+            """SELECT client_id, client_name, project_id, sheet_id, searchers, geos, regions_map, queries
                FROM clients
                WHERE client_id = ?""",
             (client_id,),
@@ -644,12 +676,14 @@ def create_client(
     sheet_id: str | None = None,
     searchers: list[str] | None = None,
     geos: list[str] | None = None,
-    regions_map: str | None = None,
+    regions_map: list[dict] | str | None = None,
+    queries: list[dict] | None = None,
     db_path: str = DB_PATH,
 ) -> None:
     """
-    Создаёт нового клиента. searchers/geos передаются как списки,
-    сериализуются в JSON. Выбрасывает ValueError, если client_id уже существует.
+    Создаёт нового клиента. searchers/geos/queries передаются как списки,
+    сериализуются в JSON. regions_map может быть JSON-массивом или legacy-строкой.
+    Выбрасывает ValueError, если client_id уже существует.
     """
     _ensure_db(db_path)
     conn = _get_conn(db_path)
@@ -657,8 +691,8 @@ def create_client(
         conn.execute(
             """INSERT INTO clients
                    (client_id, client_name, project_id, sheet_id,
-                    searchers, geos, regions_map, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                    searchers, geos, regions_map, queries, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 client_id,
                 client_name,
@@ -666,7 +700,8 @@ def create_client(
                 sheet_id,
                 _serialize_json_field(searchers),
                 _serialize_json_field(geos),
-                regions_map,
+                _serialize_json_list_or_str(regions_map),
+                _serialize_json_field(queries),
             ),
         )
         conn.commit()
@@ -680,7 +715,8 @@ def create_client(
 def update_client(client_id: str, db_path: str = DB_PATH, **fields) -> None:
     """
     Обновляет поля профиля клиента. Допустимые поля: client_name, project_id, sheet_id,
-    searchers, geos, regions_map. searchers/geos принимаются как списки.
+    searchers, geos, regions_map, queries. searchers/geos/queries принимаются как списки.
+    regions_map может быть JSON-массивом или legacy-строкой.
     Обновляет updated_at. Выбрасывает ValueError, если клиент не найден
     или переданы недопустимые поля.
     """
@@ -691,8 +727,10 @@ def update_client(client_id: str, db_path: str = DB_PATH, **fields) -> None:
     # Сериализуем JSON-поля перед записью в БД
     processed_fields = {}
     for key, value in fields.items():
-        if key in ("searchers", "geos"):
+        if key in ("searchers", "geos", "queries"):
             processed_fields[key] = _serialize_json_field(value)
+        elif key == "regions_map":
+            processed_fields[key] = _serialize_json_list_or_str(value)
         else:
             processed_fields[key] = value
 

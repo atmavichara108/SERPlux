@@ -97,7 +97,8 @@ class ClientCreateRequest(BaseModel):
     sheet_id: str | None = None
     searchers: list[str] | None = None
     geos: list[str] | None = None
-    regions_map: str | None = None
+    regions_map: list | str | None = None
+    queries: list[dict] | None = None
 
 
 class ClientUpdateRequest(BaseModel):
@@ -107,7 +108,8 @@ class ClientUpdateRequest(BaseModel):
     sheet_id: str | None = None
     searchers: list[str] | None = None
     geos: list[str] | None = None
-    regions_map: str | None = None
+    regions_map: list | str | None = None
+    queries: list[dict] | None = None
 
 
 def _get_secret() -> str:
@@ -167,6 +169,8 @@ def _build_client_config(
             config["geos"] = client["geos"]
         if client.get("regions_map"):
             config["regions_map"] = client["regions_map"]
+        if client.get("queries"):
+            config["queries"] = client["queries"]
     else:
         log.warning("Профиль клиента '%s' не найден, используем fallback", client_id)
 
@@ -400,6 +404,7 @@ def create_client(
             searchers=body.searchers,
             geos=body.geos,
             regions_map=body.regions_map,
+            queries=body.queries,
             db_path=storage.DB_PATH,
         )
     except ValueError as exc:
@@ -443,6 +448,7 @@ def update_client(
             "searchers": body.searchers,
             "geos": body.geos,
             "regions_map": body.regions_map,
+            "queries": body.queries,
         }
         # Убираем None-поля чтобы не затереть существующие значения
         update_fields = {k: v for k, v in update_fields.items() if v is not None}

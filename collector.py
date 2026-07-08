@@ -23,6 +23,26 @@ def _get_project_id(config: dict[str, Any]) -> int:
 log = config.setup_logging(__name__)
 
 
+def _get_regions_map(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Возвращает карту регионов из config (list) или из файла (legacy).
+    config["regions_map"] может быть:
+      - список dict (новый профиль клиента в БД) — используем напрямую;
+      - строка (legacy-имя файла) — читаем файл;
+      - None — фоллбэк на env REGIONS_MAP > regions_map.json.
+    """
+    regions_map_raw = config.get("regions_map")
+    if isinstance(regions_map_raw, list):
+        return regions_map_raw
+
+    if isinstance(regions_map_raw, str):
+        log.warning("regions_map передан как строка (legacy): %s", regions_map_raw)
+
+    regions_map_path = regions_map_raw or os.environ.get("REGIONS_MAP") or "regions_map.json"
+    with open(regions_map_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def collect(config: dict[str, Any]) -> list[Row]:
     """
     Собирает снимки выдачи по всем связкам searcher×geo из config.
@@ -41,14 +61,7 @@ def collect(config: dict[str, Any]) -> list[Row]:
     timeout_sec = config.get("timeout_sec", 900)
     project_id = _get_project_id(config)
 
-    # Путь к карте регионов: аргумент config > env REGIONS_MAP > дефолт
-    regions_map_path = (
-        config.get("regions_map")
-        or os.environ.get("REGIONS_MAP")
-        or "regions_map.json"
-    )
-    with open(regions_map_path, "r", encoding="utf-8") as f:
-        regions_map = json.load(f)
+    regions_map = _get_regions_map(config)
 
     filtered = [
         r for r in regions_map

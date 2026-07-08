@@ -92,6 +92,10 @@ def _create_new_schema(conn: sqlite3.Connection) -> None:
             client_name TEXT NOT NULL,
             project_id  INTEGER,
             sheet_id    TEXT,
+            searchers   TEXT,                      -- JSON список
+            geos        TEXT,                      -- JSON список
+            regions_map TEXT,                      -- JSON массив регионов или имя файла (legacy)
+            queries     TEXT,                      -- JSON массив субъектов [{key, display}]
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -135,11 +139,12 @@ def _create_new_schema(conn: sqlite3.Connection) -> None:
 
 
 def _apply_schema_patches(conn: sqlite3.Connection) -> None:
-    """Дополняет схему старых БД: колонка confidence в labels + справочник domain_labels.
+    """Дополняет схему старых БД: колонка confidence в labels + справочник domain_labels + поля профиля клиента.
 
     Идемпотентно:
       - ALTER TABLE labels ADD COLUMN confidence — только если колонки нет
         (проверка через PRAGMA table_info(labels));
+      - ALTER TABLE clients ADD COLUMN searchers/geos/regions_map/queries — только если нет;
       - CREATE TABLE IF NOT EXISTS domain_labels + индекс idx_domlbl_client_domain.
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(labels)").fetchall()}
@@ -149,6 +154,17 @@ def _apply_schema_patches(conn: sqlite3.Connection) -> None:
             ADD COLUMN confidence TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high'
         """)
         log.info("Колонка labels.confidence добавлена (ALTER TABLE)")
+
+    client_cols = {row[1] for row in conn.execute("PRAGMA table_info(clients)").fetchall()}
+    for col, dtype in [
+        ("searchers", "TEXT"),
+        ("geos", "TEXT"),
+        ("regions_map", "TEXT"),
+        ("queries", "TEXT"),
+    ]:
+        if col not in client_cols:
+            conn.execute(f"ALTER TABLE clients ADD COLUMN {col} {dtype}")
+            log.info("Колонка clients.%s добавлена (ALTER TABLE)", col)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS domain_labels (
@@ -217,6 +233,230 @@ def _verify_schema(conn: sqlite3.Connection) -> None:
     if "confidence" not in label_cols:
         raise RuntimeError("Схема не доведена: колонка labels.confidence отсутствует")
 
+    client_cols = {row[1] for row in conn.execute("PRAGMA table_info(clients)").fetchall()}
+    for col in ("searchers", "geos", "regions_map", "queries"):
+        if col not in client_cols:
+            raise RuntimeError(f"Схема не доведена: колонка clients.{col} отсутствует")
+
+
+def _backup_preseed(db_path: str) -> str:
+    """Дополнительный бэкап непосредственно перед seed (операция переноса client_id)."""
+    suffix = datetime.now().strftime("%Y-%m-%d")
+    backup_path = f"{db_path}.preseed.{suffix}"
+    if os.path.exists(backup_path):
+        base = backup_path
+        counter = 1
+        while os.path.exists(backup_path):
+            backup_path = f"{base}.{counter}"
+            counter += 1
+    shutil.copy2(db_path, backup_path)
+    log.info("Preseed-бэкап создан: %s", backup_path)
+    return backup_path
+
+
+def _log_client_stats(conn: sqlite3.Connection, prefix: str) -> None:
+    """Логирует количество positions/labels/domain_labels по client_id (GROUP BY)."""
+    pos_stats = conn.execute(
+        "SELECT client_id, COUNT(*) FROM positions GROUP BY client_id ORDER BY client_id"
+    ).fetchall()
+    lbl_stats = conn.execute(
+        "SELECT client_id, COUNT(*) FROM labels GROUP BY client_id ORDER BY client_id"
+    ).fetchall()
+    dom_stats = conn.execute(
+        "SELECT client_id, COUNT(*) FROM domain_labels GROUP BY client_id ORDER BY client_id"
+    ).fetchall()
+    log.info("%s positions по client_id: %s", prefix, pos_stats)
+    log.info("%s labels по client_id: %s", prefix, lbl_stats)
+    log.info("%s domain_labels по client_id: %s", prefix, dom_stats)
+
+
+def _resolve_position_duplicates(conn: sqlite3.Connection, musor_id: str, target: str) -> int:
+    """Удаляет positions у musor_id, дублирующиеся по UNIQUE-ключу с target."""
+    dups = conn.execute(
+        """SELECT p1.id FROM positions p1
+           JOIN positions p2 ON p2.client_id = ?
+             AND p2.date = p1.date AND p2.searcher = p1.searcher AND p2.query = p1.query
+             AND p2.geo = p1.geo AND p2.position = p1.position AND p2.url = p1.url
+           WHERE p1.client_id = ?""",
+        (target, musor_id),
+    ).fetchall()
+    dup_ids = [r[0] for r in dups]
+    if dup_ids:
+        placeholders = ",".join("?" * len(dup_ids))
+        conn.execute(f"DELETE FROM positions WHERE id IN ({placeholders})", dup_ids)
+        log.info("Удалено дубликатов positions у %s: %s", musor_id, len(dup_ids))
+    return len(dup_ids)
+
+
+def _resolve_label_duplicates(conn: sqlite3.Connection, musor_id: str, target: str) -> int:
+    """Удаляет labels у musor_id, дублирующиеся по UNIQUE-ключу с target."""
+    dups = conn.execute(
+        """SELECT l1.id FROM labels l1
+           JOIN labels l2 ON l2.client_id = ? AND l2.position_id = l1.position_id
+             AND l2.label_mode = l1.label_mode AND l2.label_version = l1.label_version
+           WHERE l1.client_id = ?""",
+        (target, musor_id),
+    ).fetchall()
+    dup_ids = [r[0] for r in dups]
+    if dup_ids:
+        placeholders = ",".join("?" * len(dup_ids))
+        conn.execute(f"DELETE FROM labels WHERE id IN ({placeholders})", dup_ids)
+        log.info("Удалено дубликатов labels у %s: %s", musor_id, len(dup_ids))
+    return len(dup_ids)
+
+
+def _resolve_domain_label_duplicates(conn: sqlite3.Connection, musor_id: str, target: str) -> int:
+    """Удаляет domain_labels у musor_id, дублирующиеся по UNIQUE(client_id, domain) с target."""
+    dups = conn.execute(
+        """SELECT id FROM domain_labels
+           WHERE client_id = ? AND domain IN (SELECT domain FROM domain_labels WHERE client_id = ?)""",
+        (musor_id, target),
+    ).fetchall()
+    dup_ids = [r[0] for r in dups]
+    if dup_ids:
+        placeholders = ",".join("?" * len(dup_ids))
+        conn.execute(f"DELETE FROM domain_labels WHERE id IN ({placeholders})", dup_ids)
+        log.info("Удалено дубликатов domain_labels у %s: %s", musor_id, len(dup_ids))
+    return len(dup_ids)
+
+
+def _seed_client_profile(conn: sqlite3.Connection, db_path: str) -> None:
+    """
+    Разовый seed/обновление профиля клиента 28938353 из конфигурации репозитория.
+
+    - client_id   = "28938353" (совпадает с project_id в Topvisor)
+    - client_name = "Sudheimer Group"
+    - project_id  = int(env TOPVISOR_PROJECT_ID)
+    - queries     из config.SUBJECT_BLOCKS (key + display, без pos/url)
+    - regions_map из regions_map_client1.json (полный массив)
+    - searchers   уникальные searcher из regions_map_client1.json
+
+    Если клиент 28938353 уже существует — обновляет профиль (не плодит дубликат).
+    Переносит боевые данные с мусорного client_id 'default' на '28938353' через UPDATE.
+    Каскадного удаления не допускается: перед DELETE 'default' проверяется, что у него
+    0 дочерних записей.
+    """
+    import json as _json
+
+    target = "28938353"
+    client_name = "Sudheimer Group"
+    musor_id = "default"
+
+    _log_client_stats(conn, "До seed")
+
+    # Дополнительный бэкап перед операцией переноса client_id
+    _backup_preseed(db_path)
+
+    # project_id из env (не хардкод)
+    project_id = None
+    env_project = os.environ.get("TOPVISOR_PROJECT_ID")
+    if env_project:
+        try:
+            project_id = int(env_project)
+        except ValueError:
+            log.warning("TOPVISOR_PROJECT_ID не число: %s", env_project)
+
+    # queries из config.SUBJECT_BLOCKS (key + display, без pos/url)
+    import config
+
+    queries = [{"key": sb["key"], "display": sb["display"]} for sb in config.SUBJECT_BLOCKS]
+
+    # regions_map из файла (не хардкод)
+    regions_map_path = os.path.join(os.path.dirname(__file__), "regions_map_client1.json")
+    with open(regions_map_path, "r", encoding="utf-8") as f:
+        regions_map = _json.load(f)
+
+    # searchers — уникальные searcher из карты регионов
+    searchers = sorted({r["searcher"] for r in regions_map})
+
+    # Создаём или обновляем клиента
+    cur = conn.execute("SELECT 1 FROM clients WHERE client_id = ?", (target,))
+    if cur.fetchone() is None:
+        conn.execute(
+            """INSERT INTO clients
+               (client_id, client_name, project_id, searchers, geos, regions_map, queries, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                target,
+                client_name,
+                project_id,
+                _json.dumps(searchers, ensure_ascii=False),
+                None,
+                _json.dumps(regions_map, ensure_ascii=False),
+                _json.dumps(queries, ensure_ascii=False),
+            ),
+        )
+        log.info(
+            "Создан клиент %s (%s): project_id=%s, searchers=%s, queries=%s, regions_map=%s записей",
+            target, client_name, project_id, searchers, len(queries), len(regions_map),
+        )
+    else:
+        conn.execute(
+            """UPDATE clients
+               SET client_name = ?, project_id = ?, searchers = ?, geos = ?,
+                   regions_map = ?, queries = ?, updated_at = datetime('now')
+               WHERE client_id = ?""",
+            (
+                client_name,
+                project_id,
+                _json.dumps(searchers, ensure_ascii=False),
+                None,
+                _json.dumps(regions_map, ensure_ascii=False),
+                _json.dumps(queries, ensure_ascii=False),
+                target,
+            ),
+        )
+        log.info(
+            "Обновлён профиль клиента %s (%s): project_id=%s, searchers=%s, queries=%s, regions_map=%s записей",
+            target, client_name, project_id, searchers, len(queries), len(regions_map),
+        )
+
+    # Перенос positions с default на target (предварительно удаляем дубликаты)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE client_id = ?", (musor_id,)
+    ).fetchone()[0]
+    if count:
+        log.info("Перенос positions с %s на %s: %s строк", musor_id, target, count)
+        _resolve_position_duplicates(conn, musor_id, target)
+        conn.execute("UPDATE positions SET client_id = ? WHERE client_id = ?", (target, musor_id))
+
+    # Перенос labels с default на target (предварительно удаляем дубликаты)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM labels WHERE client_id = ?", (musor_id,)
+    ).fetchone()[0]
+    if count:
+        log.info("Перенос labels с %s на %s: %s строк", musor_id, target, count)
+        _resolve_label_duplicates(conn, musor_id, target)
+        conn.execute("UPDATE labels SET client_id = ? WHERE client_id = ?", (target, musor_id))
+
+    # Перенос domain_labels с default на target (предварительно удаляем дубликаты)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM domain_labels WHERE client_id = ?", (musor_id,)
+    ).fetchone()[0]
+    if count:
+        log.info("Перенос domain_labels с %s на %s: %s строк", musor_id, target, count)
+        _resolve_domain_label_duplicates(conn, musor_id, target)
+        conn.execute(
+            "UPDATE domain_labels SET client_id = ? WHERE client_id = ?", (target, musor_id)
+        )
+
+    # Верификация: у default не осталось данных. Каскадное удаление запрещено.
+    for table in ("positions", "labels", "domain_labels"):
+        cnt = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE client_id = ?", (musor_id,)
+        ).fetchone()[0]
+        if cnt:
+            raise RuntimeError(
+                f"Остались данные у {musor_id} в {table}: {cnt}. "
+                "Удаление мусорного клиента отменено — каскадное удаление запрещено."
+            )
+
+    # Удаление мусорного клиента default (теперь безопасно — у него нет дочерних записей)
+    conn.execute("DELETE FROM clients WHERE client_id = ?", (musor_id,))
+    log.info("Удалён мусорный клиент: %s", musor_id)
+
+    _log_client_stats(conn, "После seed")
+
 
 def migrate(db_path: str) -> None:
     if not os.path.exists(db_path):
@@ -271,9 +511,12 @@ def migrate(db_path: str) -> None:
         else:
             log.info("Перенос данных не требуется (results отсутствует)")
 
+        # Шаг 5: seed/обновление профиля клиента 28938353 + перенос мусорного default
+        _seed_client_profile(conn, db_path)
+
         conn.commit()
 
-        # Шаг 5: верификация схемы (всегда, в конце)
+        # Шаг 6: верификация схемы (всегда, в конце)
         _verify_schema(conn)
 
         log.info("Миграция завершена успешно")

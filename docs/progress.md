@@ -5,6 +5,15 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Финальная докрутка мультиклиентности: полный профиль клиента в БД**
+  - `migrate.py`: идемпотентная схема `clients` с `queries`, seed/обновление клиента `28938353` (`Sudheimer Group`) из `config.py`/`regions_map_client1.json`/env `TOPVISOR_PROJECT_ID`; безопасный перенос данных с `default` через `UPDATE` с `GROUP BY` и разрешением дубликатов; `preseed`-бэкап; верификация отсутствия дочерних записей перед удалением `default` (каскадное удаление исключено).
+  - `storage.py`: `get_client`/`list_clients` возвращают распарсенные `queries`/`regions_map`/`searchers`/`geos`, defensive `[]`; `regions_map` поддерживает JSON-массив и legacy-строку; `create_client`/`update_client` расширены `queries` и `regions_map`.
+  - `webhook.py`: `_build_client_config` пробрасывает `queries` и `regions_map` из профиля; Pydantic-модели `/clients` обновлены.
+  - `main.py`: `runtime_config` получает `queries`/`regions_map` из профиля клиента.
+  - `collector.py`: `_get_regions_map` использует список из профиля напрямую, строку — как имя файла (legacy), fallback на env/дефолт.
+  - Тесты: 172/172 passed; обновлены существующие (`None`→`[]`); добавлены тесты seed, переноса, дубликатов, preseed-бэкапа, `_build_client_config`, `_get_regions_map`.
+  - Docs: ADR в `docs/decisions.md`, обновлены `docs/contracts.md`, `docs/progress.md`, `docs/techdebt.md`, `docs/deploy.md`.
+  - Коммит: `feat(clients): full client profile (queries/regions_map/searchers) replaces hardcoded config + file-swap`
 - **Подробное структурное логирование пайплайна в stdout**
   - `config.py`: добавлена `setup_logging(name)` — единая настройка логирования
     - Уровень из env `LOG_LEVEL` (дефолт `INFO`)

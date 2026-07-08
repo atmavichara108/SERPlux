@@ -84,9 +84,19 @@ docker compose exec serplux python migrate.py --db /app/data/serplux.db
 
 migrate.py:
 - Шаг 0: бэкап serplux.db.bak.YYYY-MM-DD
+- Дополнительный preseed-бэкап перед операцией переноса client_id
 - Перенос results → positions + labels
-- Верификация COUNT(results) == COUNT(positions)
+- Seed/обновление профиля клиента `28938353` (`Sudheimer Group`)
+- Перенос данных с мусорного `client_id='default'` на `28938353` через `UPDATE`
+- Верификация отсутствия дочерних записей у `default` перед DELETE
 - DROP results только при успехе
+
+**Важно:** Перед миграцией с переносом `client_id` обязательно сделать бэкап БД.
+`migrate.py` создаёт бэкапы автоматически, но при наличии боевых данных
+рекомендуется вручную скопировать БД перед запуском:
+```bash
+docker compose exec -T serplux cp /app/data/serplux.db /app/data/serplux.db.manual.bak.$(date +%Y-%m-%d)
+```
 
 **Примечание:** `deploy.sh` автоматически запускает migrate.py после успешного health-check.
 
