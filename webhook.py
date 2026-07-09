@@ -28,7 +28,7 @@ import topvisor
 
 load_dotenv()
 
-LABEL_MODES = {"domains", "snippets", "full"}
+LABEL_MODES = {"auto", "deep"}
 DEPTH_VALUES = {10, 20, 50, 100}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -53,7 +53,7 @@ class RunRequest(BaseModel):
     with_labels: bool = True
     depth: int = 10
     client_id: str = "default"
-    label_mode: str = "domains"
+    label_mode: str = "auto"  # "auto" (дефолт) | "deep"
     force_relabel: bool = False
     report_only: bool = False  # если True — только построить отчёт, без сбора
     report_date: str = "latest"  # дата для отчёта (YYYY-MM-DD или "latest")

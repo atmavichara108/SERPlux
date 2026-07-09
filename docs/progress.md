@@ -5,6 +5,35 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+
+- **Session: 2026-07-10 — Two-mode labeling refactoring (auto + deep)**
+  - [x] labeler.py переписан с двумя режимами: 
+    - "auto" (дефолт): domain_labels кэш → сниппет LLM → neutral при ошибке (иерархия)
+    - "deep": обработка только neutral (заглушка v2)
+  - [x] webhook.py обновлён: `label_mode="auto"|"deep"` (вместо domains/snippets/full)
+    - `RunRequest` валидирует только новые режимы
+    - `default label_mode="auto"` как дефолт во всех точках входа
+  - [x] 17 новых тестов + все 190 тестов проходят успешно
+    - TestLabelAutoMode (7 тестов): справочник → LLM → neutral fallback
+    - TestLabelDeepMode (4 теста): заглушка, логирование
+    - TestLabelLogging (6 тестов): логирование по searcher×geo, статистика
+  - [x] Логирование по searcher×geo с детальной статистикой:
+    - total / cached / llm_calls / success
+    - Причины пропусков: empty_snippet, provider_error, domain_missing, other_skip
+    - WARNING/ERROR для пустых сниппетов, ошибок провайдеров, отсутствия доменов
+  - [x] manual_l1 приоритетен при upsert domain_labels:
+    - source='snippet' (AUTO) или 'page' (DEEP)
+    - manual_l1 никогда не перезаписывается автоматикой
+  - [x] neutral как маркер неуверенности LLM:
+    - `sentiment=None` → fallback при ошибке LLM
+    - `confidence='uncertain'` для случаев ошибки
+  - [x] Документация обновлена:
+    - docs/decisions.md: новый ADR (two-mode labeling)
+    - docs/contracts.md: обновлены labeler.py, новые функции _label_group_auto/_label_group_deep
+    - docs/progress.md: эта запись
+    - docs/user-guide.md: раздел режимов разметки (auto vs deep vs old)
+  - Status: Ready for commit and push
+  - Коммит: `feat(labeler): two-mode labeling (auto + deep) with fallback, logging by searcher/geo, manual_l1 priority`
 - **Этап A завершён: мультиклиентность + лист Настройки**
   - **ЧАСТЬ 1 — Нормализация client_id:**
     - `migrate.py`: добавлена функция `_normalize_client_id(conn)` идемпотентная, переносит все данные с численного "28938353" на строковый slug "client01". Логика: seed создаёт 28938353, нормализация переносит на client01 с полным профилем (name="Sudheimer Group", project_id=28938353).

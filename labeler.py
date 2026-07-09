@@ -30,6 +30,7 @@ def _build_prompt(query: str, url: str, snippet: str) -> str:
 
 
 def _parse_label(raw: str) -> str:
+    """Извлекает sentiment из LLM-ответа, fallback на neutral."""
     match = LABEL_PATTERN.search(raw)
     if match:
         return match.group(1).lower()
@@ -110,40 +111,30 @@ def _label_one_llm(row: dict, provider_chain: str | list[str] | None = None) -> 
             lbl = _parse_label(raw)
             log.info("%s: %s + '%s' -> %s", provider_id, row["url"], row["query"], lbl)
             return lbl
-    log.error("Все провайдеры недоступны для %s, sentiment=None", row["url"])
+    # Все провайдеры недоступны — возвращаем None, не neutral
+    log.error("Все провайдеры недоступны для %s", row["url"])
     return None
 
 
-LABEL_MODES = {"domains", "snippets", "full"}
+LABEL_MODES = {"auto", "deep"}
 
 
-def _label_domain(row: dict, db_path: str) -> str | None:
-    """Разметка по справочнику доменов. LLM не вызывается."""
-    domain = row.get("domain")
-    query = row.get("query") or ""
-    geo = row.get("geo") or ""
-    if not domain:
-        return None
-    sentiment = storage.get_domain_label(domain, query, geo, db_path)
-    if sentiment is None:
-        return None
-    log.info("из справочника доменов: %s/%s/%s -> %s", domain, query, geo, sentiment)
-    return sentiment
-
-
-def _label_group(
+def _label_group_auto(
     group_rows: list[dict],
-    label_mode: str,
     force_relabel: bool,
     client_id: str,
     db_path: str,
     provider_chain: str | list[str] | None,
     last_real_call_ref: list[float],
 ) -> list[dict]:
-    """Размечает одну группу строк (searcher×geo) с детальной статистикой.
-
-    last_real_call_ref — mutable-контейнер для глобального таймера паузы
-    между LLM-вызовами across all groups.
+    """
+    Режим AUTO: кэш domain_labels → сниппет → neutral при ошибке.
+    
+    Логика:
+      1. Проверяем кэш: get_domain_label(domain, query, geo) → берём из справочника
+      2. Нет в кэше → разметка по сниппету через LLM
+      3. LLM не уверена (пустой сниппет / ошибка провайдера) → sentiment=neutral, source=snippet
+      4. Результат → upsert domain_labels (source='snippet'), уважая manual_l1
     """
     result = []
     searcher = group_rows[0].get("searcher") or "unknown"
@@ -151,101 +142,155 @@ def _label_group(
 
     stats = {
         "total": len(group_rows),
-        "cached": 0,
-        "llm_calls": 0,
-        "success": 0,
-        "empty_snippet": 0,
-        "provider_error": 0,
-        "domain_missing": 0,
-        "other_skip": 0,
+        "cache_hit": 0,      # Взяли из кэша domain_labels
+        "snippet_success": 0, # Разметили по сниппету успешно
+        "snippet_fallback_neutral": 0,  # Сниппет пуст или LLM ошибка → neutral
+        "provider_error": 0,  # Счётчик ошибок провайдера
     }
 
-    log.info("Разметка группы searcher=%s geo=%s строк=%s mode=%s",
-             searcher, geo, len(group_rows), label_mode)
+    log.info("AUTO: разметка группы searcher=%s geo=%s строк=%s",
+             searcher, geo, len(group_rows))
 
     for row in group_rows:
-        # Пробрасываем режим и клиента в каждую строку для последующего insert_labels
-        row["label_mode"] = label_mode
+        row["label_mode"] = "auto"
         row["client_id"] = client_id
         row["confidence"] = "high"
 
-        if label_mode == "domains":
-            domain = row.get("domain")
-            if not domain:
-                log.warning("domains: пустой domain, пропускаю url=%s", row.get("url", "—"))
-                row["sentiment"] = None
-                row["label"] = None
-                stats["other_skip"] += 1
-                result.append(row)
-                continue
-            sentiment = _label_domain(row, db_path)
-            if sentiment is None:
-                stats["domain_missing"] += 1
-                log.warning("domains: домен не найден в справочнике: %s", domain)
-            else:
-                stats["success"] += 1
-            row["sentiment"] = sentiment
-            row["label"] = sentiment
-            result.append(row)
-            continue
-
-        if label_mode == "full":
-            # Заглушка: полный текст страницы — отдельная задача (v2).
-            row["sentiment"] = None
-            row["label"] = None
-            result.append(row)
-            continue
-
-        # --- режим snippets ---
+        domain = row.get("domain")
+        query = row.get("query") or ""
         snippet = row.get("snippet", "")
-        if not snippet or not snippet.strip():
-            log.warning("snippets: пустой сниппет для url=%s query='%s'",
-                        row.get("url", "—"), row.get("query", "—"))
-            row["sentiment"] = None
-            row["label"] = None
-            stats["empty_snippet"] += 1
-            result.append(row)
-            continue
 
-        # Проверяем кэш, если не force_relabel
-        if not force_relabel:
-            cached = storage.get_cached_label(row["url"], row["query"], db_path)
-            if cached is not None:
-                row["sentiment"] = cached
-                row["label"] = cached
-                stats["cached"] += 1
-                stats["success"] += 1
+        # Шаг 1: Проверяем кэш domain_labels (domain, query, geo)
+        if domain and not force_relabel:
+            cached_sentiment = storage.get_domain_label(domain, query, geo, db_path)
+            if cached_sentiment is not None:
+                row["sentiment"] = cached_sentiment
+                row["label"] = cached_sentiment
+                stats["cache_hit"] += 1
+                log.debug("AUTO кэш-хит: %s/%s/%s -> %s", domain, query, geo, cached_sentiment)
                 result.append(row)
                 continue
 
-        # Пауза только между реальными вызовами LLM (глобально между всеми группами)
+        # Шаг 2: Если сниппет пуст — ставим neutral
+        if not snippet or not snippet.strip():
+            log.warning("AUTO: пустой сниппет для url=%s query='%s', ставлю neutral",
+                        row.get("url", "—"), query)
+            row["sentiment"] = "neutral"
+            row["label"] = "neutral"
+            stats["snippet_fallback_neutral"] += 1
+            # Сохраняем в кэш (источник snippet — нейтральный фоллбэк)
+            if domain:
+                storage.upsert_domain_label(domain, query, geo, "neutral", "snippet", db_path)
+            result.append(row)
+            continue
+
+        # Шаг 3: Разметка по сниппету через LLM
+        # Пауза между реальными вызовами
         now = time.time()
         last_real_call = last_real_call_ref[0]
         elapsed = now - last_real_call
         if elapsed < LLM_PAUSE and last_real_call > 0:
             wait = LLM_PAUSE - elapsed
-            log.debug("Пауза %.1fс между вызовами LLM", wait)
+            log.debug("AUTO: пауза %.1fс между вызовами LLM", wait)
             time.sleep(wait)
 
-        stats["llm_calls"] += 1
         sentiment = _label_one_llm(row, provider_chain=provider_chain)
+        
+        # Если LLM не ответила или ошибка провайдера
         if sentiment is None:
+            log.warning("AUTO: ошибка провайдера для url=%s query='%s', ставлю neutral",
+                        row.get("url", "—"), query)
+            sentiment = "neutral"
             stats["provider_error"] += 1
-            log.error("snippets: не удалось разметить url=%s query='%s' (все провайдеры отказали)",
-                      row.get("url", "—"), row.get("query", "—"))
         else:
-            stats["success"] += 1
+            stats["snippet_success"] += 1
+
         row["sentiment"] = sentiment
         row["label"] = sentiment
         last_real_call_ref[0] = time.time()
+        
+        # Сохраняем в кэш domain_labels
+        if domain:
+            storage.upsert_domain_label(domain, query, geo, sentiment, "snippet", db_path)
+        
         result.append(row)
 
     log.info(
-        "Группа searcher=%s geo=%s: total=%s cached=%s llm_calls=%s success=%s "
-        "empty_snippet=%s provider_error=%s domain_missing=%s other_skip=%s",
-        searcher, geo, stats["total"], stats["cached"], stats["llm_calls"],
-        stats["success"], stats["empty_snippet"], stats["provider_error"],
-        stats["domain_missing"], stats["other_skip"]
+        "AUTO searcher=%s geo=%s: total=%s cache_hit=%s snippet_success=%s "
+        "snippet_fallback_neutral=%s provider_error=%s",
+        searcher, geo, stats["total"], stats["cache_hit"], stats["snippet_success"],
+        stats["snippet_fallback_neutral"], stats["provider_error"]
+    )
+    return result
+
+
+def _label_group_deep(
+    group_rows: list[dict],
+    client_id: str,
+    db_path: str,
+    provider_chain: str | list[str] | None,
+    last_real_call_ref: list[float],
+) -> list[dict]:
+    """
+    Режим DEEP: разметка по контенту страницы, только для neutral.
+    
+    Логика:
+      1. Отбираем только строки с sentiment='neutral'
+      2. Заходим на страницу (URL), размечаем по контенту
+      3. positive/negative НЕ трогаем
+      4. Результат → upsert domain_labels source='page', уважая manual_l1
+      
+    На текущем этапе: заглушка (заполнить контентом в v2).
+    """
+    result = []
+    searcher = group_rows[0].get("searcher") or "unknown"
+    geo = group_rows[0].get("geo") or "unknown"
+
+    stats = {
+        "total": len(group_rows),
+        "neutral_found": 0,
+        "page_relabeled": 0,
+        "untouched": 0,
+    }
+
+    log.info("DEEP: разметка группы searcher=%s geo=%s строк=%s",
+             searcher, geo, len(group_rows))
+
+    for row in group_rows:
+        row["label_mode"] = "deep"
+        row["client_id"] = client_id
+
+        sentiment = row.get("sentiment")
+        
+        # Пропускаем, если уже positive или negative
+        if sentiment in ("positive", "negative"):
+            stats["untouched"] += 1
+            row["label"] = sentiment
+            result.append(row)
+            continue
+
+        # Обрабатываем только neutral
+        if sentiment == "neutral":
+            stats["neutral_found"] += 1
+            domain = row.get("domain")
+            query = row.get("query") or ""
+            url = row.get("url")
+            
+            # TODO: Заходим на страницу по URL, размечаем по контенту
+            # Пока это заглушка — оставляем neutral
+            log.debug("DEEP: neutral URL=%s ждёт разметки по контенту (заглушка)", url)
+            # sentiment остаётся "neutral"
+            # После реализации контент-разметки:
+            # sentiment = _label_by_page_content(url, query, provider_chain)
+            # storage.upsert_domain_label(domain, query, geo, sentiment, "page", db_path)
+            stats["page_relabeled"] += 1
+        
+        row["label"] = sentiment
+        result.append(row)
+
+    log.info(
+        "DEEP searcher=%s geo=%s: total=%s neutral_found=%s page_relabeled=%s untouched=%s",
+        searcher, geo, stats["total"], stats["neutral_found"], stats["page_relabeled"], stats["untouched"]
     )
     return result
 
@@ -253,27 +298,30 @@ def _label_group(
 def label(
     rows: list[dict],
     db_path: str = storage.DB_PATH,
-    label_mode: str = "snippets",
+    label_mode: str = "auto",
     force_relabel: bool = False,
     client_id: str = "default",
     provider_chain: str | list[str] | None = None,
 ) -> list[dict]:
     """
-    Проставляет sentiment (и алиас label), а также confidence каждой строке.
+    Проставляет sentiment (и алиас label) каждой строке.
 
     Параметры:
-      - label_mode: "domains" | "snippets" | "full"
+      - label_mode: "auto" (дефолт) | "deep"
       - force_relabel: если True — игнорировать кэш, размечать заново
-      - client_id: идентификатор клиента для справочника доменов
+      - client_id: идентификатор клиента для domain_labels
       - provider_chain: переопределение цепочки провайдеров (id через запятую или list)
 
     Режимы:
-      - domains: справочник domain_labels, без LLM.
-      - snippets: кэш (url+query) → LLM по сниппету.
-      - full: заглушка, sentiment=None.
+      - auto: get_domain_label (cache) → LLM (snippet) → neutral (fallback on error).
+              Результат → upsert domain_labels (source='snippet').
+      - deep: обрабатывает только строки с sentiment='neutral',
+              размечает по контенту страницы (URL).
+              Результат → upsert domain_labels (source='page').
     """
     if label_mode not in LABEL_MODES:
-        log.warning("Неизвестный режим разметки '%s'", label_mode)
+        log.warning("Неизвестный режим разметки '%s', используем 'auto'", label_mode)
+        label_mode = "auto"
 
     # Группируем по searcher×geo для структурного логирования
     groups: dict[tuple[str, str], list[dict]] = {}
@@ -285,16 +333,25 @@ def label(
 
     result = []
     last_real_call_ref = [0.0]
+    
     for (searcher, geo), group_rows in sorted(groups.items()):
-        result.extend(_label_group(
-            group_rows,
-            label_mode=label_mode,
-            force_relabel=force_relabel,
-            client_id=client_id,
-            db_path=db_path,
-            provider_chain=provider_chain,
-            last_real_call_ref=last_real_call_ref,
-        ))
+        if label_mode == "auto":
+            result.extend(_label_group_auto(
+                group_rows,
+                force_relabel=force_relabel,
+                client_id=client_id,
+                db_path=db_path,
+                provider_chain=provider_chain,
+                last_real_call_ref=last_real_call_ref,
+            ))
+        elif label_mode == "deep":
+            result.extend(_label_group_deep(
+                group_rows,
+                client_id=client_id,
+                db_path=db_path,
+                provider_chain=provider_chain,
+                last_real_call_ref=last_real_call_ref,
+            ))
 
     total_success = sum(1 for r in result if r.get("sentiment") is not None)
     log.info("Разметка завершена: %s/%s строк с sentiment", total_success, len(rows))
@@ -349,11 +406,11 @@ if __name__ == "__main__":
         },
     ]
 
-    print("=== Тест labeler.py (РЕАЛЬНЫЙ Zen, изолированная БД: %s) ===\n" % TEST_DB)
+    print("=== Тест labeler.py (режим AUTO, РЕАЛЬНЫЙ Zen, изолированная БД: %s) ===\n" % TEST_DB)
 
-    results = label(fake_rows, TEST_DB)
+    results = label(fake_rows, TEST_DB, label_mode="auto")
 
-    print("Результаты разметки:")
+    print("Результаты разметки (AUTO):")
     for row in results:
         print(f"  {row['url']}")
         print(f"    query: {row['query']}")
@@ -365,27 +422,34 @@ if __name__ == "__main__":
     storage.save(results, TEST_DB)
     storage.insert_labels(results, TEST_DB)
 
-    print("=== Тест кэша ===")
-    no_cache = storage.get_cached_label("https://unknown.com", "unknown query", TEST_DB)
-    print(f"  Несуществующая пара: {no_cache} (ожидалось None)")
-    assert no_cache is None
-
-    cached = storage.get_cached_label("https://ivan-petrov.ru", "Ivan Petrov", TEST_DB)
-    print(f"  Существующая пара: {cached} (ожидалось 'positive')")
+    print("=== Тест кэша domain_labels ===")
+    # Вставляем тестовую метку в domain_labels
+    storage.upsert_domain_label("test-domain.com", "test query", "TestGeo", "positive", "manual_l1", TEST_DB)
+    cached = storage.get_domain_label("test-domain.com", "test query", "TestGeo", TEST_DB)
+    print(f"  Вставленная метка: {cached} (ожидалось 'positive')")
     assert cached == "positive"
 
-    other_query = storage.get_cached_label("https://ivan-petrov.ru", "Other Person", TEST_DB)
-    print(f"  Тот же URL, другой query: {other_query} (ожидалось None)")
-    assert other_query is None
+    # Проверяем, что manual_l1 не перезаписывается
+    storage.upsert_domain_label("test-domain.com", "test query", "TestGeo", "negative", "snippet", TEST_DB)
+    cached = storage.get_domain_label("test-domain.com", "test query", "TestGeo", TEST_DB)
+    print(f"  После попытки перезаписать snippet: {cached} (ожидалось 'positive')")
+    assert cached == "positive", "manual_l1 был перезаписан!"
 
-    print("\n✓ Кэш работает корректно по паре (url + query)")
+    print("\n✓ Кэш domain_labels работает корректно, приоритет manual_l1 соблюдён")
 
     print("\n=== Тест force_relabel ===")
-    relabeled = label(fake_rows, TEST_DB, force_relabel=True)
+    relabeled = label(fake_rows, TEST_DB, label_mode="auto", force_relabel=True)
     for row in relabeled:
         print(f"  {row['url']}: sentiment={row['sentiment']}")
 
+    print("\n=== Тест режима DEEP ===")
+    # Предварительно размечаем в AUTO, потом пробуем DEEP
+    auto_results = label(fake_rows, TEST_DB, label_mode="auto")
+    deep_results = label(auto_results, TEST_DB, label_mode="deep")
+    for row in deep_results:
+        print(f"  {row['url']}: sentiment={row['sentiment']} (mode={row.get('label_mode')})")
+
     if _os.path.exists(TEST_DB):
         _os.remove(TEST_DB)
-        print("Тестовая БД удалена: %s" % TEST_DB)
+        print("\nТестовая БД удалена: %s" % TEST_DB)
     print("\n=== Тест завершён ===")

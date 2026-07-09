@@ -58,7 +58,7 @@ class TestRunEndpoint:
         )
         assert resp.status_code == 202
         assert pipeline_spy["args"] == (
-            "map.json", True, 10, "default", "domains", False, False, "latest",
+            "map.json", True, 10, "default", "auto", False, False, "latest",
             "today", False, None, False,
         )
 
@@ -69,7 +69,7 @@ class TestRunEndpoint:
             json={
                 "regions_map": "map.json",
                 "client_id": "acme",
-                "label_mode": "snippets",
+                "label_mode": "deep",
                 "force_relabel": True,
                 "date": "2026-07-01",
                 "force_rebuild_report": True,
@@ -80,21 +80,21 @@ class TestRunEndpoint:
         )
         assert resp.status_code == 202
         assert pipeline_spy["args"] == (
-            "map.json", True, 10, "acme", "snippets", True, False, "latest",
+            "map.json", True, 10, "acme", "deep", True, False, "latest",
             "2026-07-01", True, "zen", True,
         )
 
-    def test_run_default_label_mode_is_domains(self, client, pipeline_spy):
-        """Если label_mode не передан, дефолт — domains."""
+    def test_run_default_label_mode_is_auto(self, client, pipeline_spy):
+        """Если label_mode не передан, дефолт — auto."""
         resp = client.post(
             "/run",
             json={"regions_map": "map.json"},
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 202
-        assert pipeline_spy["args"][4] == "domains"
+        assert pipeline_spy["args"][4] == "auto"
 
-    @pytest.mark.parametrize("mode", ["domains", "snippets", "full"])
+    @pytest.mark.parametrize("mode", ["auto", "deep"])
     def test_run_valid_label_modes(self, client, pipeline_spy, mode):
         """Все допустимые режимы разметки принимаются."""
         resp = client.post(
@@ -115,7 +115,7 @@ class TestRunEndpoint:
         assert resp.status_code == 422
         body = resp.json()
         detail = str(body)
-        assert any(m in detail for m in ["domains", "snippets", "full"])
+        assert any(m in detail for m in ["auto", "deep"])
 
     def test_run_invalid_depth_returns_422(self, client):
         """Невалидный depth возвращает 422."""

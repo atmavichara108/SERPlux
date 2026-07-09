@@ -22,7 +22,7 @@ Row = {
     "label": str | None,     # алиас последней sentiment (обратная совместимость)
     # --- версионирование (новые поля) ---
     "sentiment": str | None, # "positive" | "negative" | "neutral" | None
-    "label_mode": str | None,# "domains" | "snippets" | "full"
+    "label_mode": str | None,# "auto" | "deep" (с версии 2026-07-10; старые domains/snippets/full deprecated)
     "label_version": int | None,  # версия разметки (1, 2, 3...)
     "confidence": str,       # "high" | "uncertain", дефолт "high"
     # --- мультитенантность (новые поля) ---
@@ -160,27 +160,63 @@ DEFAULT_PROVIDER: str = "opencode-zen"
 
 ## labeler.py
 
-- `label(rows: list[Row], db_path: str = DB_PATH, label_mode: str = "snippets",
-         force_relabel: bool = False, client_id: str = "default",
-         provider_chain: str | None = None) -> list[Row]`
-  — Проставляет `sentiment` (и алиас `label`), а также `confidence` каждой строке.
-  Параметры:
-  - `label_mode`: режим разметки ("domains" | "snippets" | "full")
-  - `force_relabel`: если True — игнорировать кэш, размечать всё заново
-  - `client_id`: slug клиента (используется для `positions`/`labels`, не для `domain_labels`)
-  - `provider_chain`: строка или список идентификаторов провайдеров через запятую;
-    фильтрует `config.PROVIDERS` перед фолбек-цепочкой
-  Возвращает тот же список с заполненными `sentiment`/`label`/`confidence`.
+- `label(
+    rows: list[dict],
+    db_path: str = storage.DB_PATH,
+    label_mode: str = "auto",  # "auto" | "deep"
+    force_relabel: bool = False,
+    client_id: str = "default",
+    provider_chain: str | None = None,
+  ) -> list[dict]`
+   — Проставляет `sentiment` (и алиас `label`), а также `confidence`, `label_mode` каждой строке.
+   Параметры:
+   - `label_mode`: режим разметки (**"auto"** | **"deep"**; дефолт "auto")
+   - `force_relabel`: если True — игнорировать кэш, размечать всё заново
+   - `client_id`: slug клиента (используется для `positions`/`labels`, не для `domain_labels`)
+   - `provider_chain`: строка или список идентификаторов провайдеров через запятую;
+     фильтрует `config.PROVIDERS` перед фолбек-цепочкой
+   Возвращает список с заполненными `sentiment`/`label`/`confidence`/`label_mode`.
 
-  Режимы:
-  - **domains** (реализован): для каждой строки берёт `domain`, `query`, `geo`, ищет в справочнике
-    через `storage.get_domain_label(domain, query, geo)`. Если найдено — ставит
-    `sentiment` из справочника, `confidence='high'`, LLM НЕ вызывается (нулевая
-    стоимость). Если записи нет в справочнике — `sentiment=None`
-    (помечается для ручной разметки, TBD).
-  - **snippets** (реализован): текущая логика — кэш (`storage.get_cached_label`)
-    → LLM по сниппету. `confidence='high'`.
-  - **full**: заглушка, v2. Заход на страницу + LLM по полному тексту.
+   **Режимы (двухрежимная система):**
+   
+   - **AUTO (дефолт):** иерархический режим с fallback на neutral
+     - Шаг 1: ищет `sentiment` в справочнике `domain_labels(domain, query, geo)`
+       - Если найдено → `sentiment` из справочника, `confidence='high'`, LLM не вызывается (нулевая стоимость)
+     - Шаг 2: если в справочнике нет → вызывает LLM для сниппета (как режим "snippets")
+       - Успех → `sentiment` из LLM, `confidence='high'`, сохраняет в `domain_labels` с `source='snippet'`
+     - Шаг 3: при ошибке LLM (сеть, таймаут, провайдер недоступен) → `sentiment='neutral'`, `confidence='uncertain'`
+       - neutral как маркер неуверенности (пропускаемые и ошибочные случаи помечаются)
+     - Кэширование: пары (url, query) с `sentiment != None` берутся из `domain_labels` повторно
+   
+   - **DEEP (зарезервирован для v2):** обработка только `sentiment=='neutral'` по контенту страницы
+     - Сейчас → заглушка, возвращает `sentiment` без изменений (проходит нейтральные без обработки)
+     - В v2: HTTP-запрос к каждому URL, LLM по полному тексту страницы, сохранение с `source='page'`
+   
+   **Логирование:** Разметка группируется по `searcher×geo` (пример: "Связка 1/6: google×Литва").
+   Статистика по группе:
+   - total / cached / llm_calls / success
+   - Причины пропусков: empty_snippet, provider_error, domain_missing, other_skip
+   - WARNING/ERROR для пустых сниппетов, ошибок провайдеров, отсутствия доменов в справочнике
+
+- `_label_group_auto(rows: list[dict], ...provider_chain...) -> list[dict]`
+   — Вспомогательная функция для режима AUTO.
+   - Группирует строки по `(domain, query, geo)`
+   - Для каждой группы проверяет `domain_labels` → LLM → neutral
+   - Логирует статистику по группе
+   - Вызывает `storage.upsert_domain_label()` с приоритетом `source='snippet'`
+
+- `_label_group_deep(rows: list[dict]) -> list[dict]`
+   — Вспомогательная функция для режима DEEP (v2).
+   - Фильтрует строки с `sentiment=='neutral'`
+   - Заглушка: возвращает строки без изменений
+   - В v2: добавить HTTP-запрос, LLM по контенту, `source='page'`
+
+**Конкретные изменения от трёхрежимной системы:**
+- Старое: `label_mode` ∈ {domains, snippets, full}
+- Новое: `label_mode` ∈ {auto, deep}
+- **auto** заменил `domains` + `snippets` (auto выполняет оба с fallback)
+- **deep** заменил `full` (зарезервирован для страницы)
+- **neutral** стал явным маркером неуверенности (вместо None в ошибках)
 
 ## webhook.py — API-эндпоинты
 
@@ -203,7 +239,7 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
     "with_labels": bool = True,                       # включить разметку
     "depth": int = 10,                                # глубина сбора (10/20/50/100)
     "client_id": str = "default",                     # ID клиента
-    "label_mode": str = "domains",                    # режим разметки (domains/snippets/full)
+    "label_mode": str = "auto",                       # режим разметки: "auto" (дефолт) | "deep" (v2)
     "force_relabel": bool = False,                    # принудительная переразметка
     "report_only": bool = False,                      # если True — только построить отчёт
     "report_date": str = "latest",                    # дата для отчёта (YYYY-MM-DD или "latest")
@@ -213,6 +249,9 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
     "provider_chain": str | None = None,              # фильтр провайдеров LLM (через запятую)
 }
 ```
+
+**Примечание:** с версии 2026-07-10 поддерживаются только режимы `"auto"` и `"deep"`.  
+Старые значения `"domains"`, `"snippets"`, `"full"` больше не принимаются (валидация 422).
 
 **Ответ 202 Accepted:**
 ```json
