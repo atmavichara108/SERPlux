@@ -47,7 +47,8 @@ cd /root/serp
    - ✓: HTTP 200, JSON с `status`, `service`
    - ✗: curl failed, unreachable → exit 1
 
-3. **Container status** — `docker compose ps`
+3. **Container status** — `docker compose ps $SERVICE`
+   - Проверяется текстовый вывод (не требуется `jq` — его может не быть на сервере)
    - ✓: container state = running/healthy
    - ✗: container is down, crashed → exit 1
 

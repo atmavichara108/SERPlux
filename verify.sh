@@ -84,25 +84,17 @@ echo ""
 
 # c) Container status
 echo "[3/6] Container status..."
-CONTAINER_STATUS=$(docker compose ps --format json | jq -r ".[0].State // .[$SERVICE].State // .State // empty")
-if [ -z "$CONTAINER_STATUS" ]; then
-    # Fallback: попробуем просто проверить, запущен ли контейнер
-    if docker compose ps "$SERVICE" | grep -q "$SERVICE"; then
-        log_check "Container running" "pass"
-        log_detail "container is up"
-    else
-        log_check "Container running" "fail"
-        exit 1
-    fi
+
+# Проверяем статус без jq (jq может не быть на сервере; формат JSON различается между версиями compose)
+# Используем текстовый вывод docker compose ps и ищем наш сервис + статус Up/running/healthy
+PS_OUTPUT=$(docker compose ps "$SERVICE" 2>&1)
+if echo "$PS_OUTPUT" | grep -E "^[[:space:]]*$SERVICE" | grep -qiE "Up|running|healthy"; then
+    log_check "Container running" "pass"
+    log_detail "container is up and healthy"
 else
-    if echo "$CONTAINER_STATUS" | grep -qE "running|healthy"; then
-        log_check "Container running" "pass"
-        log_detail "State: $CONTAINER_STATUS"
-    else
-        log_check "Container running" "fail"
-        log_detail "State: $CONTAINER_STATUS"
-        exit 1
-    fi
+    log_check "Container running" "fail"
+    log_detail "$PS_OUTPUT"
+    exit 1
 fi
 echo ""
 
