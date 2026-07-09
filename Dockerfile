@@ -15,9 +15,9 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Устанавливаем зависимости в изолированный каталог
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# Устанавливаем зависимости (включая dev: pytest для verify.sh)
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir --prefix=/install -r requirements-dev.txt
 
 # ─── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime

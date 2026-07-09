@@ -5,6 +5,12 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Фикс verify.sh: pytest не найден в production-контейнере**
+  - `Dockerfile`: `requirements-dev.txt` теперь устанавливается в builder stage, образ содержит `pytest` и `httpx` для `verify.sh`.
+  - `requirements-dev.txt`: обновлён комментарий (dev-зависимости включаются в образ).
+  - `verify.sh`: добавлена проверка наличия `pytest` перед запуском с понятным сообщением "Rebuild image with requirements-dev.txt".
+  - `docs/verification.md`: добавлено предупреждение про необходимость `docker compose build` после пула, чтобы образ обновился.
+  - Коммит: `fix(infra): install dev deps in Docker image so verify.sh can run pytest`
 - **Автоматизированная верификация между этапами разработки и деплоя**
   - `verify.sh` (в корне репо): 6 проверок после deploy.sh на сервере: тесты в контейнере, health endpoint, статус контейнера, логи на ошибки, схема БД (таблицы+колонки), целостность данных (нет осиротевших записей). Вывод ✓/✗, exit 1 при ошибке. Параметр `SERVICE=${SERVICE:-serplux}`.
   - `backup_db.sh` (в корне): создание бэкап с временной меткой `/app/data/serplux.db.bak.YYYY-MM-DD-HHMMSS`, проверка целостности (валидный SQLite), ротация последних 10 бэкапов. Для ручного вызова перед миграциями.

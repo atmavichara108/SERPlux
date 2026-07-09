@@ -29,6 +29,10 @@ cd /root/serp
 ./verify.sh [SERVICE=serplux]
 ```
 
+**Важно:** `pytest` устанавливается в Docker-образ через `requirements-dev.txt`. Если verify.sh
+падает с `No module named pytest`, нужно выполнить `docker compose build` (или `./deploy.sh`)
+после пула, чтобы пересобрать образ с новыми зависимостями.
+
 **Что проверяет (6 пунктов):**
 
 1. **Тесты** — `pytest -q` внутри контейнера

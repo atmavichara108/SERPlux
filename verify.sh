@@ -43,6 +43,14 @@ echo ""
 
 # a) Тесты
 echo "[1/6] Running tests..."
+
+# Проверяем, что pytest доступен в контейнере
+if ! docker compose exec -T "$SERVICE" python -m pytest --version > /dev/null 2>&1; then
+    log_check "Tests" "fail"
+    log_detail "pytest not installed in container. Rebuild image with requirements-dev.txt"
+    exit 1
+fi
+
 if docker compose exec -T "$SERVICE" python -m pytest -q 2>&1 | tail -1 | tee /tmp/pytest_output.txt | grep -q "passed"; then
     PASSED=$(grep -oP '\d+(?= passed)' /tmp/pytest_output.txt | tail -1)
     log_check "Tests" "pass"
