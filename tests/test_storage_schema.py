@@ -144,17 +144,20 @@ def test_migration_preserves_row_count(db_path, sample_rows):
         labels_count = conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
         assert labels_count == 1  # только одна не-NULL метка
 
-        # default удалён seed, данные перенесены на 28938353
+        # default удалён, 28938353 нормализован на client01
         assert conn.execute(
             "SELECT 1 FROM clients WHERE client_id = 'default'"
         ).fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM clients WHERE client_id = '28938353'"
+        ).fetchone() is None
         client = conn.execute(
-            "SELECT client_id, client_name FROM clients WHERE client_id = '28938353'"
+            "SELECT client_id, client_name FROM clients WHERE client_id = 'client01'"
         ).fetchone()
-        assert client == ("28938353", "Sudheimer Group")
+        assert client == ("client01", "Sudheimer Group")
         assert conn.execute(
             "SELECT client_id FROM positions"
-        ).fetchone()[0] == "28938353"
+        ).fetchone()[0] == "client01"
     finally:
         conn.close()
 

@@ -20,18 +20,20 @@
      отчитаться «актуально».
 
 Поток migrate(db_path):
-  1. backup (всегда)
-  2. _create_new_schema(conn)        — все таблицы IF NOT EXISTS
-  3. _apply_schema_patches(conn)     — confidence + domain_labels
-  4. авто-клиент 'default'           — INSERT OR IGNORE
-  5. if _table_exists(conn, "results"):
-         перенос results→positions
-         перенос labels
-         верификация COUNT(results)==COUNT(positions)
-         DROP results
-     else:
-         log «перенос данных не требуется»
-  6. _verify_schema(conn)            — всегда, в конце
+   1. backup (всегда)
+   2. _create_new_schema(conn)        — все таблицы IF NOT EXISTS
+   3. _apply_schema_patches(conn)     — confidence + domain_labels
+   4. авто-клиент 'default'           — INSERT OR IGNORE
+   5. if _table_exists(conn, "results"):
+          перенос results→positions
+          перенос labels
+          верификация COUNT(results)==COUNT(positions)
+          DROP results
+      else:
+          log «перенос данных не требуется»
+   6. seed/обновление клиента 28938353 + перенос default на 28938353
+   7. нормализация client_id (28938353 → client01)
+   8. _verify_schema(conn)            — всегда, в конце
 
 НЕ запускает миграцию автоматически и НЕ трогает боевую БД без явного --db.
 """
@@ -458,6 +460,117 @@ def _seed_client_profile(conn: sqlite3.Connection, db_path: str) -> None:
     _log_client_stats(conn, "После seed")
 
 
+def _normalize_client_id(conn: sqlite3.Connection) -> None:
+    """
+    Нормализация идентификатора клиента: переносит данные с численного 
+    client_id="28938353" на строковый slug client_id="client01".
+    
+    Логика:
+    1. Если нет "28938353" в clients — ничего не делать (уже нормализовано).
+    2. Если "28938353" есть:
+       a) Если "client01" не существует:
+          - Создать "client01" со ВСЕМ профилем из "28938353"
+       b) Если "client01" уже существует:
+          - Merge: перенос только данных с "28938353" на "client01"
+       c) UPDATE positions/labels/domain_labels: "28938353" → "client01"
+       d) DELETE "28938353" из clients
+       e) Верификация целостности (нет осиротевших)
+    """
+    source = "28938353"
+    target = "client01"
+    
+    # Проверяем наличие source
+    source_row = conn.execute(
+        "SELECT client_name, project_id, searchers, geos, regions_map, queries "
+        "FROM clients WHERE client_id = ?",
+        (source,)
+    ).fetchone()
+    
+    if source_row is None:
+        log.info("Нормализация client_id: %s не найден, ничего не делать", source)
+        return
+    
+    client_name, project_id, searchers, geos, regions_map, queries = source_row
+    
+    # Проверяем наличие target
+    target_exists = conn.execute(
+        "SELECT 1 FROM clients WHERE client_id = ?", (target,)
+    ).fetchone() is not None
+    
+    if not target_exists:
+        # Создаём target с полным профилем из source
+        conn.execute(
+            """INSERT INTO clients
+               (client_id, client_name, project_id, searchers, geos, regions_map, queries, 
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (target, client_name, project_id, searchers, geos, regions_map, queries),
+        )
+        log.info(
+            "Создан нормализованный клиент %s из %s (profile: project_id=%s)",
+            target, source, project_id,
+        )
+    else:
+        log.info(
+            "Нормализация client_id: %s уже существует, выполняю merge (перенос только данных)",
+            target
+        )
+    
+    # Перенос positions
+    pos_count = conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE client_id = ?", (source,)
+    ).fetchone()[0]
+    if pos_count:
+        conn.execute(
+            "UPDATE positions SET client_id = ? WHERE client_id = ?",
+            (target, source)
+        )
+        log.info("Перенесено positions: %s → %s (%s записей)", source, target, pos_count)
+    
+    # Перенос labels
+    label_count = conn.execute(
+        "SELECT COUNT(*) FROM labels WHERE client_id = ?", (source,)
+    ).fetchone()[0]
+    if label_count:
+        conn.execute(
+            "UPDATE labels SET client_id = ? WHERE client_id = ?",
+            (target, source)
+        )
+        log.info("Перенесено labels: %s → %s (%s записей)", source, target, label_count)
+    
+    # Перенос domain_labels (если таблица существует)
+    if _table_exists(conn, "domain_labels"):
+        domain_count = conn.execute(
+            "SELECT COUNT(*) FROM domain_labels WHERE client_id = ?", (source,)
+        ).fetchone()[0]
+        if domain_count:
+            conn.execute(
+                "UPDATE domain_labels SET client_id = ? WHERE client_id = ?",
+                (target, source)
+            )
+            log.info("Перенесено domain_labels: %s → %s (%s записей)", source, target, domain_count)
+    
+    # Удаление source (теперь безопасно — все данные перенесены)
+    conn.execute("DELETE FROM clients WHERE client_id = ?", (source,))
+    log.info("Удалён старый идентификатор клиента: %s", source)
+    
+    # Верификация целостности: нет осиротевших записей
+    for table in ("positions", "labels"):
+        orphan_count = conn.execute(
+            f"""SELECT COUNT(*) FROM {table} p
+               LEFT JOIN clients c ON p.client_id = c.client_id
+               WHERE c.client_id IS NULL AND p.client_id IS NOT NULL"""
+        ).fetchone()[0]
+        if orphan_count:
+            raise RuntimeError(
+                f"Нормализация client_id: осиротевшие записи в {table}: {orphan_count}. "
+                "Откат."
+            )
+    
+    log.info("Нормализация client_id завершена: %s → %s", source, target)
+    _log_client_stats(conn, "После нормализации client_id")
+
+
 def migrate(db_path: str) -> None:
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"БД не найдена: {db_path}")
@@ -514,9 +627,12 @@ def migrate(db_path: str) -> None:
         # Шаг 5: seed/обновление профиля клиента 28938353 + перенос мусорного default
         _seed_client_profile(conn, db_path)
 
+        # Шаг 6: нормализация client_id (28938353 → client01)
+        _normalize_client_id(conn)
+
         conn.commit()
 
-        # Шаг 6: верификация схемы (всегда, в конце)
+        # Шаг 7: верификация схемы (всегда, в конце)
         _verify_schema(conn)
 
         log.info("Миграция завершена успешно")

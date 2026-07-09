@@ -117,18 +117,21 @@ def test_migrate_adds_domain_labels_to_already_migrated_db(db_path):
         assert _table_exists(conn, "domain_labels"), "domain_labels должна быть создана"
         assert _table_exists(conn, "results") is False, "results не должна появиться"
         assert "confidence" in _columns(conn, "labels"), "labels.confidence должна быть"
-        # существующие данные не потеряны и перенесены на 28938353
+        # существующие данные не потеряны и перенесены на client01 (после нормализации)
         assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0] == 1
         assert conn.execute(
             "SELECT client_id FROM positions"
-        ).fetchone()[0] == "28938353"
-        # default удалён, 28938353 создан
+        ).fetchone()[0] == "client01"
+        # default и 28938353 удалены, client01 создан (после нормализации client_id)
         assert conn.execute(
             "SELECT 1 FROM clients WHERE client_id='default'"
         ).fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM clients WHERE client_id='28938353'"
+        ).fetchone() is None
         client = conn.execute(
-            "SELECT client_name FROM clients WHERE client_id='28938353'"
+            "SELECT client_name FROM clients WHERE client_id='client01'"
         ).fetchone()
         assert client is not None
         assert client[0] == "Sudheimer Group"
@@ -220,21 +223,22 @@ def test_migrate_with_results_transfers_and_applies_schema(db_path):
         conn.close()
 
 
-# ─── 4. Seed профиля клиента 28938353 из конфигурации репозитория ─────────────
+# ─── 4. Seed профиля клиента → нормализация client_id к "client01" ──────────────
 
 
 def test_migrate_seeds_client_profile(empty_db, monkeypatch):
     db_path = empty_db
-    """migrate() засевает 28938353 из config.py/regions_map_client1.json/env."""
+    """migrate() засевает 28938353, затем нормализует на client01."""
     monkeypatch.setenv("TOPVISOR_PROJECT_ID", "28938353")
 
     migrate.migrate(db_path)
 
-    client = storage.get_client("28938353", db_path)
+    # После нормализации существует client01, а не 28938353
+    client = storage.get_client("client01", db_path)
     assert client is not None
-    assert client["client_id"] == "28938353"
+    assert client["client_id"] == "client01"
     assert client["client_name"] == "Sudheimer Group"
-    assert client["project_id"] == 28938353
+    assert client["project_id"] == 28938353  # project_id внутри профиля остаётся 28938353
 
     # queries: 4 субъекта (key+display, без pos/url)
     assert len(client["queries"]) == 4
@@ -254,19 +258,20 @@ def test_migrate_seeds_client_profile(empty_db, monkeypatch):
 
 def test_migrate_seeds_client_profile_idempotent(empty_db, monkeypatch):
     db_path = empty_db
-    """Двойной migrate не создаёт дублей 28938353 и не падает."""
+    """Двойной migrate не создаёт дублей и не падает."""
     monkeypatch.setenv("TOPVISOR_PROJECT_ID", "28938353")
     migrate.migrate(db_path)
     migrate.migrate(db_path)
 
     clients = storage.list_clients(db_path)
-    target = [c for c in clients if c["client_id"] == "28938353"]
-    assert len(target) == 1
-    assert all(c["client_id"] != "default" for c in clients)
+    # После миграции должен быть только client01, ни default, ни 28938353
+    assert len(clients) == 1
+    assert clients[0]["client_id"] == "client01"
+    assert all(c["client_id"] != "default" and c["client_id"] != "28938353" for c in clients)
 
 
 def test_migrate_updates_existing_empty_profile(db_path, monkeypatch):
-    """Если 28938353 уже есть с пустым профилем — дозаполняем, не плодим дубликат."""
+    """Если 28938353 уже есть с пустым профилем — дозаполняем, затем нормализуем на client01."""
     monkeypatch.setenv("TOPVISOR_PROJECT_ID", "28938353")
 
     conn = sqlite3.connect(db_path)
@@ -295,16 +300,20 @@ def test_migrate_updates_existing_empty_profile(db_path, monkeypatch):
 
     migrate.migrate(db_path)
 
-    client = storage.get_client("28938353", db_path)
+    # После миграции: 28938353 → client01, профиль заполнен
+    client = storage.get_client("client01", db_path)
     assert client is not None
     assert client["client_name"] == "Sudheimer Group"
     assert client["project_id"] == 28938353
     assert len(client["queries"]) == 4
     assert len(client["regions_map"]) == 15
+    
+    # 28938353 удалён
+    assert storage.get_client("28938353", db_path) is None
 
 
 def test_migrate_transfers_default_data_to_client(db_path, monkeypatch):
-    """Данные с default переносятся на 28938353, default удалён."""
+    """Данные с default переносятся на 28938353, затем нормализуются на client01."""
     monkeypatch.setenv("TOPVISOR_PROJECT_ID", "28938353")
 
     conn = sqlite3.connect(db_path)
@@ -352,20 +361,16 @@ def test_migrate_transfers_default_data_to_client(db_path, monkeypatch):
         """)
         conn.executemany(
             "INSERT INTO clients (client_id, client_name) VALUES (?, ?)",
-            [("default", "Default"), ("28938353", "28938353")],
+            [("default", "Default")],
         )
         # Разные url/position, чтобы не было дедупликации при переносе
         conn.execute(
             "INSERT INTO positions (client_id, date, searcher, query, geo, region_index, position, url, domain, snippet) "
             "VALUES ('default', '2026-07-01', 'google', 'q', 'Литва', 1300, 1, 'https://a.com', 'a.com', '')"
         )
-        conn.execute(
-            "INSERT INTO positions (client_id, date, searcher, query, geo, region_index, position, url, domain, snippet) "
-            "VALUES ('28938353', '2026-07-01', 'google', 'q', 'Литва', 1300, 2, 'https://b.com', 'b.com', '')"
-        )
         conn.executemany(
             "INSERT INTO labels (position_id, client_id, label_mode, label_version, sentiment) VALUES (?, ?, 'snippets', 1, 'positive')",
-            [(1, "default"), (2, "28938353")],
+            [(1, "default")],
         )
         conn.commit()
     finally:
@@ -375,24 +380,27 @@ def test_migrate_transfers_default_data_to_client(db_path, monkeypatch):
 
     conn = sqlite3.connect(db_path)
     try:
+        # После миграции: default удалён, данные на client01 (после нормализации 28938353)
         assert storage.get_client("default", db_path) is None
-        assert storage.get_client("28938353", db_path) is not None
+        assert storage.get_client("client01", db_path) is not None
+        assert storage.get_client("28938353", db_path) is None  # удалён после нормализации
 
-        assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 2
+        # Все данные перенесены на client01
+        assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
         assert conn.execute(
-            "SELECT COUNT(*) FROM positions WHERE client_id = '28938353'"
-        ).fetchone()[0] == 2
+            "SELECT COUNT(*) FROM positions WHERE client_id = 'client01'"
+        ).fetchone()[0] == 1
         assert conn.execute(
             "SELECT COUNT(*) FROM positions WHERE client_id = 'default'"
         ).fetchone()[0] == 0
 
-        assert conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0] == 1
         assert conn.execute(
-            "SELECT COUNT(*) FROM labels WHERE client_id = '28938353'"
-        ).fetchone()[0] == 2
+            "SELECT COUNT(*) FROM labels WHERE client_id = 'client01'"
+        ).fetchone()[0] == 1
 
         # Каскадного удаления не было — таблицы positions/labels не пусты
-        assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
     finally:
         conn.close()
 
@@ -435,13 +443,13 @@ def test_migrate_seed_handles_duplicates_default_and_target(db_path, monkeypatch
         """)
         conn.executemany(
             "INSERT INTO clients (client_id, client_name) VALUES (?, ?)",
-            [("default", "Default"), ("28938353", "28938353")],
+            [("default", "Default")],
         )
-        # Одинаковая строка у обоих — дубликат по UNIQUE(client_id,date,...)
-        conn.executemany(
+        # Одинаковая строка — будет перенесена с default на 28938353, затем на client01
+        conn.execute(
             "INSERT INTO positions (client_id, date, searcher, query, geo, region_index, position, url, domain, snippet) "
             "VALUES (?, '2026-07-01', 'google', 'q', 'Литва', 1300, 1, 'https://a.com', 'a.com', '')",
-            [("default",), ("28938353",)],
+            ("default",),
         )
         conn.commit()
     finally:
@@ -449,17 +457,19 @@ def test_migrate_seed_handles_duplicates_default_and_target(db_path, monkeypatch
 
     migrate.migrate(db_path)
 
-    client = storage.get_client("28938353", db_path)
+    # После нормализации client_id данные на client01
+    client = storage.get_client("client01", db_path)
     assert client is not None
     assert storage.get_client("default", db_path) is None
+    assert storage.get_client("28938353", db_path) is None  # удалён после нормализации
 
     conn = sqlite3.connect(db_path)
     try:
-        # Одна строка сохранилась, дубликат удалён
+        # Одна строка на client01
         assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
         assert conn.execute(
             "SELECT client_id FROM positions"
-        ).fetchone()[0] == "28938353"
+        ).fetchone()[0] == "client01"
     finally:
         conn.close()
 
@@ -484,7 +494,7 @@ def test_migrate_seed_without_env_project_id_still_creates_client(empty_db, monk
     monkeypatch.delenv("TOPVISOR_PROJECT_ID", raising=False)
     migrate.migrate(db_path)
 
-    client = storage.get_client("28938353", db_path)
+    client = storage.get_client("client01", db_path)
     assert client is not None
     assert client["project_id"] is None
     assert len(client["queries"]) == 4
