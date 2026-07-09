@@ -21,10 +21,10 @@ log_check() {
     local status="$2"
     if [ "$status" = "pass" ]; then
         echo -e "${GREEN}✓${NC} $name"
-        ((CHECKS_PASSED++))
+        CHECKS_PASSED=$((CHECKS_PASSED + 1))
     elif [ "$status" = "warn" ]; then
         echo -e "${YELLOW}⚠${NC} $name (warning)"
-        ((WARNINGS++))
+        WARNINGS=$((WARNINGS + 1))
     else
         echo -e "${RED}✗${NC} $name"
     fi
