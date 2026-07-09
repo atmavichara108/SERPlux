@@ -5,6 +5,10 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Фикс verify.sh: pytest не мог писать кэш в /app**
+  - `verify.sh`: pytest запускается с `-p no:cacheprovider` (отключает `.pytest_cache`); проверка результата по exit code через `PIPESTATUS`, а не по grep строки `passed`.
+  - `docs/verification.md`: документировано, почему отключён кэш и почему контейнер не имеет прав на запись в `/app`.
+  - Коммит: `fix(verify): handle pytest cache permission in readonly /app`
 - **Фикс verify.sh: pytest не найден в production-контейнере**
   - `Dockerfile`: `requirements-dev.txt` теперь устанавливается в builder stage, образ содержит `pytest` и `httpx` для `verify.sh`.
   - `requirements-dev.txt`: обновлён комментарий (dev-зависимости включаются в образ).

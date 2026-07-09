@@ -51,13 +51,19 @@ if ! docker compose exec -T "$SERVICE" python -m pytest --version > /dev/null 2>
     exit 1
 fi
 
-if docker compose exec -T "$SERVICE" python -m pytest -q 2>&1 | tail -1 | tee /tmp/pytest_output.txt | grep -q "passed"; then
-    PASSED=$(grep -oP '\d+(?= passed)' /tmp/pytest_output.txt | tail -1)
+# Запускаем pytest с отключённым кэшем (нет прав на запись в /app) и коротким tb
+set +e
+docker compose exec -T "$SERVICE" python -m pytest -q -p no:cacheprovider --tb=short 2>&1 | tee /tmp/pytest_output.txt
+PYTEST_EXIT=${PIPESTATUS[0]}
+set -e
+PASSED=$(grep -oP '\d+(?= passed)' /tmp/pytest_output.txt | tail -1)
+
+if [ "$PYTEST_EXIT" -eq 0 ]; then
     log_check "Tests" "pass"
     log_detail "$PASSED tests passed"
 else
     log_check "Tests" "fail"
-    docker compose exec -T "$SERVICE" python -m pytest -q --tb=short
+    log_detail "pytest exit code: $PYTEST_EXIT"
     exit 1
 fi
 echo ""
