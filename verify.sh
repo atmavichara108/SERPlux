@@ -117,6 +117,8 @@ echo ""
 
 # e) Схема БД
 echo "[5/6] Database schema..."
+
+set +e
 SCHEMA_CHECK=$(docker compose exec -T "$SERVICE" python3 -c "
 import sqlite3
 import sys
@@ -147,8 +149,10 @@ if missing_cols:
 print('OK')
 conn.close()
 " 2>&1)
+SCHEMA_EXIT=$?
+set -e
 
-if [ "$SCHEMA_CHECK" = "OK" ]; then
+if [ "$SCHEMA_EXIT" -eq 0 ] && [ "$SCHEMA_CHECK" = "OK" ]; then
     log_check "Database schema" "pass"
     log_detail "All required tables and columns present"
 else
@@ -160,6 +164,8 @@ echo ""
 
 # f) Целостность — осиротевшие записи
 echo "[6/6] Data integrity..."
+
+set +e
 ORPHANS=$(docker compose exec -T "$SERVICE" python3 -c "
 import sqlite3
 
@@ -187,6 +193,14 @@ conn.close()
 
 print(f'{orphan_positions},{orphan_labels}')
 " 2>&1)
+ORPHANS_EXIT=$?
+set -e
+
+if [ "$ORPHANS_EXIT" -ne 0 ]; then
+    log_check "Data integrity" "fail"
+    log_detail "Failed to query database: $ORPHANS"
+    exit 1
+fi
 
 ORPHAN_POS=$(echo "$ORPHANS" | cut -d',' -f1)
 ORPHAN_LABELS=$(echo "$ORPHANS" | cut -d',' -f2)

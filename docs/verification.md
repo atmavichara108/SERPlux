@@ -58,14 +58,18 @@ cd /root/serp
    - ⚠: найдены Error/Traceback (warning, не блокирует)
 
 5. **Database schema** — PRAGMA table_info, проверка таблиц/колонок
+   - Выполняется через `docker compose exec -T $SERVICE python3`
+   - `docker compose exec` обёрнут в `set +e`/`set -e`, чтобы ненулевой exit code от python не убивал verify.sh раньше вывода деталей
    - Таблицы: `clients`, `positions`, `labels`, `domain_labels`
    - Колонки в `clients`: `id`, `client_id`, `queries`, `regions_map`, `searchers`, `project_id`
    - ✓: все присутствуют
-   - ✗: отсутствуют → exit 1
+   - ✗: отсутствуют или ошибка подключения к БД → exit 1
 
 6. **Data integrity** — осиротевшие записи (LEFT JOIN)
+   - Выполняется через `docker compose exec -T $SERVICE python3`
+   - Также обёрнуто в `set +e`/`set -e` для корректной обработки ошибок
    - ✓: нет позиций/меток с `client_id`, которого нет в `clients`
-   - ✗: найдены осиротевшие → exit 1
+   - ✗: найдены осиротевшие или ошибка запроса → exit 1
 
 **Результат:** Итоговая сводка `N/6 passed`, exit 0 или exit 1
 
