@@ -41,10 +41,10 @@ var DEFAULT_REPORT_DATE = "latest";
  * Порядок определяет номер строки (1-indexed).
  */
 var SETTINGS_TEMPLATE = [
-  ["client_id",            "",         "ID клиента (латиница, напр. sudheimer)"],
+  ["client_id",            "",         "ID клиента (например: client01). Выбрать из dropdown или обновить SERPlux → Настройки → [>] Обновить список клиентов"],
   ["depth",                "10",       "Глубина сбора: 10, 20, 50 или 100"],
   ["with_labels",          "true",     "Включить разметку: true или false"],
-  ["label_mode",           "domains",  "Режим разметки: domains, snippets или full"],
+  ["label_mode",           "auto",     "Режим разметки: auto, deep или domains/snippets/full"],
   ["date",                 "today",    "Дата сбора: today или YYYY-MM-DD"],
   ["force_relabel",        "false",    "Принудительная переразметка: true или false"],
   ["force_rebuild_report", "false",    "Перестроить отчёт: true или false"],
@@ -75,6 +75,7 @@ function onOpen() {
       .addItem("Установить секрет", "setSecret")
       .addItem("Установить URL сервера", "setWebhookUrl")
       .addItem("[+] Инициализировать настройки", "initSettingsSheet")
+      .addItem("[⟳] Пересоздать лист Настройки", "deleteAndRecreateSettingsSheet")
       .addItem("[!] Установить триггеры (1 раз)", "setupTriggers")
       .addSeparator()
       .addItem("Показать текущий профиль", "showProfile")
@@ -137,6 +138,86 @@ function setupTriggers() {
 // ─── Модуль 1: Лист «Настройки» (§4.2) ───────────────────────────────────────
 
 /**
+ * Получает список client_id из webhook GET /clients.
+ * Используется для Data Validation dropdown в поле client_id.
+ * 
+ * @return {array} список строк с client_id, или пустой массив при ошибке
+ */
+function _getClientIdList() {
+  var secret = _getSecret();
+  if (!secret) {
+    return [];
+  }
+  
+  var result = _get("/clients", secret);
+  if (!result.ok || !result.data || !Array.isArray(result.data)) {
+    return [];
+  }
+  
+  // Извлекаем client_id из каждого клиента в списке
+  var clientIds = result.data.map(function(client) {
+    return client.client_id || "";
+  }).filter(function(id) { return id !== ""; });
+  
+  return clientIds.length > 0 ? clientIds : [];
+}
+
+/**
+ * Устанавливает Data Validation для поля client_id (строка 1, колонка B).
+ * Dropdown заполняется из GET /clients API.
+ */
+function _setupClientIdValidation(sheet) {
+  var clientIds = _getClientIdList();
+  
+  if (clientIds.length === 0) {
+    // Если список клиентов не получен — сохраняем свободный ввод с подсказкой
+    sheet.getRange(1, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .setAllowInvalid(true)
+        .setHelpText("ID клиента (например: client01). Загрузить из сервера: SERPlux → Настройки → [>] Обновить список клиентов")
+        .build()
+    );
+  } else {
+    // Устанавливаем dropdown из списка клиентов
+    sheet.getRange(1, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(clientIds, true)
+        .setAllowInvalid(false)
+        .setHelpText("Выберите клиента из списка")
+        .build()
+    );
+  }
+}
+
+/**
+ * Удаляет лист «Настройки» и пересоздаёт его с заполненной структурой.
+ * Используется при повреждении листа или необходимости сброса настроек.
+ */
+function deleteAndRecreateSettingsSheet() {
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.alert(
+    "Пересоздать лист «Настройки»?",
+    "Это удалит текущий лист «Настройки» и создаст новый с предустановками.\n" +
+    "Все пользовательские настройки будут потеряны.",
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response !== ui.Button.OK) {
+    return;
+  }
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
+  
+  if (sheet) {
+    ss.deleteSheet(sheet);
+  }
+  
+  // Пересоздаём лист с заполненной структурой
+  initSettingsSheet();
+}
+
+/**
  * Создаёт или пересоздаёт лист «Настройки» с шаблоном ключей и Data Validation.
  * Формат: колонка A = ключ, B = значение, C = подсказка.
  */
@@ -162,6 +243,9 @@ function initSettingsSheet() {
   sheet.setColumnWidth(3, 400);
 
   // Data Validation для колонки B (значения)
+  // client_id (строка 1): dropdown из GET /clients API
+  _setupClientIdValidation(sheet);
+
   // depth (строка 2): список 10, 20, 50, 100
   sheet.getRange(2, 2).setDataValidation(
     SpreadsheetApp.newDataValidation()
@@ -180,12 +264,12 @@ function initSettingsSheet() {
       .build()
   );
 
-  // label_mode (строка 4): domains/snippets/full
+  // label_mode (строка 4): auto, deep, domains, snippets или full
   sheet.getRange(4, 2).setDataValidation(
     SpreadsheetApp.newDataValidation()
-      .requireValueInList(["domains", "snippets", "full"], true)
+      .requireValueInList(["auto", "deep", "domains", "snippets", "full"], true)
       .setAllowInvalid(false)
-      .setHelpText("Режим разметки: domains, snippets или full")
+      .setHelpText("Режим разметки: auto, deep, domains, snippets или full")
       .build()
   );
 
