@@ -35,7 +35,7 @@ log_error() {
 }
 
 log_detail() {
-    echo "  $1"
+    printf '%s\n' "  $1"
 }
 
 echo "=== SERPlux Verification ($SERVICE) ==="
@@ -56,7 +56,7 @@ set +e
 docker compose exec -T "$SERVICE" python -m pytest -q -p no:cacheprovider --tb=short 2>&1 | tee /tmp/pytest_output.txt
 PYTEST_EXIT=${PIPESTATUS[0]}
 set -e
-PASSED=$(grep -oP '\d+(?= passed)' /tmp/pytest_output.txt | tail -1)
+PASSED=$(grep -oE '[0-9]+ passed' /tmp/pytest_output.txt | grep -oE '[0-9]+' | tail -1)
 
 if [ "$PYTEST_EXIT" -eq 0 ]; then
     log_check "Tests" "pass"
@@ -140,7 +140,7 @@ if missing_tables:
 # Проверяем колонки в clients
 cursor.execute(\"PRAGMA table_info(clients)\")
 columns = set(row[1] for row in cursor.fetchall())
-required_cols = ['id', 'client_id', 'queries', 'regions_map', 'searchers', 'project_id']
+required_cols = ['client_id', 'client_name', 'queries', 'regions_map', 'searchers', 'project_id']
 missing_cols = [c for c in required_cols if c not in columns]
 if missing_cols:
     print(f'Missing columns in clients: {missing_cols}')

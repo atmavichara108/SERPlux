@@ -5,6 +5,10 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Фикс verify.sh: required_cols в clients не соответствовал реальной схеме**
+  - `verify.sh`: вместо несуществующей `id` теперь проверяется `client_name`; список обязательных колонок синхронизирован с `storage.py`/`migrate.py`.
+  - `docs/verification.md`: обновлён список колонок.
+  - Коммит: `fix(verify): align required clients columns with actual schema`
 - **Фикс verify.sh: docker compose exec + set -e убивал скрипт на шагах 5-6**
   - `verify.sh`: шаги 5 (схема БД) и 6 (целостность) обёрнуты в `set +e`/`set -e` с явным сохранением `$?`. Теперь скрипт не умирает от ненулевого exit code внутри `$()`, а корректно выводит детали ошибки.
   - Коммит: `fix(verify): handle docker exec exit codes in schema/integrity checks`

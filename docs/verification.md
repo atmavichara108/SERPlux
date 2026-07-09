@@ -61,7 +61,7 @@ cd /root/serp
    - Выполняется через `docker compose exec -T $SERVICE python3`
    - `docker compose exec` обёрнут в `set +e`/`set -e`, чтобы ненулевой exit code от python не убивал verify.sh раньше вывода деталей
    - Таблицы: `clients`, `positions`, `labels`, `domain_labels`
-   - Колонки в `clients`: `id`, `client_id`, `queries`, `regions_map`, `searchers`, `project_id`
+   - Колонки в `clients`: `client_id`, `client_name`, `queries`, `regions_map`, `searchers`, `project_id`
    - ✓: все присутствуют
    - ✗: отсутствуют или ошибка подключения к БД → exit 1
 

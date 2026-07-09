@@ -50,7 +50,8 @@ echo ""
 log_info "Checking backup integrity..."
 
 # Проверяем, что бэкап не пустой и валидный SQLite
-if docker compose exec -T "$SERVICE" python3 -c "
+set +e
+VERIFY_OUTPUT=$(docker compose exec -T "$SERVICE" python3 -c "
 import sqlite3
 import os
 
@@ -72,10 +73,14 @@ try:
 except Exception as e:
     print(f'Invalid SQLite database: {e}')
     exit(1)
-" 2>&1 | grep -q "OK"; then
+" 2>&1)
+VERIFY_EXIT=$?
+set -e
+
+if [ "$VERIFY_EXIT" -eq 0 ] && [ "$VERIFY_OUTPUT" = "OK" ]; then
     log_info "Backup integrity verified"
 else
-    log_error "Backup verification failed"
+    log_error "Backup verification failed: $VERIFY_OUTPUT"
     exit 1
 fi
 
