@@ -274,6 +274,18 @@ POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: пров
 
 Во всех вызовах из `webhook.py`, `main.py`, `reporter.py` явно передаётся `db_path=storage.DB_PATH`. Тесты `160/160 passed`. Надёжное решение (рефакторинг default-аргументов в `storage.py`) оставлено как потенциальная задача, но текущий обходной фикс закрывает баг.
 
+### 2026-07-10 — Reporter захардкожен под 4 субъекта (SUBJECT_BLOCKS) и 16 колонок (COLS)
+
+**Статус:** ✔ Исправлено в 2-й сессии (2026-07-10).
+
+`reporter.py` переписан на динамическую раскладку. Новая функция `_build_subject_layout(queries)` вычисляет N колонок из профиля клиента: N субъектов → N×2 (pos|url) + (N-1) разделителей. `build_report()` принимает `client_id` и `db_path`, загружает субъекты из `client.queries` и гео из `client.regions_map`. `config.SUBJECT_BLOCKS` и `config.COLS` переименованы в `_DEPRECATED_*` (обратная совместимость). Тесты для 2/4/7 субъектов. Все 200+ тестов зелёные.
+
+### 2026-07-10 — Apps Script парсит =TODAY() неправильно (date в webhook)
+
+**Статус:** ✔ Исправлено в 2-й сессии (2026-07-10).
+
+Добавлена функция `_normalizeDateToString(dateInput)` в `apps_script.gs`. Конвертирует Date-объекты и разные форматы в YYYY-MM-DD (UTC). Обновлены `_readSettings()` (нормализует `date` и `report_date` из листа) и `buildReportForDate()` (нормализует дату из диалога). Fallback на "latest" при ошибке парсинга.
+
 ---
 
 (пусто)
