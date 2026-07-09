@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound, APIError
 
 import storage
-from storage import get_history
-from config import SUBJECT_BLOCKS, COLS, GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH, REPORT_DEPTH, setup_logging
+from storage import get_history, get_client
+from config import GEO_DISPLAY, GEO_ORDER, EMPTY_GEO_DEPTH, REPORT_DEPTH, setup_logging
 
 load_dotenv()
 
@@ -73,6 +73,46 @@ def _format_date(date_str: str) -> str:
     return f"{dt.day}.{dt.month}.{dt.year}"
 
 
+def _build_subject_layout(queries: list[dict]) -> dict:
+    """
+    Строит раскладку колонок из списка субъектов (queries).
+    
+    Возвращает dict:
+    {
+        "num_subjects": N,
+        "cols": N*2 + (N-1)*1,  # каждый субъект = 2 колонки (pos|url) + разделитель
+        "subjects": [
+            {"key": "...", "display": "...", "pos": idx, "url": idx+1},
+            ...
+        ]
+    }
+    """
+    subjects = []
+    col_idx = 1  # начинаем с колонки 1 (колонка 0 — пусто)
+    
+    for i, query in enumerate(queries):
+        key = query.get("key", "")
+        display = query.get("display", "")
+        
+        subjects.append({
+            "key": key,
+            "display": display,
+            "pos": col_idx,
+            "url": col_idx + 1,
+        })
+        
+        col_idx += 2  # pos + url
+        if i < len(queries) - 1:
+            col_idx += 1  # разделитель между субъектами
+    
+    total_cols = col_idx
+    return {
+        "num_subjects": len(queries),
+        "cols": total_cols,
+        "subjects": subjects,
+    }
+
+
 def _apply_label_colors(spreadsheet, sheet_id: int,
                         format_cells: list[tuple[int, int, dict]]) -> None:
     if not format_cells:
@@ -106,9 +146,24 @@ def _apply_label_colors(spreadsheet, sheet_id: int,
         log.error("Ошибка при применении цветов: %s", e)
 
 
-def build_report(date: str | None = None, force: bool = False, sheet_id: str | None = None) -> None:
+def build_report(date: str | None = None, force: bool = False, sheet_id: str | None = None,
+                 client_id: str = "default", db_path: str = storage.DB_PATH) -> None:
+    # Загружаем профиль клиента для получения списка субъектов и гео
+    client = get_client(client_id, db_path=db_path)
+    if not client:
+        log.error("Клиент %s не найден в БД", client_id)
+        return
+    
+    queries = client.get("queries", [])
+    regions_map = client.get("regions_map", [])
+    
+    if not queries:
+        log.warning("У клиента %s нет субъектов (queries)", client_id)
+        return
+    
+    # Получаем дату если не указана
     if date is None:
-        all_rows = get_history(db_path=storage.DB_PATH)
+        all_rows = get_history(db_path=db_path)
         if not all_rows:
             log.warning("Нет данных в базе")
             return
@@ -118,19 +173,43 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
     if date is None:
         raise ValueError("Дата не определена и нет данных в базе")
 
-    rows = get_history(filters={"date": date}, db_path=storage.DB_PATH)
+    rows = get_history(filters={"date": date}, db_path=db_path)
     if not rows:
         log.warning("Нет данных за дату %s", date)
         return
 
-    known_keys = {s["key"] for s in SUBJECT_BLOCKS}
+    # Фильтруем по известным субъектам из профиля клиента
+    known_keys = {q["key"] for q in queries}
     rows = [r for r in rows if r["query"] in known_keys]
 
     if not rows:
         log.warning("Нет данных известных субъектов за дату %s", date)
         return
 
-    log.info("Построение отчёта за %s: %s строк", date, len(rows))
+    # Строим раскладку колонок из профиля
+    subject_layout = _build_subject_layout(queries)
+    num_subjects = subject_layout["num_subjects"]
+    cols = subject_layout["cols"]
+    subject_blocks = subject_layout["subjects"]
+    
+    # Извлекаем порядок гео из regions_map клиента (уникальные geo_name)
+    geo_set = set()
+    for region in regions_map if isinstance(regions_map, list) else []:
+        if isinstance(region, dict):
+            geo_set.add(region.get("geo_name", ""))
+    
+    # Если regions_map не в виде списка или пустой, используем GEO_ORDER как fallback
+    if not geo_set:
+        geo_order = GEO_ORDER
+    else:
+        # Порядок из GEO_ORDER, но только те гео, которые есть в regions_map клиента
+        geo_order = [g for g in GEO_ORDER if g in geo_set]
+        # Добавляем оставшиеся гео из regions_map
+        remaining = [g for g in sorted(geo_set) if g not in geo_order]
+        geo_order.extend(remaining)
+
+    log.info("Построение отчёта за %s: %s строк, %s субъектов, %s колонок", 
+             date, len(rows), num_subjects, cols)
 
     raw_grouped: dict[str, dict[str, dict[str, dict[int, tuple[str, str | None]]]]] = {}
     for row in rows:
@@ -151,11 +230,11 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
 
         display_groups: dict[str, dict[str, dict[int, tuple[str, str | None]]]] = {}
         geo_max_pos: dict[str, int] = {}
-        for raw_geo, queries in raw_grouped[searcher].items():
+        for raw_geo, queries_data in raw_grouped[searcher].items():
             display = _get_geo_display(raw_geo)
             if display not in display_groups:
                 display_groups[display] = {}
-            for query, positions in queries.items():
+            for query, positions in queries_data.items():
                 if query not in display_groups[display]:
                     display_groups[display][query] = {}
                 display_groups[display][query].update(positions)
@@ -165,19 +244,19 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
             )
             geo_max_pos[display] = max_p
 
-        report_data.append([f"Позиции {searcher_readable} на {date_formatted}"] + [""] * (COLS - 1))
-        report_data.append([""] * COLS)
+        report_data.append([f"Позиции {searcher_readable} на {date_formatted}"] + [""] * (cols - 1))
+        report_data.append([""] * cols)
 
-        hdr_row = [""] * COLS
-        for sb in SUBJECT_BLOCKS:
+        hdr_row = [""] * cols
+        for sb in subject_blocks:
             hdr_row[sb["url"]] = sb["display"]
         report_data.append(hdr_row)
 
-        for geo_key in GEO_ORDER:
+        for geo_key in geo_order:
             geo_display = _get_geo_display(geo_key)
 
-            geo_row = [""] * COLS
-            for sb in SUBJECT_BLOCKS:
+            geo_row = [""] * cols
+            for sb in subject_blocks:
                 geo_row[sb["pos"]] = geo_display
             report_data.append(geo_row)
 
@@ -187,8 +266,8 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
                 max_pos = EMPTY_GEO_DEPTH
 
             for pos in range(1, min(max_pos, REPORT_DEPTH) + 1):
-                row = [""] * COLS
-                for sb in SUBJECT_BLOCKS:
+                row = [""] * cols
+                for sb in subject_blocks:
                     qkey = sb["key"]
                     if qkey in geo_data and pos in geo_data[qkey]:
                         row[sb["pos"]] = str(pos)
@@ -199,10 +278,10 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
                             format_cells.append((row_idx, sb["pos"], LABEL_COLORS[label_val]))
                 report_data.append(row)
 
-            report_data.append([""] * COLS)
+            report_data.append([""] * cols)
 
-        report_data.append([""] * COLS)
-        report_data.append([""] * COLS)
+        report_data.append([""] * cols)
+        report_data.append([""] * cols)
 
     spreadsheet = _get_spreadsheet(sheet_id=sheet_id)
     if spreadsheet is None:
@@ -261,10 +340,10 @@ if __name__ == "__main__":
     print("=== Тест reporter.py ===\n")
     print("Построение отчёта по данным из базы (без топвизора)...\n")
 
-    build_report()
+    build_report(client_id="default", db_path=storage.DB_PATH)
 
     print("\n=== Тест завершён ===")
     print("Откройте Google Sheet и проверьте лист 'Отчёт':")
-    print("- 16-колоночная матрица: pos/URL для каждого субъекта + разделители")
-    print("- Блоки по ПС, секции по гео, точный формат заказчика")
+    print("- Динамическая матрица: N субъектов из профиля клиента")
+    print("- Блоки по ПС, секции по гео, из regions_map клиента")
     print("- Ячейки позиций залиты цветом по метке: зелёный/красный/жёлтый")

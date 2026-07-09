@@ -6,7 +6,30 @@
 
 ## Сделано
 
-- **Session: 2026-07-10 — Two-mode labeling refactoring (auto + deep)**
+- **Session: 2026-07-10 (вторая) — Dynamic reporter + date normalization (apps_script)**
+  - [x] reporter.py полностью переписан на динамическую раскладку:
+    - Новая функция `_build_subject_layout(queries)` вычисляет N колонок вместо фиксированных 16
+    - `build_report()` теперь принимает `client_id` и `db_path`, загружает профиль из БД
+    - Субъекты берутся из `client.queries`, гео из `client.regions_map`
+    - Поддержка 1, 2, 4, 7+ субъектов без правки кода
+  - [x] config.py: `SUBJECT_BLOCKS` и `COLS` переименованы в `_DEPRECATED_*` (обратная совместимость)
+  - [x] main.py, webhook.py: передача `client_id` и `db_path` в `build_report()` (обновлено 3 места вызова)
+  - [x] migrate.py: использует `_DEPRECATED_SUBJECT_BLOCKS` для seed
+  - [x] tests/test_reporter.py: 10 новых тестов для 1, 2, 4, 7 субъектов
+  - [x] tests/test_config.py: обновлены для `_DEPRECATED_*`
+  - [x] Все 200+ тестов зелёные
+  - [x] Исправлен баг с date-парсингом:
+    - Добавлена `_normalizeDateToString()` в apps_script.gs
+    - Конвертирует Date-объекты и строки в YYYY-MM-DD (UTC)
+    - Обновлены `_readSettings()` и `buildReportForDate()` для нормализации дат
+    - Fallback на "latest" при невалидной дате (безопасное падение)
+  - [x] Документация:
+    - docs/decisions.md: два новых ADR (динамический reporter + date normalization)
+    - docs/progress.md: эта запись
+  - Status: Ready for commit
+  - Коммит: `fix(reporter): dynamic subject columns from client profile + fix date parsing in Apps Script (remove hardcoded SUBJECT_BLOCKS/COLS)`
+
+- **Session: 2026-07-10 (первая) — Two-mode labeling refactoring (auto + deep)**
   - [x] labeler.py переписан с двумя режимами: 
     - "auto" (дефолт): domain_labels кэш → сниппет LLM → neutral при ошибке (иерархия)
     - "deep": обработка только neutral (заглушка v2)

@@ -22,46 +22,46 @@ import config
 
 
 def test_subject_blocks_nonempty():
-    """SUBJECT_BLOCKS должен содержать хотя бы один субъект."""
-    assert isinstance(config.SUBJECT_BLOCKS, list)
-    assert len(config.SUBJECT_BLOCKS) > 0, "SUBJECT_BLOCKS пустой"
+    """SUBJECT_BLOCKS_DEPRECATED содержит конфиг для обратной совместимости."""
+    assert isinstance(config._DEPRECATED_SUBJECT_BLOCKS, list)
+    assert len(config._DEPRECATED_SUBJECT_BLOCKS) > 0, "_DEPRECATED_SUBJECT_BLOCKS пустой"
 
 
 def test_subject_blocks_required_keys():
     """Каждый блок содержит обязательные ключи нужных типов."""
-    for i, block in enumerate(config.SUBJECT_BLOCKS):
-        assert "key" in block,     f"SUBJECT_BLOCKS[{i}]: отсутствует 'key'"
-        assert "display" in block, f"SUBJECT_BLOCKS[{i}]: отсутствует 'display'"
-        assert "pos" in block,     f"SUBJECT_BLOCKS[{i}]: отсутствует 'pos'"
-        assert "url" in block,     f"SUBJECT_BLOCKS[{i}]: отсутствует 'url'"
-        assert isinstance(block["pos"], int), f"SUBJECT_BLOCKS[{i}]['pos'] должен быть int"
-        assert isinstance(block["url"], int), f"SUBJECT_BLOCKS[{i}]['url'] должен быть int"
-        assert isinstance(block["key"], str), f"SUBJECT_BLOCKS[{i}]['key'] должен быть str"
-        assert block["key"].strip(), f"SUBJECT_BLOCKS[{i}]['key'] не должен быть пустым"
+    for i, block in enumerate(config._DEPRECATED_SUBJECT_BLOCKS):
+        assert "key" in block,     f"_DEPRECATED_SUBJECT_BLOCKS[{i}]: отсутствует 'key'"
+        assert "display" in block, f"_DEPRECATED_SUBJECT_BLOCKS[{i}]: отсутствует 'display'"
+        assert "pos" in block,     f"_DEPRECATED_SUBJECT_BLOCKS[{i}]: отсутствует 'pos'"
+        assert "url" in block,     f"_DEPRECATED_SUBJECT_BLOCKS[{i}]: отсутствует 'url'"
+        assert isinstance(block["pos"], int), f"_DEPRECATED_SUBJECT_BLOCKS[{i}]['pos'] должен быть int"
+        assert isinstance(block["url"], int), f"_DEPRECATED_SUBJECT_BLOCKS[{i}]['url'] должен быть int"
+        assert isinstance(block["key"], str), f"_DEPRECATED_SUBJECT_BLOCKS[{i}]['key'] должен быть str"
+        assert block["key"].strip(), f"_DEPRECATED_SUBJECT_BLOCKS[{i}]['key'] не должен быть пустым"
 
 
 def test_cols_positive():
-    """COLS должен быть положительным целым."""
-    assert isinstance(config.COLS, int), "COLS должен быть int"
-    assert config.COLS > 0, "COLS должен быть > 0"
+    """_DEPRECATED_COLS должен быть положительным целым."""
+    assert isinstance(config._DEPRECATED_COLS, int), "_DEPRECATED_COLS должен быть int"
+    assert config._DEPRECATED_COLS > 0, "_DEPRECATED_COLS должен быть > 0"
 
 
 def test_subject_indexes_within_cols():
-    """pos и url индексы каждого блока не выходят за COLS (0-indexed)."""
-    for i, block in enumerate(config.SUBJECT_BLOCKS):
-        assert 0 <= block["pos"] < config.COLS, (
-            f"SUBJECT_BLOCKS[{i}]['pos']={block['pos']} выходит за COLS={config.COLS}"
+    """pos и url индексы каждого блока не выходят за _DEPRECATED_COLS (0-indexed)."""
+    for i, block in enumerate(config._DEPRECATED_SUBJECT_BLOCKS):
+        assert 0 <= block["pos"] < config._DEPRECATED_COLS, (
+            f"_DEPRECATED_SUBJECT_BLOCKS[{i}]['pos']={block['pos']} выходит за _DEPRECATED_COLS={config._DEPRECATED_COLS}"
         )
-        assert 0 <= block["url"] < config.COLS, (
-            f"SUBJECT_BLOCKS[{i}]['url']={block['url']} выходит за COLS={config.COLS}"
+        assert 0 <= block["url"] < config._DEPRECATED_COLS, (
+            f"_DEPRECATED_SUBJECT_BLOCKS[{i}]['url']={block['url']} выходит за _DEPRECATED_COLS={config._DEPRECATED_COLS}"
         )
 
 
 def test_subject_pos_url_different():
     """pos и url индексы одного блока не должны совпадать."""
-    for i, block in enumerate(config.SUBJECT_BLOCKS):
+    for i, block in enumerate(config._DEPRECATED_SUBJECT_BLOCKS):
         assert block["pos"] != block["url"], (
-            f"SUBJECT_BLOCKS[{i}]: pos и url совпадают ({block['pos']})"
+            f"_DEPRECATED_SUBJECT_BLOCKS[{i}]: pos и url совпадают ({block['pos']})"
         )
 
 
@@ -71,7 +71,7 @@ def test_subject_indexes_no_cross_block_collision():
     Каждая колонка должна принадлежать только одному субъекту.
     """
     used: dict[int, str] = {}
-    for block in config.SUBJECT_BLOCKS:
+    for block in config._DEPRECATED_SUBJECT_BLOCKS:
         for col_type, col_idx in [("pos", block["pos"]), ("url", block["url"])]:
             key = col_idx
             if key in used:

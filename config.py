@@ -1,11 +1,17 @@
-SUBJECT_BLOCKS = [
+# DEPRECATED: SUBJECT_BLOCKS и COLS больше не используются в reporter.py
+# Они остаются здесь для обратной совместимости, но теперь:
+# - reporter.py динамически строит раскладку из client.queries
+# - число колонок вычисляется динамически как N*2 + (N-1)*1
+# См. ADR в docs/decisions.md "Динамический reporter" (2026-07-10)
+#
+# Оригинальная конфигурация для client1 (4 субъекта, 16 колонок):
+_DEPRECATED_SUBJECT_BLOCKS = [
     {"key": "juri sudheimer", "display": "Juri Sudheimer", "pos": 1,  "url": 2},
     {"key": "erik sudheimer", "display": "Erik Sudheimer", "pos": 6,  "url": 7},
     {"key": "sct chemicals",  "display": "SCT Chemicals",  "pos": 9,  "url": 10},
     {"key": "chempioil",      "display": "Chempioil",      "pos": 12, "url": 13},
 ]
-
-COLS = 16
+_DEPRECATED_COLS = 16
 
 GEO_DISPLAY = {
     # Точные ключи из regions_map.json

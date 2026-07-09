@@ -215,7 +215,8 @@ def _run_pipeline(
             date_arg = None if report_date == "latest" else report_date
             log.info("Построение отчёта за %s (report_only=True)", date_arg or "последнюю доступную")
 
-            build_report(date=date_arg, force=True, sheet_id=sheet_id)
+            build_report(date=date_arg, force=True, sheet_id=sheet_id,
+                        client_id=client_id, db_path=storage.DB_PATH)
             _last_run["status"] = "ok"
             _last_run["message"] = "Отчёт построен успешно"
             log.info("Отчёт построен успешно")
@@ -253,7 +254,8 @@ def _run_pipeline(
             )
             storage.insert_labels(labeled_rows, db_path=storage.DB_PATH)
 
-            build_report(date=target_date, force=force_rebuild_report, sheet_id=sheet_id)
+            build_report(date=target_date, force=force_rebuild_report, sheet_id=sheet_id,
+                        client_id=client_id, db_path=storage.DB_PATH)
             _last_run["status"] = "ok"
             _last_run["message"] = "Разметка завершена успешно"
             _last_run["stats"] = {"collected": 0, "saved_new": 0, "labeled": len(labeled_rows), "exported": 0}

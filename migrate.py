@@ -323,7 +323,7 @@ def _seed_client_profile(conn: sqlite3.Connection, db_path: str) -> None:
     - client_id   = "28938353" (совпадает с project_id в Topvisor)
     - client_name = "Sudheimer Group"
     - project_id  = int(env TOPVISOR_PROJECT_ID)
-    - queries     из config.SUBJECT_BLOCKS (key + display, без pos/url)
+    - queries     из config._DEPRECATED_SUBJECT_BLOCKS (key + display, без pos/url)
     - regions_map из regions_map_client1.json (полный массив)
     - searchers   уникальные searcher из regions_map_client1.json
 
@@ -352,10 +352,10 @@ def _seed_client_profile(conn: sqlite3.Connection, db_path: str) -> None:
         except ValueError:
             log.warning("TOPVISOR_PROJECT_ID не число: %s", env_project)
 
-    # queries из config.SUBJECT_BLOCKS (key + display, без pos/url)
+    # queries из config._DEPRECATED_SUBJECT_BLOCKS (key + display, без pos/url)
     import config
 
-    queries = [{"key": sb["key"], "display": sb["display"]} for sb in config.SUBJECT_BLOCKS]
+    queries = [{"key": sb["key"], "display": sb["display"]} for sb in config._DEPRECATED_SUBJECT_BLOCKS]
 
     # regions_map из файла (не хардкод)
     regions_map_path = os.path.join(os.path.dirname(__file__), "regions_map_client1.json")

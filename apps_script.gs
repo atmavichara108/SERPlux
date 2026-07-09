@@ -371,7 +371,12 @@ function _readSettings() {
           ? mode : DEFAULT_LABEL_MODE;
         break;
       case "date":
-        settings.date = String(val).trim() || DEFAULT_DATE;
+        var rawDate = String(val).trim();
+        // Если дата в формате "today" или "today в формате даты", нормализуем
+        if (rawDate && rawDate.toLowerCase() !== "today") {
+          rawDate = _normalizeDateToString(rawDate);
+        }
+        settings.date = rawDate || DEFAULT_DATE;
         break;
       case "force_relabel":
         settings.forceRelabel = String(val).trim().toLowerCase() === "true";
@@ -380,7 +385,8 @@ function _readSettings() {
         settings.forceRebuildReport = String(val).trim().toLowerCase() === "true";
         break;
       case "report_date":
-        settings.reportDate = String(val).trim() || DEFAULT_REPORT_DATE;
+        var rawDate = String(val).trim();
+        settings.reportDate = _normalizeDateToString(rawDate) || DEFAULT_REPORT_DATE;
         break;
       case "provider_chain":
         settings.providerChain = String(val).trim();
@@ -676,6 +682,11 @@ function buildReportForDate() {
   if (response.getSelectedButton() !== ui.Button.OK) return;
 
   var reportDate = response.getResponseText().trim() || "latest";
+  
+  // Нормализуем дату: если это не "latest", преобразуем в YYYY-MM-DD
+  if (reportDate !== "latest") {
+    reportDate = _normalizeDateToString(reportDate);
+  }
 
   // Валидация: если введена дата, проверяем что она есть в списке
   if (reportDate !== "latest" && dates.indexOf(reportDate) === -1) {
@@ -1804,6 +1815,55 @@ function _friendlyError(result) {
         return "Ошибка (HTTP " + result.code + "):\n" + result.data.detail;
       }
       return "Ошибка HTTP " + result.code + ".\nОбратитесь к администратору.";
+  }
+}
+
+/**
+ * Нормализует дату в формат YYYY-MM-DD.
+ * 
+ * Принимает:
+ * - Строку "YYYY-MM-DD" (возвращает как есть)
+ * - Строку в других форматах (пытается распарсить)
+ * - Date-объект JavaScript (конвертирует в YYYY-MM-DD)
+ * 
+ * Проблема: при вводе =TODAY() в Google Sheets, getResponseText() может вернуть Date-объект
+ * или сериализованную дату вместо строки "YYYY-MM-DD".
+ */
+function _normalizeDateToString(dateInput) {
+  if (!dateInput) return "latest";
+  
+  var dateStr = String(dateInput).trim();
+  
+  // Если уже в формате YYYY-MM-DD, возвращаем как есть
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return dateStr;
+  }
+  
+  // Пытаемся распарсить как Date
+  try {
+    var date;
+    
+    // Проверяем, не Date-объект ли это
+    if (dateInput instanceof Date) {
+      date = dateInput;
+    } else {
+      // Пытаемся создать Date из строки
+      date = new Date(dateInput);
+    }
+    
+    // Проверяем, валидная ли дата
+    if (isNaN(date.getTime())) {
+      return "latest";  // Невалидная дата — fallback
+    }
+    
+    // Конвертируем в YYYY-MM-DD (UTC)
+    var year = date.getUTCFullYear();
+    var month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    var day = String(date.getUTCDate()).padStart(2, "0");
+    return year + "-" + month + "-" + day;
+  } catch (e) {
+    // Ошибка парсинга — возвращаем "latest"
+    return "latest";
   }
 }
 

@@ -134,7 +134,8 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     # Построение отчёта
     report_ok = False
     try:
-        build_report(force=force_rebuild_report, sheet_id=sheet_id)
+        build_report(force=force_rebuild_report, sheet_id=sheet_id, 
+                     client_id=client_id, db_path=storage.DB_PATH)
         report_ok = True
         log.info("Отчёт построен")
     except Exception as e:
