@@ -5,6 +5,10 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Фикс verify.sh: pytest не находил тесты в контейнере**
+  - `Dockerfile`: добавлено копирование `tests/` и `pyproject.toml` в образ, чтобы pytest внутри контейнера видел тесты.
+  - `docs/verification.md`: документировано, что тесты копируются в образ.
+  - Коммит: `fix(verify): copy tests into Docker image for verify.sh`
 - **Фикс verify.sh: pytest не мог писать кэш в /app**
   - `verify.sh`: pytest запускается с `-p no:cacheprovider` (отключает `.pytest_cache`); проверка результата по exit code через `PIPESTATUS`, а не по grep строки `passed`.
   - `docs/verification.md`: документировано, почему отключён кэш и почему контейнер не имеет прав на запись в `/app`.

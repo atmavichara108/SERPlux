@@ -45,6 +45,10 @@ COPY --chown=serplux:serplux \
     migrate.py \
     ./
 
+# Копируем тесты и конфиг pytest для verify.sh
+COPY --chown=serplux:serplux tests/ ./tests/
+COPY --chown=serplux:serplux pyproject.toml ./
+
 # Копируем карты регионов
 COPY --chown=serplux:serplux regions_map*.json ./
 

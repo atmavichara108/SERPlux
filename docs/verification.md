@@ -36,10 +36,12 @@ cd /root/serp
 **Что проверяет (6 пунктов):**
 
 1. **Тесты** — `pytest -q -p no:cacheprovider` внутри контейнера
+   - `tests/` и `pyproject.toml` копируются в Docker-образ, чтобы pytest мог
+     найти и запустить тесты на сервере
    - `no:cacheprovider` отключает кэш pytest, так как контейнер запущен
      под не-root пользователем без прав на запись в `/app`
    - ✓: все тесты passed
-   - ✗: любой тест failed → exit 1
+   - ✗: любой тест failed или не найден → exit 1
 
 2. **Health endpoint** — `curl http://127.0.0.1:8000/health`
    - ✓: HTTP 200, JSON с `status`, `service`
