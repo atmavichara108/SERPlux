@@ -27,6 +27,13 @@
     - ✅ verify.sh проходит 6/6 проверок (нет осиротевших записей).
     - ✅ Лист Настройки пересоздаётся заполненным, client_id выбирается из dropdown (получен из webhook GET /clients).
     - ✅ Все pytest 172 зелёные.
+- **Таблица кэша разметки доменов `domain_labels` по ключу (domain, query, geo)**
+  - `storage.py`: новая схема `domain_labels` (без `client_id`), функции `get_domain_label(domain, query, geo)`, `upsert_domain_label(..., source)` с приоритетом `manual_l1`, `bulk_upsert_domain_labels()` с массовым upsert и тем же приоритетом.
+  - `migrate.py`: идемпотентная миграция `domain_labels` — пересоздание, если обнаружена старая схема (`id`/`client_id`); удалена логика переноса `domain_labels` по `client_id`.
+  - `labeler.py`: режим `domains` теперь ищет метку по `(domain, query, geo)`, не использует `client_id`.
+  - `docs/contracts.md`, `docs/decisions.md`: обновлены сигнатуры и ADR под новую схему.
+  - Тесты: `tests/test_domain_labels.py` (17 тестов) + обновлены `tests/test_labeler_modes.py`; итого 184/184 passed.
+  - Коммит: `feat(labels): domain_labels cache table with (domain,query,geo) key + manual_l1 priority`
 - **verify.sh успешно протестирован на боевом сервере**
   - Все 6 проверок прошли: тесты (172 passed), health endpoint, контейнер, логи, схема БД, целостность данных. `Summary: Checks: 6/6 passed, Verification passed`.
   - Пройденный путь: добавление pytest в Docker-образ, копирование `tests/` в образ, отключение pytest-кэша, удаление зависимости от `jq`, обработка `set -e` для `grep`/arithmetic/`docker exec` exit codes, синхронизация списка колонок `clients` с реальной схемой.

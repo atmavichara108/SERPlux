@@ -147,7 +147,8 @@ def _apply_schema_patches(conn: sqlite3.Connection) -> None:
       - ALTER TABLE labels ADD COLUMN confidence — только если колонки нет
         (проверка через PRAGMA table_info(labels));
       - ALTER TABLE clients ADD COLUMN searchers/geos/regions_map/queries — только если нет;
-      - CREATE TABLE IF NOT EXISTS domain_labels + индекс idx_domlbl_client_domain.
+      - CREATE TABLE IF NOT EXISTS domain_labels с актуальной схемой (domain, query, geo);
+        если существует старая схема (id/client_id) — пересоздаёт таблицу.
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(labels)").fetchall()}
     if "confidence" not in cols:
@@ -168,19 +169,29 @@ def _apply_schema_patches(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE clients ADD COLUMN {col} {dtype}")
             log.info("Колонка clients.%s добавлена (ALTER TABLE)", col)
 
+    # Справочник domain_labels с актуальной схемой (domain, query, geo)
+    old_cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(domain_labels)").fetchall()
+    }
+    if old_cols and ("client_id" in old_cols or "id" in old_cols):
+        log.warning("domain_labels: обнаружена старая схема (id/client_id), пересоздаю")
+        conn.execute("DROP TABLE IF EXISTS domain_labels")
+        conn.execute("DROP INDEX IF EXISTS idx_domlbl_client_domain")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS domain_labels (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
             domain      TEXT NOT NULL,
-            sentiment   TEXT CHECK(sentiment IN ('positive','negative','neutral')),
-            source      TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','llm')),
-            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            query       TEXT NOT NULL,
+            geo         TEXT NOT NULL,
+            sentiment   TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral')),
+            source      TEXT NOT NULL CHECK(source IN ('manual_l1','snippet','page')),
             updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(client_id, domain)
+            PRIMARY KEY (domain, query, geo)
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_client_domain ON domain_labels(client_id, domain)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_domain_query ON domain_labels(domain, query)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_geo ON domain_labels(geo)")
 
 
 def _migrate_results_to_positions(conn: sqlite3.Connection) -> int:
@@ -264,12 +275,10 @@ def _log_client_stats(conn: sqlite3.Connection, prefix: str) -> None:
     lbl_stats = conn.execute(
         "SELECT client_id, COUNT(*) FROM labels GROUP BY client_id ORDER BY client_id"
     ).fetchall()
-    dom_stats = conn.execute(
-        "SELECT client_id, COUNT(*) FROM domain_labels GROUP BY client_id ORDER BY client_id"
-    ).fetchall()
+    dom_total = conn.execute("SELECT COUNT(*) FROM domain_labels").fetchone()[0]
     log.info("%s positions по client_id: %s", prefix, pos_stats)
     log.info("%s labels по client_id: %s", prefix, lbl_stats)
-    log.info("%s domain_labels по client_id: %s", prefix, dom_stats)
+    log.info("%s domain_labels всего: %s", prefix, dom_total)
 
 
 def _resolve_position_duplicates(conn: sqlite3.Connection, musor_id: str, target: str) -> int:
@@ -304,21 +313,6 @@ def _resolve_label_duplicates(conn: sqlite3.Connection, musor_id: str, target: s
         placeholders = ",".join("?" * len(dup_ids))
         conn.execute(f"DELETE FROM labels WHERE id IN ({placeholders})", dup_ids)
         log.info("Удалено дубликатов labels у %s: %s", musor_id, len(dup_ids))
-    return len(dup_ids)
-
-
-def _resolve_domain_label_duplicates(conn: sqlite3.Connection, musor_id: str, target: str) -> int:
-    """Удаляет domain_labels у musor_id, дублирующиеся по UNIQUE(client_id, domain) с target."""
-    dups = conn.execute(
-        """SELECT id FROM domain_labels
-           WHERE client_id = ? AND domain IN (SELECT domain FROM domain_labels WHERE client_id = ?)""",
-        (musor_id, target),
-    ).fetchall()
-    dup_ids = [r[0] for r in dups]
-    if dup_ids:
-        placeholders = ",".join("?" * len(dup_ids))
-        conn.execute(f"DELETE FROM domain_labels WHERE id IN ({placeholders})", dup_ids)
-        log.info("Удалено дубликатов domain_labels у %s: %s", musor_id, len(dup_ids))
     return len(dup_ids)
 
 
@@ -431,19 +425,9 @@ def _seed_client_profile(conn: sqlite3.Connection, db_path: str) -> None:
         _resolve_label_duplicates(conn, musor_id, target)
         conn.execute("UPDATE labels SET client_id = ? WHERE client_id = ?", (target, musor_id))
 
-    # Перенос domain_labels с default на target (предварительно удаляем дубликаты)
-    count = conn.execute(
-        "SELECT COUNT(*) FROM domain_labels WHERE client_id = ?", (musor_id,)
-    ).fetchone()[0]
-    if count:
-        log.info("Перенос domain_labels с %s на %s: %s строк", musor_id, target, count)
-        _resolve_domain_label_duplicates(conn, musor_id, target)
-        conn.execute(
-            "UPDATE domain_labels SET client_id = ? WHERE client_id = ?", (target, musor_id)
-        )
-
     # Верификация: у default не осталось данных. Каскадное удаление запрещено.
-    for table in ("positions", "labels", "domain_labels"):
+    # domain_labels больше не привязана к client_id, поэтому проверяем только positions/labels.
+    for table in ("positions", "labels"):
         cnt = conn.execute(
             f"SELECT COUNT(*) FROM {table} WHERE client_id = ?", (musor_id,)
         ).fetchone()[0]
@@ -537,18 +521,6 @@ def _normalize_client_id(conn: sqlite3.Connection) -> None:
             (target, source)
         )
         log.info("Перенесено labels: %s → %s (%s записей)", source, target, label_count)
-    
-    # Перенос domain_labels (если таблица существует)
-    if _table_exists(conn, "domain_labels"):
-        domain_count = conn.execute(
-            "SELECT COUNT(*) FROM domain_labels WHERE client_id = ?", (source,)
-        ).fetchone()[0]
-        if domain_count:
-            conn.execute(
-                "UPDATE domain_labels SET client_id = ? WHERE client_id = ?",
-                (target, source)
-            )
-            log.info("Перенесено domain_labels: %s → %s (%s записей)", source, target, domain_count)
     
     # Удаление source (теперь безопасно — все данные перенесены)
     conn.execute("DELETE FROM clients WHERE client_id = ?", (source,))

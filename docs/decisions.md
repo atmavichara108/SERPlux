@@ -211,17 +211,18 @@ CREATE TABLE labels (
 );
 ```
 
-**`domain_labels`** — справочник вручную размеченных доменов (источник истины для режима `domains`):
+**`domain_labels`** — справочник размеченных доменов (источник истины для режима `domains`).
+Мультиклиентность через ключ `(domain, query, geo)` без `client_id`: один и тот же домен
+для разных клиентов в одном geo и по одному субъекту разделяет метку.
 ```sql
 CREATE TABLE domain_labels (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
     domain      TEXT NOT NULL,
-    sentiment   TEXT CHECK(sentiment IN ('positive','negative','neutral')),
-    source      TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','llm')),
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    query       TEXT NOT NULL,           -- нормализованный key субъекта, lowercase
+    geo         TEXT NOT NULL,           -- geo_name как в regions_map
+    sentiment   TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral')),
+    source      TEXT NOT NULL CHECK(source IN ('manual_l1','snippet','page')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(client_id, domain)
+    PRIMARY KEY (domain, query, geo)
 );
 ```
 
@@ -233,7 +234,8 @@ CREATE INDEX idx_pos_client_url  ON positions(client_id, url);
 CREATE INDEX idx_lbl_position    ON labels(position_id);
 CREATE INDEX idx_lbl_client_mode ON labels(client_id, label_mode);
 CREATE INDEX idx_lbl_latest      ON labels(position_id, label_mode, label_version DESC);
-CREATE INDEX idx_domlbl_client_domain ON domain_labels(client_id, domain);
+CREATE INDEX idx_domlbl_domain_query ON domain_labels(domain, query);
+CREATE INDEX idx_domlbl_geo ON domain_labels(geo);
 ```
 
 ### Версионирование
@@ -271,14 +273,18 @@ NULL = «разметка запущена, но LLM вернул ошибку»
 ### Режим `domains`: справочник `domain_labels`
 
 Режим `domains` берёт метку из справочника `domain_labels`, не вызывая LLM.
-Для каждой позиции labeler ищет домен в `domain_labels` для данного `client_id`;
+Для каждой позиции labeler ищет запись по `(domain, query, geo)`;
 если запись есть — используется её `sentiment`.
 Это источник истины для доменов, размеченных вручную, и позволяет не тратить
 токены на уже достоверно классифицированные домены.
 
-Поле `source` различает происхождение записи:
-- `manual` — ручная разметка (значение по умолчанию)
-- `llm` — запись создана автоматически на основе LLM-разметки
+Поле `source` различает происхождение записи и задаёт приоритет обновления:
+- `manual_l1` — ручная разметка (уровень L1). Не перезаписывается автоматическими
+  источниками `snippet`/`page`; может перезаписать любую существующую запись.
+- `snippet` — разметка на основе сниппета (LLM или эвристика).
+- `page` — разметка на основе полного текста страницы.
+
+`query` хранится в lowercase для нормализации; `geo` — geo_name из `regions_map`.
 
 ### Confidence
 
@@ -302,20 +308,22 @@ NULL = «разметка запущена, но LLM вернул ошибку»
    ALTER TABLE labels
    ADD COLUMN confidence TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high';
    ```
-6. Создать справочник доменов:
+6. Создать справочник доменов (актуальная схема):
    ```sql
    CREATE TABLE domain_labels (
-       id          INTEGER PRIMARY KEY AUTOINCREMENT,
-       client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
        domain      TEXT NOT NULL,
-       sentiment   TEXT CHECK(sentiment IN ('positive','negative','neutral')),
-       source      TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','llm')),
-       created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+       query       TEXT NOT NULL,
+       geo         TEXT NOT NULL,
+       sentiment   TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral')),
+       source      TEXT NOT NULL CHECK(source IN ('manual_l1','snippet','page')),
        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-       UNIQUE(client_id, domain)
+       PRIMARY KEY (domain, query, geo)
    );
-   CREATE INDEX idx_domlbl_client_domain ON domain_labels(client_id, domain);
+   CREATE INDEX idx_domlbl_domain_query ON domain_labels(domain, query);
+   CREATE INDEX idx_domlbl_geo ON domain_labels(geo);
    ```
+   Если существует старая схема (с `id`/`client_id`) — таблица пересоздаётся.
+   Данные `domain_labels` — кэш, приоритет имеют ручные разметки L1.
 
 `migrate.py` следует дополнить шагами 5–6, но **НЕ запускать на бою** без бэкапа
 и проверки на копии БД.

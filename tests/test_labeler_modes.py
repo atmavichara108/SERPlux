@@ -1,13 +1,10 @@
 """
-T-00X — тесты справочника доменов и режима domains в labeler.py.
+T-00X — тесты режимов labeler.py.
 
 Проверяем:
-- storage.get_domain_label / upsert_domain_label
 - labeler.label() в режиме domains без вызова LLM
 - обратную совместимость режима snippets
 """
-
-import sqlite3
 
 import pytest
 
@@ -41,74 +38,18 @@ def sample_row():
     }
 
 
-# ─── storage.py: справочник доменов ───────────────────────────────────────────
-
-
-def test_get_domain_label_found(init_db):
-    storage.upsert_domain_label("default", "example.com", "positive", db_path=init_db)
-
-    result = storage.get_domain_label("default", "example.com", init_db)
-
-    assert result == {
-        "sentiment": "positive",
-        "source": "manual",
-        "confidence": "high",
-    }
-
-
-def test_get_domain_label_not_found(init_db):
-    assert storage.get_domain_label("default", "unknown.com", init_db) is None
-
-
-def test_upsert_domain_label_insert(init_db):
-    storage.upsert_domain_label("default", "example.com", "negative", db_path=init_db)
-
-    conn = sqlite3.connect(init_db)
-    try:
-        row = conn.execute(
-            "SELECT client_id, domain, sentiment, source FROM domain_labels"
-        ).fetchone()
-        assert row == ("default", "example.com", "negative", "manual")
-    finally:
-        conn.close()
-
-
-def test_upsert_domain_label_update(init_db):
-    storage.upsert_domain_label("default", "example.com", "positive", db_path=init_db)
-    storage.upsert_domain_label("default", "example.com", "neutral", source="llm", db_path=init_db)
-
-    result = storage.get_domain_label("default", "example.com", init_db)
-    assert result is not None
-    assert result["sentiment"] == "neutral"
-    assert result["source"] == "llm"
-    assert result["confidence"] == "high"
-
-    conn = sqlite3.connect(init_db)
-    try:
-        row = conn.execute(
-            "SELECT created_at, updated_at, source FROM domain_labels"
-        ).fetchone()
-        created_at, updated_at, source = row
-        assert source == "llm"
-        # updated_at должен быть не раньше created_at
-        assert updated_at >= created_at
-    finally:
-        conn.close()
-
-
-def test_get_domain_label_client_isolation(init_db):
-    storage.upsert_domain_label("client-a", "example.com", "positive", db_path=init_db)
-
-    assert storage.get_domain_label("default", "example.com", init_db) is None
-    found = storage.get_domain_label("client-a", "example.com", init_db)
-    assert found is not None and found["sentiment"] == "positive"
-
-
 # ─── labeler.py: режим domains ────────────────────────────────────────────────
 
 
 def test_domains_mode_uses_dictionary_no_llm(init_db, sample_row, monkeypatch):
-    storage.upsert_domain_label("default", "example.com", "positive", db_path=init_db)
+    storage.upsert_domain_label(
+        domain="example.com",
+        query="subject a",
+        geo="Литва",
+        sentiment="positive",
+        source="manual_l1",
+        db_path=init_db,
+    )
 
     llm_called = {"n": 0}
 
@@ -150,8 +91,16 @@ def test_domains_mode_missing_domain_returns_none(init_db, sample_row, monkeypat
     assert llm_called["n"] == 0
 
 
-def test_domains_mode_respects_client_id(init_db, sample_row, monkeypatch):
-    storage.upsert_domain_label("client-a", "example.com", "negative", db_path=init_db)
+def test_domains_mode_respects_query_geo_key(init_db, sample_row, monkeypatch):
+    # Для другого geo — другая запись
+    storage.upsert_domain_label(
+        domain="example.com",
+        query="subject a",
+        geo="Латвия",
+        sentiment="negative",
+        source="manual_l1",
+        db_path=init_db,
+    )
 
     def fail_if_called(row):
         raise AssertionError("LLM не должен вызываться в режиме domains")
@@ -159,12 +108,12 @@ def test_domains_mode_respects_client_id(init_db, sample_row, monkeypatch):
     monkeypatch.setattr(labeler, "_label_one_llm", fail_if_called)
 
     rows = [sample_row]
-    result = labeler.label(rows, db_path=init_db, label_mode="domains", client_id="client-a")
+    result = labeler.label(rows, db_path=init_db, label_mode="domains")
 
     assert len(result) == 1
     labeled = result[0]
-    assert labeled["sentiment"] == "negative"
-    assert labeled["client_id"] == "client-a"
+    # sample_row geo = "Литва", в справочнике только "Латвия" → не найдено
+    assert labeled["sentiment"] is None
 
 
 # ─── labeler.py: режим snippets не сломан ─────────────────────────────────────

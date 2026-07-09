@@ -27,6 +27,35 @@ def _get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_domain_labels_schema(conn: sqlite3.Connection) -> None:
+    """
+    Создаёт таблицу domain_labels с актуальной схемой (domain, query, geo).
+    Если существует старая схема (с id/client_id), дропает и пересоздаёт.
+    """
+    # Проверяем, существует ли старая схема
+    old_cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(domain_labels)").fetchall()
+    }
+    if old_cols and ("client_id" in old_cols or "id" in old_cols):
+        log.warning("domain_labels: обнаружена старая схема (id/client_id), пересоздаю")
+        conn.execute("DROP TABLE IF EXISTS domain_labels")
+        # Удаляем устаревший индекс, если остался
+        conn.execute("DROP INDEX IF EXISTS idx_domlbl_client_domain")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS domain_labels (
+            domain      TEXT NOT NULL,
+            query       TEXT NOT NULL,           -- нормализованный key субъекта, lowercase
+            geo         TEXT NOT NULL,           -- geo_name как в regions_map
+            sentiment   TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral')),
+            source      TEXT NOT NULL CHECK(source IN ('manual_l1','snippet','page')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (domain, query, geo)
+        )
+    """)
+
+
 def _init_db(db_path: str = DB_PATH) -> None:
     """Создаёт новую схему clients/positions/labels. Авто-клиент 'default'."""
     conn = _get_conn(db_path)
@@ -94,19 +123,11 @@ def _init_db(db_path: str = DB_PATH) -> None:
             )
         """)
 
-        # Справочник размеченных доменов (источник истины для режима domains)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS domain_labels (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
-                domain      TEXT NOT NULL,
-                sentiment   TEXT CHECK(sentiment IN ('positive','negative','neutral')),
-                source      TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','llm')),
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(client_id, domain)
-            )
-        """)
+        # Справочник размеченных доменов (источник истины для режима domains).
+        # Мультиклиентная через ключ (domain, query, geo) — без client_id.
+        # Приоритет source: manual_l1 > snippet/page. manual_l1 не перезаписывается
+        # автоматическими источниками (snippet/page), только другим manual_l1.
+        _ensure_domain_labels_schema(conn)
 
         # Индексы
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pos_client_date ON positions(client_id, date)")
@@ -115,7 +136,8 @@ def _init_db(db_path: str = DB_PATH) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_position    ON labels(position_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_client_mode ON labels(client_id, label_mode)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_latest      ON labels(position_id, label_mode, label_version DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_client_domain ON domain_labels(client_id, domain)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_domain_query ON domain_labels(domain, query)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_geo ON domain_labels(geo)")
 
         # Авто-клиент по умолчанию
         conn.execute("""
@@ -496,60 +518,139 @@ def get_label_history(position_id: int, db_path: str = DB_PATH) -> list[dict]:
         conn.close()
 
 
-def get_domain_label(client_id: str, domain: str, db_path: str = DB_PATH) -> dict | None:
+def get_domain_label(
+    domain: str,
+    query: str,
+    geo: str,
+    db_path: str = DB_PATH,
+) -> str | None:
     """
-    Возвращает {sentiment, source, confidence} из справочника domain_labels
-    по (client_id, domain), или None если домен не найден.
+    Возвращает sentiment из справочника domain_labels по (domain, query, geo),
+    или None если запись не найдена.
     """
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     try:
         row = conn.execute(
-            """SELECT sentiment, source
+            """SELECT sentiment
                FROM domain_labels
-               WHERE client_id = ? AND domain = ?""",
-            (client_id, domain),
+               WHERE domain = ? AND query = ? AND geo = ?""",
+            (domain, query.lower(), geo),
         ).fetchone()
-        if row is None:
-            return None
-        return {
-            "sentiment": row["sentiment"],
-            "source": row["source"],
-            "confidence": "high",
-        }
+        return row["sentiment"] if row else None
     finally:
         conn.close()
 
 
 def upsert_domain_label(
-    client_id: str,
     domain: str,
+    query: str,
+    geo: str,
     sentiment: str,
-    source: str = "manual",
+    source: str,
     db_path: str = DB_PATH,
 ) -> None:
     """
-    INSERT или UPDATE записи в domain_labels по UNIQUE(client_id, domain).
-    При UPDATE обновляет sentiment, source, updated_at.
+    INSERT или UPDATE записи в domain_labels по PRIMARY KEY (domain, query, geo).
+
+    Приоритет source:
+      - 'manual_l1' — не перезаписывается источниками 'snippet' или 'page'.
+      - 'snippet'/'page' могут перезаписывать друг друга и 'snippet'/'page'.
+      - 'manual_l1' может перезаписать любую существующую запись.
     """
+    if source not in ("manual_l1", "snippet", "page"):
+        raise ValueError(f"source must be one of manual_l1/snippet/page, got {source}")
+
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     try:
-        # Гарантируем существование клиента, чтобы не нарушить FK
-        conn.execute(
-            "INSERT OR IGNORE INTO clients (client_id, client_name) VALUES (?, ?)",
-            (client_id, client_id),
-        )
+        # Проверяем существующую запись и её source
+        existing = conn.execute(
+            """SELECT source FROM domain_labels
+               WHERE domain = ? AND query = ? AND geo = ?""",
+            (domain, query.lower(), geo),
+        ).fetchone()
+
+        if existing is not None and existing["source"] == "manual_l1" and source != "manual_l1":
+            # Существующая manual_l1 не перезаписывается автоматическими источниками
+            log.debug(
+                "domain_labels: пропускаю обновление %s/%s/%s (manual_l1 -> %s)",
+                domain, query, geo, source
+            )
+            return
+
         conn.execute(
             """INSERT INTO domain_labels
-                   (client_id, domain, sentiment, source, updated_at)
-               VALUES (?, ?, ?, ?, datetime('now'))
-               ON CONFLICT(client_id, domain) DO UPDATE SET
+                   (domain, query, geo, sentiment, source, updated_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(domain, query, geo) DO UPDATE SET
                    sentiment = excluded.sentiment,
                    source = excluded.source,
                    updated_at = datetime('now')""",
-            (client_id, domain, sentiment, source),
+            (domain, query.lower(), geo, sentiment, source),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def bulk_upsert_domain_labels(
+    items: list[dict],
+    db_path: str = DB_PATH,
+) -> None:
+    """
+    Массовый upsert записей в domain_labels.
+
+    Каждый элемент items — dict с ключами: domain, query, geo, sentiment, source.
+    Применяются те же правила приоритета source, что и в upsert_domain_label.
+    """
+    valid_sources = {"manual_l1", "snippet", "page"}
+    for item in items:
+        if item["source"] not in valid_sources:
+            raise ValueError(
+                f"source must be one of manual_l1/snippet/page, got {item['source']}"
+            )
+
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        # Сначала находим все существующие manual_l1, которые нельзя перезаписывать
+        keys = [(item["domain"], item["query"].lower(), item["geo"]) for item in items]
+        placeholders = ",".join("(?, ?, ?)" for _ in keys)
+        if placeholders:
+            flat_keys = [v for tup in keys for v in tup]
+            existing_manual = {
+                (row["domain"], row["query"], row["geo"])
+                for row in conn.execute(
+                    f"""SELECT domain, query, geo FROM domain_labels
+                        WHERE (domain, query, geo) IN ({placeholders})
+                          AND source = 'manual_l1'""",
+                    flat_keys,
+                ).fetchall()
+            }
+        else:
+            existing_manual = set()
+
+        for item in items:
+            domain = item["domain"]
+            query = item["query"].lower()
+            geo = item["geo"]
+            sentiment = item["sentiment"]
+            source = item["source"]
+
+            if (domain, query, geo) in existing_manual and source != "manual_l1":
+                continue
+
+            conn.execute(
+                """INSERT INTO domain_labels
+                       (domain, query, geo, sentiment, source, updated_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(domain, query, geo) DO UPDATE SET
+                       sentiment = excluded.sentiment,
+                       source = excluded.source,
+                       updated_at = datetime('now')""",
+                (domain, query, geo, sentiment, source),
+            )
         conn.commit()
     finally:
         conn.close()

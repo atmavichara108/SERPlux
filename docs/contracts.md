@@ -59,16 +59,21 @@ Row = {
   — НОВАЯ функция. Возвращает все версии меток для позиции:
   `[{label_mode, label_version, sentiment, created_at}, ...]`.
 
-- `get_domain_label(client_id: str, domain: str, db_path: str = DB_PATH) -> dict | None`
-  — Возвращает `{sentiment, source, confidence}` из `domain_labels` по
-  `(client_id, domain)`, или `None` если домена нет в справочнике.
-  Поле `confidence` возвращается как `'high'` (константа), т.к. справочник
-  является источником истины для достоверно размеченных доменов.
+- `get_domain_label(domain: str, query: str, geo: str, db_path: str = DB_PATH) -> str | None`
+  — Возвращает `sentiment` из `domain_labels` по `(domain, query, geo)`,
+  или `None` если записи нет. `query` нормализуется к lowercase.
+  Справочник является источником истины для режима `domains`.
 
-- `upsert_domain_label(client_id: str, domain: str, sentiment: str,
-                       source: str = "manual", db_path: str = DB_PATH) -> None`
-  — INSERT или UPDATE записи в `domain_labels` по `UNIQUE(client_id, domain)`.
+- `upsert_domain_label(domain: str, query: str, geo: str, sentiment: str,
+                       source: str, db_path: str = DB_PATH) -> None`
+  — INSERT или UPDATE записи в `domain_labels` по `PRIMARY KEY (domain, query, geo)`.
   При UPDATE обновляет `sentiment`, `source`, `updated_at`.
+  Приоритет `source`: `manual_l1` не перезаписывается источниками `snippet`/`page`;
+  `manual_l1` может перезаписать любую существующую запись.
+
+- `bulk_upsert_domain_labels(items: list[dict], db_path: str = DB_PATH) -> None`
+  — Массовый upsert списка записей `{domain, query, geo, sentiment, source}`.
+  Применяются те же правила приоритета `source`, что и в `upsert_domain_label`.
 
 - `_init_db(db_path: str = DB_PATH) -> None`
   — Создаёт таблицы: clients, positions, labels, domain_labels.
@@ -156,16 +161,16 @@ DEFAULT_PROVIDER: str = "opencode-zen"
   Параметры:
   - `label_mode`: режим разметки ("domains" | "snippets" | "full")
   - `force_relabel`: если True — игнорировать кэш, размечать всё заново
-  - `client_id`: slug клиента, передаётся в `storage.get_domain_label()`
+  - `client_id`: slug клиента (используется для `positions`/`labels`, не для `domain_labels`)
   - `provider_chain`: строка или список идентификаторов провайдеров через запятую;
     фильтрует `config.PROVIDERS` перед фолбек-цепочкой
   Возвращает тот же список с заполненными `sentiment`/`label`/`confidence`.
 
   Режимы:
-  - **domains** (реализован): для каждой строки берёт `domain`, ищет в справочнике
-    через `storage.get_domain_label(client_id, domain)`. Если найдено — ставит
+  - **domains** (реализован): для каждой строки берёт `domain`, `query`, `geo`, ищет в справочнике
+    через `storage.get_domain_label(domain, query, geo)`. Если найдено — ставит
     `sentiment` из справочника, `confidence='high'`, LLM НЕ вызывается (нулевая
-    стоимость). Если домена нет в справочнике — `sentiment=None`
+    стоимость). Если записи нет в справочнике — `sentiment=None`
     (помечается для ручной разметки, TBD).
   - **snippets** (реализован): текущая логика — кэш (`storage.get_cached_label`)
     → LLM по сниппету. `confidence='high'`.
@@ -411,19 +416,21 @@ Health-check для мониторинга контейнера (без авто
 ALTER TABLE labels
 ADD COLUMN confidence TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high';
 
+-- Актуальная схема domain_labels (мультиклиентная через ключ domain/query/geo)
 CREATE TABLE domain_labels (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
     domain      TEXT NOT NULL,
-    sentiment   TEXT CHECK(sentiment IN ('positive','negative','neutral')),
-    source      TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','llm')),
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    query       TEXT NOT NULL,           -- нормализованный key субъекта, lowercase
+    geo         TEXT NOT NULL,           -- geo_name как в regions_map
+    sentiment   TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral')),
+    source      TEXT NOT NULL CHECK(source IN ('manual_l1','snippet','page')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(client_id, domain)
+    PRIMARY KEY (domain, query, geo)
 );
 
-CREATE INDEX idx_domlbl_client_domain ON domain_labels(client_id, domain);
+CREATE INDEX idx_domlbl_domain_query ON domain_labels(domain, query);
+CREATE INDEX idx_domlbl_geo ON domain_labels(geo);
 ```
 
-- `migrate.py` следует дополнить этими DDL-шагами
+- `migrate.py` выполняет эти DDL-шаги идемпотентно
+- Если существует старая схема `domain_labels` (с `id`/`client_id`) — таблица пересоздаётся
 - На боевой БД запускать **только после бэкапа** и проверки на копии

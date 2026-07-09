@@ -117,16 +117,17 @@ def _label_one_llm(row: dict, provider_chain: str | list[str] | None = None) -> 
 LABEL_MODES = {"domains", "snippets", "full"}
 
 
-def _label_domain(row: dict, client_id: str, db_path: str) -> str | None:
+def _label_domain(row: dict, db_path: str) -> str | None:
     """Разметка по справочнику доменов. LLM не вызывается."""
     domain = row.get("domain")
+    query = row.get("query") or ""
+    geo = row.get("geo") or ""
     if not domain:
         return None
-    found = storage.get_domain_label(client_id, domain, db_path)
-    if found is None:
+    sentiment = storage.get_domain_label(domain, query, geo, db_path)
+    if sentiment is None:
         return None
-    sentiment = found["sentiment"]
-    log.info("из справочника доменов: %s (client=%s) -> %s", domain, client_id, sentiment)
+    log.info("из справочника доменов: %s/%s/%s -> %s", domain, query, geo, sentiment)
     return sentiment
 
 
@@ -177,7 +178,7 @@ def _label_group(
                 stats["other_skip"] += 1
                 result.append(row)
                 continue
-            sentiment = _label_domain(row, client_id, db_path)
+            sentiment = _label_domain(row, db_path)
             if sentiment is None:
                 stats["domain_missing"] += 1
                 log.warning("domains: домен не найден в справочнике: %s", domain)
