@@ -15,6 +15,12 @@
 - **Фикс verify.sh: docker compose exec + set -e убивал скрипт на шагах 5-6**
   - `verify.sh`: шаги 5 (схема БД) и 6 (целостность) обёрнуты в `set +e`/`set -e` с явным сохранением `$?`. Теперь скрипт не умирает от ненулевого exit code внутри `$()`, а корректно выводит детали ошибки.
   - Коммит: `fix(verify): handle docker exec exit codes in schema/integrity checks`
+- **Добавлен shellcheck в CI и документация по инфра-тестированию**
+  - `.github/workflows/ci.yml`: новый job `shellcheck` для статического анализа всех `.sh` файлов.
+  - `verify.sh`, `backup_db.sh`: исправлены замечания shellcheck (`grep -oP` → `grep -oE`, `grep -q` в backup заменён на проверку exit code, `echo "  $1"` → `printf`).
+  - `docs/infra-testing.md`: новый документ — границы локального тестирования Docker/shell, почему агент не имеет доступа к Docker API, варианты решения (DinD, remote Docker API, mocks, server-side testing), чек-лист агента, известные ловушки `set -e`.
+  - `docs/verification.md`: добавлена информация о shellcheck в CI и ссылка на `infra-testing.md`.
+  - Коммит: `feat(infra): add shellcheck CI + docs for Docker/shell testing boundaries`
 - **Фикс verify.sh: grep без совпадений убивал скрипт на шаге 4**
   - `verify.sh`: шаг 4 (проверка логов на ошибки) обёрнут в `|| true`, чтобы `grep` без совпадений не возвращал exit code 1 при `set -e`.
   - Коммит: `fix(verify): suppress grep exit code in log error check`
