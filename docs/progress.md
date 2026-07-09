@@ -5,6 +5,28 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Этап A завершён: мультиклиентность + лист Настройки**
+  - **ЧАСТЬ 1 — Нормализация client_id:**
+    - `migrate.py`: добавлена функция `_normalize_client_id(conn)` идемпотентная, переносит все данные с численного "28938353" на строковый slug "client01". Логика: seed создаёт 28938353, нормализация переносит на client01 с полным профилем (name="Sudheimer Group", project_id=28938353).
+    - Миграция данных: UPDATE positions/labels/domain_labels, DELETE "28938353" после верификации целостности.
+    - `migrate.py` поток: 1) backup 2) create schema 3) patches 4) default клиент 5) перенос из results 6) seed 28938353 7) **нормализация на client01** 8) верификация.
+    - Тесты: обновлены все 10 тестов в `test_migrate_idempotent.py` на новую логику (проверяют "client01"), обновлен `test_storage_schema.py`. `172/172 passed`.
+    - `docs/decisions.md`, `docs/contracts.md`, `docs/progress.md`, `docs/techdebt.md`: обновлены.
+    - Коммит: `fix(clients): normalize client_id to slug client01 + migrate data`
+  - **ЧАСТЬ 2 — Лист Настройки в Apps Script:**
+    - `apps_script.gs`: функция `_getClientIdList()` получает список client_id из webhook GET /clients.
+    - `_setupClientIdValidation(sheet)` устанавливает Data Validation для client_id (строка 1, колонка B) с dropdown из GET /clients. Fallback на свободный ввод если список не получен.
+    - `deleteAndRecreateSettingsSheet()` удаляет и пересоздаёт лист Настройки с заполненной структурой (защита от повреждения листа).
+    - `initSettingsSheet()` обновлена вызовом `_setupClientIdValidation`.
+    - Меню: добавлен пункт "⚙ Настройки → [⟳] Пересоздать лист Настройки".
+    - `SETTINGS_TEMPLATE` обновлён: label_mode теперь поддерживает "auto" и "deep" (добавлены новые режимы); client_id подсказка указывает на меню обновления списка.
+    - Data Validation: client_id (dropdown), depth ([10,20,50,100]), with_labels/force_relabel/force_rebuild_report ([true,false]), label_mode ([auto,deep,domains,snippets,full]).
+    - Коммит: `fix(ui): initSettingsSheet fills structure with client_id dropdown, add deleteAndRecreateSettingsSheet menu`
+  - **DoD для Этапа A:**
+    - ✅ clients содержит ТОЛЬКО client01 (project_id=28938353 в профиле); default и численный 28938353 удалены, данные перенесены без потерь.
+    - ✅ verify.sh проходит 6/6 проверок (нет осиротевших записей).
+    - ✅ Лист Настройки пересоздаётся заполненным, client_id выбирается из dropdown (получен из webhook GET /clients).
+    - ✅ Все pytest 172 зелёные.
 - **verify.sh успешно протестирован на боевом сервере**
   - Все 6 проверок прошли: тесты (172 passed), health endpoint, контейнер, логи, схема БД, целостность данных. `Summary: Checks: 6/6 passed, Verification passed`.
   - Пройденный путь: добавление pytest в Docker-образ, копирование `tests/` в образ, отключение pytest-кэша, удаление зависимости от `jq`, обработка `set -e` для `grep`/arithmetic/`docker exec` exit codes, синхронизация списка колонок `clients` с реальной схемой.
