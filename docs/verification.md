@@ -53,6 +53,7 @@ cd /root/serp
    - ✗: container is down, crashed → exit 1
 
 4. **Error logs** — `docker compose logs --tail 100 | grep -i error`
+   - `grep` обёрнут в `|| true`, чтобы отсутствие совпадений не считалось ошибкой при `set -e`
    - ✓: нет ошибок/исключений
    - ⚠: найдены Error/Traceback (warning, не блокирует)
 

@@ -100,11 +100,15 @@ echo ""
 
 # d) Логи на ошибки
 echo "[4/6] Checking logs for errors..."
-ERROR_COUNT=$(docker compose logs --tail 100 "$SERVICE" 2>&1 | grep -iE "error|traceback|exception|fatal" | wc -l)
+
+# Собираем логи и считаем ошибки. Grep без совпадений возвращает 1 — подавляем,
+# чтобы set -e не убил скрипт.
+LOG_SNAPSHOT=$(docker compose logs --tail 100 "$SERVICE" 2>&1)
+ERROR_COUNT=$(echo "$LOG_SNAPSHOT" | { grep -iE "error|traceback|exception|fatal" || true; } | wc -l)
 if [ "$ERROR_COUNT" -gt 0 ]; then
     log_check "Error logs" "warn"
     log_detail "Found $ERROR_COUNT error/exception mentions in logs (not necessarily fatal)"
-    docker compose logs --tail 100 "$SERVICE" 2>&1 | grep -iE "error|traceback|exception|fatal" | head -5
+    echo "$LOG_SNAPSHOT" | { grep -iE "error|traceback|exception|fatal" || true; } | head -5
 else
     log_check "Error logs" "pass"
     log_detail "No obvious errors in recent logs"

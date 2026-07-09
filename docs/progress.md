@@ -5,6 +5,9 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Фикс verify.sh: grep без совпадений убивал скрипт на шаге 4**
+  - `verify.sh`: шаг 4 (проверка логов на ошибки) обёрнут в `|| true`, чтобы `grep` без совпадений не возвращал exit code 1 при `set -e`.
+  - Коммит: `fix(verify): suppress grep exit code in log error check`
 - **Фикс verify.sh: bash arithmetic + set -e убивал скрипт после первого ✓**
   - `verify.sh`: `((CHECKS_PASSED++))` и `((WARNINGS++))` заменены на `CHECKS_PASSED=$((CHECKS_PASSED + 1))` — в bash `((0))` возвращает exit code 1, что с `set -e` завершало скрипт сразу после первой успешной проверки.
   - `docs/verification.md`: добавлено замечание про локальное тестирование verify.sh через `bash -x`.
