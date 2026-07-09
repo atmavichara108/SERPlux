@@ -538,6 +538,89 @@ def list_providers(authorization: str | None = Header(default=None)) -> JSONResp
     return JSONResponse(result)
 
 
+class DomainLabelItem(BaseModel):
+    """Элемент для импорта ручной разметки доменов."""
+    domain: str
+    query: str
+    geo: str
+    sentiment: str
+    source: str = "manual_l1"
+
+    @field_validator("sentiment")
+    @classmethod
+    def validate_sentiment(cls, v: str) -> str:
+        """Проверка sentiment."""
+        if v not in ("positive", "negative", "neutral"):
+            raise ValueError(f"sentiment must be one of positive/negative/neutral, got {v}")
+        return v
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, v: str) -> str:
+        """Проверка source."""
+        if v not in ("manual_l1", "snippet", "page"):
+            raise ValueError(f"source must be one of manual_l1/snippet/page, got {v}")
+        return v
+
+
+@app.post("/labels/import")
+def import_domain_labels(
+    items: list[DomainLabelItem],
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """
+    Импорт ручной разметки доменов из Apps Script (Лист1 → domain_labels).
+
+    Требует Bearer-токен в заголовке Authorization.
+    Все записи пишутся с source='manual_l1' (не перезаписывают ручные разметки).
+
+    Пример:
+    ```json
+    [
+      {
+        "domain": "example.com",
+        "query": "subject a",
+        "geo": "Lithuania",
+        "sentiment": "positive",
+        "source": "manual_l1"
+      }
+    ]
+    ```
+    """
+    _verify_token(authorization)
+
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="items list is empty",
+        )
+
+    log.info("Импорт %d ручных разметок доменов (source=manual_l1)", len(items))
+
+    try:
+        # Преобразуем Pydantic-модели в dict для bulk_upsert
+        items_dict = [item.model_dump() for item in items]
+        storage.bulk_upsert_domain_labels(items_dict)
+        log.info("✓ Импортировано %d разметок", len(items))
+        return JSONResponse({
+            "status": "ok",
+            "imported": len(items),
+            "message": f"Imported {len(items)} domain labels",
+        })
+    except ValueError as e:
+        log.error("Валидация ошибка при импорте разметок: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        log.error("Ошибка при импорте разметок: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to import labels: {e}",
+        ) from e
+
+
 if __name__ == "__main__":
     import uvicorn
 
