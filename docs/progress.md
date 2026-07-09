@@ -5,6 +5,12 @@
 Одна задача — одна свежая сессия. Не таскай контекст между этапами. Память — в docs/, не в чате. 
 
 ## Сделано
+- **Автоматизированная верификация между этапами разработки и деплоя**
+  - `verify.sh` (в корне репо): 6 проверок после deploy.sh на сервере: тесты в контейнере, health endpoint, статус контейнера, логи на ошибки, схема БД (таблицы+колонки), целостность данных (нет осиротевших записей). Вывод ✓/✗, exit 1 при ошибке. Параметр `SERVICE=${SERVICE:-serplux}`.
+  - `backup_db.sh` (в корне): создание бэкап с временной меткой `/app/data/serplux.db.bak.YYYY-MM-DD-HHMMSS`, проверка целостности (валидный SQLite), ротация последних 10 бэкапов. Для ручного вызова перед миграциями.
+  - `.github/workflows/ci.yml`: GitHub Actions CI на push и pull_request в main. Поднимает Python 3.11, устанавливает требуемые зависимости, гоняет `pytest -v`. Тесты могут блокировать merge в GitHub. ТОЛЬКО тесты, без деплоя/доступа к серверу.
+  - `docs/verification.md`: описание границы авто/ручной проверки. Чек-лист деплоя для пользователя, примеры восстановления из бэкапа, будущие улучшения (cron ротация, Slack-уведомления).
+  - Коммит: `feat(infra): verify.sh + backup_db.sh + GitHub Actions CI (tests on push)`
 - **Финальная докрутка мультиклиентности: полный профиль клиента в БД**
   - `migrate.py`: идемпотентная схема `clients` с `queries`, seed/обновление клиента `28938353` (`Sudheimer Group`) из `config.py`/`regions_map_client1.json`/env `TOPVISOR_PROJECT_ID`; безопасный перенос данных с `default` через `UPDATE` с `GROUP BY` и разрешением дубликатов; `preseed`-бэкап; верификация отсутствия дочерних записей перед удалением `default` (каскадное удаление исключено).
   - `storage.py`: `get_client`/`list_clients` возвращают распарсенные `queries`/`regions_map`/`searchers`/`geos`, defensive `[]`; `regions_map` поддерживает JSON-массив и legacy-строку; `create_client`/`update_client` расширены `queries` и `regions_map`.
