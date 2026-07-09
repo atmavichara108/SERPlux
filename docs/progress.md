@@ -27,15 +27,12 @@
     - ✅ verify.sh проходит 6/6 проверок (нет осиротевших записей).
     - ✅ Лист Настройки пересоздаётся заполненным, client_id выбирается из dropdown (получен из webhook GET /clients).
     - ✅ Все pytest 172 зелёные.
-- **Импорт ручной разметки из Google Sheets (Лист1 → domain_labels)**
-  - Apps Script: `scripts/importManualLabels.gs` парсит блочную раскладку Лист1 (субъекты в заголовках, гео-разделители, пары [позиция|URL], цвет ячейки → sentiment).
-  - Маппинг цветов: `#6aa84f`/`#93c47d` → positive, `#990000` → negative, `#f1c232`/`#ffd966` → neutral, иные → лист "Спорные".
-  - Пишет "Эталон разметки" (копия для проверки) и "Спорные" (неизвестные цвета для ревью Михаилом).
-  - `webhook.py`: POST `/labels/import` (Bearer) → `bulk_upsert_domain_labels` с source='manual_l1' (не перезаписывает ручные разметки).
-  - Валидация: sentiment ∈ {positive, negative, neutral}, source ∈ {manual_l1, snippet, page}.
-  - Тесты: 7 новых (success, no auth, invalid token, invalid sentiment/source, empty list); 191/191 passed.
-  - `docs/contracts.md`: документирован эндпоинт `/labels/import` с примером запроса и маппингом цветов.
-  - Коммит: `feat(labels): import manual reference labels from Лист1 (color→sentiment) into domain_labels`
+- **Revert: разовый импорт ручной разметки не живёт в коде репозитория**
+  - Удалён `scripts/importManualLabels.gs` и пункт меню в `apps_script.gs` — разовый импорт не нужно поддерживать в UI.
+  - Удалён `POST /labels/import` из `webhook.py` и соответствующие тесты — одноразовый эндпоинт не должен оставаться в production-коде.
+  - Оставлена базовая таблица `domain_labels` и функции `storage.py` (`get/upsert/bulk_upsert`), потому что они нужны для режима `domains`.
+  - `docs/contracts.md`: убран `/labels/import`, добавлена декларация — ручная разметка `manual_l1` заполняется вне приложения (SQL/разовый скрипт); разовый импорт Михаила выполнен вне репозитория.
+  - Коммит: `revert(labels): remove one-off import code, keep domain_labels core table`
 - **Таблица кэша разметки доменов `domain_labels` по ключу (domain, query, geo)**
   - `storage.py`: новая схема `domain_labels` (без `client_id`), функции `get_domain_label(domain, query, geo)`, `upsert_domain_label(..., source)` с приоритетом `manual_l1`, `bulk_upsert_domain_labels()` с массовым upsert и тем же приоритетом.
   - `migrate.py`: идемпотентная миграция `domain_labels` — пересоздание, если обнаружена старая схема (`id`/`client_id`); удалена логика переноса `domain_labels` по `client_id`.

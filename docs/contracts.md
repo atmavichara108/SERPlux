@@ -75,6 +75,12 @@ Row = {
   — Массовый upsert списка записей `{domain, query, geo, sentiment, source}`.
   Применяются те же правила приоритета `source`, что и в `upsert_domain_label`.
 
+- **Заполнение `domain_labels`:**
+  Ручная эталонная разметка (source=`manual_l1`) заполняется вне приложения —
+  через SQL/админку или разовый скрипт. В production-коде репозитория нет
+  эндпоинта для массового импорта, чтобы не держать одноразовую логику в
+  поддерживаемом коде. Разовый импорт Михаила выполнен вне репозитория.
+
 - `_init_db(db_path: str = DB_PATH) -> None`
   — Создаёт таблицы: clients, positions, labels, domain_labels.
   Авто-клиент 'default' если таблица clients пуста.
@@ -228,60 +234,6 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
 - При `report_only=true`: пропускает сбор (topvisor/collector), разметку (labeler),
   выгрузку (exporter) и вызывает только `reporter.build_report(date, force=True)`.
 - При `report_only=false` (дефолт): полный пайплайн collect → save → label → export → report.
-
-### POST /labels/import
-
-Импорт ручной разметки доменов из Apps Script (Лист1 → `domain_labels`).
-Вызывается из функции `importManualLabels()` в Google Sheets.
-
-**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
-
-**Тело запроса (массив):**
-```json
-[
-  {
-    "domain": "example.com",
-    "query": "subject a",
-    "geo": "Lithuania",
-    "sentiment": "positive",
-    "source": "manual_l1"
-  },
-  {
-    "domain": "test.org",
-    "query": "subject b",
-    "geo": "Germany",
-    "sentiment": "negative",
-    "source": "manual_l1"
-  }
-]
-```
-
-**Поля:**
-- `domain` (str) — домен из URL, без `www`, lowercase
-- `query` (str) — нормализованный субъект (lowercase)
-- `geo` (str) — geo_name как в `regions_map` (например, "Lithuania", "Germany")
-- `sentiment` (str) — `positive` | `negative` | `neutral` (обязательно)
-- `source` (str) — `manual_l1` (разметка вручную уровня L1), не перезаписывается автоматами
-
-**Маппинг цветов из Apps Script (Лист1):**
-- `#6aa84f`, `#93c47d` → `positive`
-- `#990000` → `negative`
-- `#f1c232`, `#ffd966` → `neutral`
-- Иные цвета → пишутся в лист "Спорные" для ручного ревью (не отправляются на бэкенд)
-
-**Ответ 200 OK:**
-```json
-{
-    "status": "ok",
-    "imported": 2,
-    "message": "Imported 2 domain labels"
-}
-```
-
-**Ошибки:**
-- `401 Unauthorized` — отсутствует или невалиден Bearer-токен
-- `400 Bad Request` — пустой список или некорректные данные
-- `422 Unprocessable Entity` — невалидный `sentiment` или `source`
 
 ### GET /status
 
