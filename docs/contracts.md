@@ -23,6 +23,7 @@ Row = {
     # --- версионирование (новые поля) ---
     "sentiment": str | None, # "positive" | "negative" | "neutral" | None
     "label_mode": str | None,# "auto" | "deep" (с версии 2026-07-10; старые domains/snippets/full deprecated)
+                               # Подробнее: docs/labeling_canon.md
     "label_version": int | None,  # версия разметки (1, 2, 3...)
     "confidence": str,       # "high" | "uncertain", дефолт "high"
     # --- мультитенантность (новые поля) ---
@@ -70,6 +71,7 @@ Row = {
   При UPDATE обновляет `sentiment`, `source`, `updated_at`.
   Приоритет `source`: `manual_l1` не перезаписывается источниками `snippet`/`page`;
   `manual_l1` может перезаписать любую существующую запись.
+  Полный канон разметки: `docs/labeling_canon.md`.
 
 - `bulk_upsert_domain_labels(items: list[dict], db_path: str = DB_PATH) -> None`
   — Массовый upsert списка записей `{domain, query, geo, sentiment, source}`.

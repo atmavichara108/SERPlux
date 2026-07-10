@@ -150,6 +150,8 @@ def _apply_label_colors(spreadsheet, sheet_id: int,
 
 def build_report(date: str | None = None, force: bool = False, sheet_id: str | None = None,
                  client_id: str = "default", db_path: str = storage.DB_PATH) -> None:
+    # force устарел: лист «Отчёт» всегда полностью очищается перед записью.
+    # Параметр оставлен в сигнатуре для обратной совместимости с вызывающим кодом.
     # Загружаем профиль клиента для получения списка субъектов и гео
     client = get_client(client_id, db_path=db_path)
     if not client:
@@ -292,39 +294,13 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
     worksheet = _get_or_create_report_sheet(spreadsheet)
 
     try:
-        existing_values = worksheet.get_all_values()
-        date_formatted = _format_date(date)
-
-        if not force:
-            # Проверяем идемпотентность: ищем заголовок «Позиции ... на {date}»
-            for row_vals in existing_values[:3]:
-                if row_vals and date_formatted in row_vals[0]:
-                    log.info("Отчёт за %s уже есть на листе '%s', пропущен (идемпотентность)",
-                             date_formatted, REPORT_SHEET_NAME)
-                    return
-        else:
-            # force=True: удаляем существующий блок за эту дату перед вставкой
-            start_row = None
-            end_row = None
-            for i, row_vals in enumerate(existing_values):
-                cell = row_vals[0] if row_vals else ""
-                if start_row is None:
-                    if date_formatted in cell and cell.startswith("Позиции"):
-                        start_row = i  # 0-based
-                else:
-                    # Конец блока — следующий заголовок «Позиции» или конец данных
-                    if cell.startswith("Позиции") and date_formatted not in cell:
-                        end_row = i  # не включаем
-                        break
-            if start_row is not None:
-                end_row = end_row if end_row is not None else len(existing_values)
-                # gspread delete_rows принимает 1-based индексы, удаляем снизу вверх
-                worksheet.delete_rows(start_row + 1, end_row)
-                log.info("Удалён старый блок за %s (строки %s–%s)",
-                         date_formatted, start_row + 1, end_row)
+        # Лист «Отчёт» содержит только отчёт за текущую дату.
+        # Полностью очищаем лист перед записью (кэш пишется на отдельный лист «Лист2»).
+        worksheet.clear()
+        log.info("Лист '%s' очищен перед записью отчёта", REPORT_SHEET_NAME)
 
         log.info("Вставляю %s строк отчёта на лист '%s'", len(report_data), REPORT_SHEET_NAME)
-        worksheet.insert_rows(report_data, 1)
+        worksheet.update(report_data, "A1")
 
         worksheet_id = worksheet.id
         _apply_label_colors(spreadsheet, worksheet_id, format_cells)

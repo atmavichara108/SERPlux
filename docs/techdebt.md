@@ -65,6 +65,31 @@
 
 **Исправление:** `gc.http_client.timeout = (10, 60)` в `_get_sheet()` и `_get_spreadsheet()`.
 
+### 2026-07-10 — Legacy режимы `domains`/`snippets`/`full` всё ещё в БД и `storage.LABEL_MODES`
+
+**Проблема:** Канон разметки (`docs/labeling_canon.md`) разрешает только два режима:
+`auto` и `deep`. Однако `storage.LABEL_MODES` и CHECK-ограничение
+`labels.label_mode` допускают устаревшие режимы `domains`/`snippets`/`full`.
+Это остаток ранней трёхрежимной модели.
+
+**Где:** `storage.py` (`LABEL_MODES`, CREATE TABLE `labels`), `migrate.py`
+(пересоздание `labels` при устаревшем CHECK).
+
+**Влияние:** Новый код уже работает только с `auto`/`deep`, но legacy-режимы
+технически возможны в БД. Это создаёт риск появления «зомби-меток» при
+ручных вставках и путает читателей схемы.
+
+**Статус:** Отложено. Исправление требует миграции/очистки существующих
+старых меток в `labels` и обновления тестов, которые ещё используют
+`label_mode='snippets'`.
+
+**Что делать:**
+- Убедиться, что в production-БД нет меток с `label_mode IN ('domains','snippets','full')`
+  (или перенести их в `auto`/`deep` вручную).
+- Сузить `storage.LABEL_MODES` до `{"auto", "deep"}`.
+- Изменить CHECK `labels.label_mode` на `('auto','deep')`.
+- Обновить `migrate.py` и тесты (`test_migrate_idempotent.py`, `test_storage_schema.py`).
+
 ---
 
 ### 2026-07-07 — Default `db_path` в `storage.py` захвачен при импорте

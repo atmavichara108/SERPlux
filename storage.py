@@ -309,7 +309,7 @@ def insert_labels(rows: list[Row], db_path: str = DB_PATH) -> int:
     """
     INSERT новой версии метки для каждой строки.
     sentiment=None пропускается.
-    label_mode берётся из row.get('label_mode', 'snippets').
+    label_mode берётся из row.get('label_mode', 'auto').
     client_id берётся из row.get('client_id', 'default').
     Возвращает количество вставленных меток.
     """
@@ -328,7 +328,7 @@ def insert_labels(rows: list[Row], db_path: str = DB_PATH) -> int:
             if sentiment is None:
                 continue
 
-            label_mode = row.get("label_mode", "snippets")
+            label_mode = row.get("label_mode", "auto")
             if label_mode not in LABEL_MODES:
                 log.warning("Неизвестный label_mode=%s, пропускаю", label_mode)
                 continue
@@ -981,19 +981,20 @@ if __name__ == "__main__":
             "domain": "example.com",
             "snippet": "Test snippet 1",
             "sentiment": "positive",
-            "label_mode": "snippets",
+            "label_mode": "auto",
         },
         {
             "date": "2026-06-19",
             "searcher": "google",
-            "query": "test query",
+            "query": "another query",
             "geo": "Литва",
             "region_index": 1300,
-            "position": 2,
-            "url": "https://example.com/page2",
-            "domain": "example.com",
-            "snippet": "Test snippet 2",
-            "sentiment": None,
+            "position": 1,
+            "url": "https://test.org",
+            "domain": "test.org",
+            "snippet": "Test snippet 3",
+            "sentiment": "negative",
+            "label_mode": "auto",
         },
         {
             "date": "2026-06-19",

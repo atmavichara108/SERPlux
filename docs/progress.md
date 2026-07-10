@@ -6,6 +6,25 @@
 
 ## Сделано
 
+- **Session: 2026-07-10 (шестая) — Разделение кэша и отчёта в Google Sheets + канон разметки**
+  - [x] `exporter.py`: кэш выдачи теперь пишется на отдельный лист «Лист2» с полной очисткой перед записью.
+    - Лист «Отчёт» больше не трогается экспортом.
+    - Добавлена `_get_or_create_cache_sheet()`; удалена логика вставки «сверху» и идемпотентности по датам.
+  - [x] `reporter.py`: лист «Отчёт» полностью очищается перед записью; пишется только отчёт за текущую/указанную дату.
+    - Параметр `force` оставлен в сигнатуре для обратной совместимости, но игнорируется (очистка всегда).
+  - [x] `tests/test_exporter.py` обновлён: проверяется запись на «Лист2» + очистка.
+  - [x] `docs/labeling_canon.md` создан — единый источник истины по разметке:
+    - `sentiment ∈ {positive, negative, neutral}`;
+    - `source` приоритет: `manual_l1` > `snippet`/`page`, `manual_l1` защищён от перезаписи;
+    - `label_mode ∈ {auto, deep}` для новых операций; `domains`/`snippets`/`full` — legacy;
+    - `neutral` — легитимный маркер неуверенности.
+  - [x] `docs/contracts.md` синхронизирован со ссылками на `docs/labeling_canon.md`.
+  - [x] `storage.py`: дефолт `label_mode` в `insert_labels()` исправлен с `"snippets"` на `"auto"`.
+  - [x] `docs/techdebt.md`: зафиксирован techdebt о legacy-режимах `domains`/`snippets`/`full` в `storage.LABEL_MODES` и CHECK `labels.label_mode`.
+  - [x] Все 214 тестов проходят.
+  - Status: Ready for commit
+  - Коммит: `fix(exporter): cache to Лист2 only, not report + docs: labeling canon (manual_l1 source of truth)`
+
 - **Session: 2026-07-10 (пятая) — Рабочая инициализация листа «Настройки» в apps_script.gs**
   - [x] `apps_script.gs`: добавлена функция `initSettingsSheetSafe()`:
     - Минимальный набор операций, который не падает с «Сервису Таблицы недоступен» на боевом документе.

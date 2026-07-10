@@ -13,6 +13,8 @@ log = config.setup_logging(__name__)
 
 Row = dict[str, Any]
 
+CACHE_SHEET_NAME = "Лист2"
+
 SEARCHER_MAP = {
     "google": "Google",
     "yandex_ru": "Яндекс",
@@ -22,7 +24,7 @@ SEARCHER_MAP = {
 HEADER = ["Дата", "Поисковая система", "Субъект/Запрос", "Гео", "Позиция", "URL", "Домен", "Сниппет", "Метка"]
 
 
-def _get_sheet(sheet_id: str | None = None):
+def _get_spreadsheet(sheet_id: str | None = None):
     credentials_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
     sheet_id = sheet_id or os.environ.get("GOOGLE_SHEET_ID")
 
@@ -39,24 +41,29 @@ def _get_sheet(sheet_id: str | None = None):
         # Таймаут на все HTTP-вызовы Google API (connect, read) — защита от зависания
         gc.http_client.timeout = (10, 60)
         spreadsheet = gc.open_by_key(sheet_id)
-        worksheet = spreadsheet.sheet1
-        return worksheet
+        return spreadsheet
     except SpreadsheetNotFound:
         log.error("Таблица %s не найдена или нет доступа. "
                   "Убедитесь, что sheet_id корректен и таблица расшарена на service account с правами Editor.",
                   sheet_id)
-        return None
-    except WorksheetNotFound:
-        log.error("Лист не найден в таблице %s", sheet_id)
-        return None
-    except APIError as e:
-        log.error("Ошибка Google API: %s", e)
         return None
     except Exception as e:
         log.error("Ошибка авторизации: %s. "
                   "Проверьте credentials.json и что таблица расшарена на client_email с правами Editor.",
                   e)
         return None
+
+
+def _get_or_create_cache_sheet(spreadsheet):
+    """Возвращает лист 'Лист2' для кэша выдачи, создаёт при необходимости."""
+    try:
+        worksheet = spreadsheet.worksheet(CACHE_SHEET_NAME)
+        log.info("Лист '%s' найден", CACHE_SHEET_NAME)
+        return worksheet
+    except WorksheetNotFound:
+        log.info("Лист '%s' не найден, создаю новый", CACHE_SHEET_NAME)
+        worksheet = spreadsheet.add_worksheet(title=CACHE_SHEET_NAME, rows=1000, cols=20)
+        return worksheet
 
 
 def _row_to_list(row: Row) -> list[str]:
@@ -79,51 +86,42 @@ def _row_to_list(row: Row) -> list[str]:
 
 
 def export(rows: list[Row], sheet_id: str | None = None) -> None:
+    """
+    Выгружает кэш выдачи (positions + метки) на лист 'Лист2'.
+
+    Лист полностью очищается перед записью (перезапись, не append).
+    Лист 'Отчёт' не трогается — туда пишет reporter.build_report().
+    """
     if not rows:
         log.warning("Нет строк для экспорта")
         return
 
-    worksheet = _get_sheet(sheet_id=sheet_id)
+    spreadsheet = _get_spreadsheet(sheet_id=sheet_id)
+    if spreadsheet is None:
+        return
+
+    worksheet = _get_or_create_cache_sheet(spreadsheet)
     if worksheet is None:
         return
 
     try:
-        existing_values = worksheet.get_all_values()
-        has_header = len(existing_values) > 0 and existing_values[0] == HEADER
+        # Полная очистка листа кэша перед записью
+        worksheet.clear()
+        log.info("Лист '%s' очищен перед записью кэша", CACHE_SHEET_NAME)
 
-        if not has_header:
-            log.info("Лист пустой или нет заголовка — добавляю заголовок")
-            worksheet.insert_row(HEADER, 1)
-            insert_position = 2
-            existing_data_dates = set()
-        else:
-            insert_position = 2
-            # Собираем даты уже существующих данных (пропускаем заголовок)
-            existing_data_dates = set()
-            for row_vals in existing_values[1:]:
-                if row_vals and row_vals[0]:  # колонка "Дата"
-                    existing_data_dates.add(row_vals[0])
+        data_to_insert = [HEADER] + [_row_to_list(row) for row in rows]
 
-        # Проверяем идемпотентность: если все даты уже есть в sheet — пропускаем
-        new_dates = {str(row["date"]) for row in rows}
-        if new_dates.issubset(existing_data_dates) and existing_data_dates:
-            log.info("Данные за %s уже есть в Sheet, экспорт пропущен (идемпотентность)",
-                     ", ".join(sorted(new_dates)))
-            return
+        log.info("Записываю %s строк (включая заголовок) на лист '%s'",
+                 len(data_to_insert), CACHE_SHEET_NAME)
 
-        data_to_insert = [_row_to_list(row) for row in rows]
+        worksheet.update(data_to_insert, "A1")
 
-        log.info("Вставляю %s строк на позицию %s (новые сверху, старые уезжают вниз)",
-                 len(data_to_insert), insert_position)
-
-        worksheet.insert_rows(data_to_insert, insert_position)
-
-        log.info("Экспорт завершён: %s строк добавлено", len(rows))
+        log.info("Экспорт кэша завершён: %s строк", len(rows))
 
     except APIError as e:
-        log.error("Ошибка Google API при записи: %s", e)
+        log.error("Ошибка Google API при записи кэша: %s", e)
     except Exception as e:
-        log.error("Ошибка при экспорте: %s", e)
+        log.error("Ошибка при экспорте кэша: %s", e)
 
 
 if __name__ == "__main__":
@@ -204,20 +202,18 @@ if __name__ == "__main__":
 
     print(f"1. Первый экспорт (дата={yesterday}, 3 строки)...")
     export(test_rows_1)
-    print("   Проверьте таблицу: заголовок + 3 строки\n")
+    print(f"   Проверьте таблицу: лист '{CACHE_SHEET_NAME}' должен содержать заголовок + 3 строки\n")
 
     print(f"2. Второй экспорт (дата={today}, 2 строки)...")
     export(test_rows_2)
-    print("   Проверьте таблицу: заголовок + 2 новые строки СВЕРХУ + 3 старые строки СНИЗУ\n")
+    print(f"   Проверьте таблицу: лист '{CACHE_SHEET_NAME}' должен содержать ТОЛЬКО заголовок + 2 строки\n")
 
-    print("Ожидаемая структура листа:")
+    print("Ожидаемая структура листа кэха:")
     print("  Строка 1: Заголовок (Дата | Поисковая система | Субъект/Запрос | ...)")
     print(f"  Строка 2: {today} | Google | chempioil | Литва | 1 | ...")
     print(f"  Строка 3: {today} | Google | chempioil | Литва | 3 | ...")
-    print(f"  Строка 4: {yesterday} | Google | chempioil | Литва | 1 | ...")
-    print(f"  Строка 5: {yesterday} | Google | chempioil | Литва | 2 | ...")
-    print(f"  Строка 6: {yesterday} | Яндекс | juri sudheimer | Германия | 1 | ...")
+    print("\nВажно: предыдущие строки за %s должны быть удалены (перезапись)." % yesterday)
     print()
 
     print("=== Тест завершён ===")
-    print("Откройте Google Sheet и проверьте порядок строк визуально.")
+    print("Откройте Google Sheet и проверьте лист '%s' визуально." % CACHE_SHEET_NAME)
