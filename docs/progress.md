@@ -6,6 +6,20 @@
 
 ## Сделано
 
+- **Session: 2026-07-10 (пятая) — Рабочая инициализация листа «Настройки» в apps_script.gs**
+  - [x] `apps_script.gs`: добавлена функция `initSettingsSheetSafe()`:
+    - Минимальный набор операций, который не падает с «Сервису Таблицы недоступен» на боевом документе.
+    - `clearContents` → `setValues(SETTINGS_TEMPLATE)` → валидации по блокам → `setActiveSheet` + `toast`.
+    - Валидации: `client_id` (через `_setupClientIdValidation`), `depth`, `with_labels`, `label_mode` (строго `["auto", "deep"]`).
+    - Каждая операция в своём `try-catch` с `Logger.log`; при фатальном `setValues` функция возвращается.
+    - Не добавлены дополнительные валидации/форматирование (date, force_relabel, force_rebuild_report, report_date, provider_chain, ширины колонок), чтобы избежать регресса.
+  - [x] `onOpen`: пункт «[+] Инициализировать настройки» теперь вызывает `initSettingsSheetSafe`.
+  - [x] `deleteAndRecreateSettingsSheet`: теперь вызывает `initSettingsSheetSafe` вместо старой функции.
+  - [x] Старая `initSettingsSheet()` оставлена без изменений для обратной совместимости, но убрана из UI-путей.
+  - [x] Тестовые обёртки (`testFindCrash` и др.) в файле отсутствовали — нечего удалять.
+  - Status: Ready for commit
+  - Коммит: `fix(ui): replace broken initSettingsSheet with working initSettingsSheetSafe in menu`
+
 - **Session: 2026-07-10 (четвёртая) — POST /labels/import для батч-импорта эталона**
   - [x] `webhook.py`: доработан `POST /labels/import`:
     - Bearer-аутентификация (`_verify_token`): 401/403 как у остальных эндпоинтов.

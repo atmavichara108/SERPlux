@@ -74,7 +74,7 @@ function onOpen() {
     var settingsMenu = ui.createMenu("⚙ Настройки")
       .addItem("Установить секрет", "setSecret")
       .addItem("Установить URL сервера", "setWebhookUrl")
-      .addItem("[+] Инициализировать настройки", "initSettingsSheet")
+      .addItem("[+] Инициализировать настройки", "initSettingsSheetSafe")
       .addItem("[⟳] Пересоздать лист Настройки", "deleteAndRecreateSettingsSheet")
       .addItem("[!] Установить триггеры (1 раз)", "setupTriggers")
       .addSeparator()
@@ -214,7 +214,101 @@ function deleteAndRecreateSettingsSheet() {
   }
   
   // Пересоздаём лист с заполненной структурой
-  initSettingsSheet();
+  initSettingsSheetSafe();
+}
+
+/**
+ * Создаёт или пересоздаёт лист «Настройки» с шаблоном ключей и Data Validation.
+ * Рабочая замена initSettingsSheet: минимальный набор операций, который не падает
+ * с «Сервису Таблицы недоступен» на боевом документе.
+ *
+ * Формат: колонка A = ключ, B = значение, C = подсказка.
+ */
+function initSettingsSheetSafe() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(SETTINGS_SHEET_NAME);
+  }
+
+  // Очищаем содержимое
+  try {
+    sheet.clearContents();
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: clearContents пропущен: %s", e.message);
+  }
+
+  // Записываем шаблон целиком. Это основная задача — лист должен быть заполнен.
+  try {
+    sheet.getRange(1, 1, SETTINGS_TEMPLATE.length, 3).setValues(SETTINGS_TEMPLATE);
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe FATAL setValues: %s", e.message);
+    return;
+  }
+
+  // Валидации по одному полю. При сбое логируем поле и продолжаем.
+  // Важно: sheet уже заполнен значениями, поэтому даже при полном сбое валидаций
+  // пользователь может редактировать значения вручную.
+
+  // client_id (строка 1) — может потребовать сетевой запрос к серверу.
+  try {
+    _setupClientIdValidation(sheet);
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации client_id: %s", e.message);
+  }
+
+  // depth (строка 2)
+  try {
+    sheet.getRange(2, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["10", "20", "50", "100"], true)
+        .setAllowInvalid(false)
+        .setHelpText("Глубина сбора: 10, 20, 50 или 100")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации depth: %s", e.message);
+  }
+
+  // with_labels (строка 3)
+  try {
+    sheet.getRange(3, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["true", "false"], true)
+        .setAllowInvalid(false)
+        .setHelpText("true или false")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации with_labels: %s", e.message);
+  }
+
+  // label_mode (строка 4): только auto/deep
+  try {
+    sheet.getRange(4, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["auto", "deep"], true)
+        .setAllowInvalid(false)
+        .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации label_mode: %s", e.message);
+  }
+
+  // Косметика — каждая операция отдельно, не критична
+  try {
+    ss.setActiveSheet(sheet);
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка setActiveSheet: %s", e.message);
+  }
+
+  try {
+    ss.toast("Лист «Настройки» инициализирован", "SERPlux", 5);
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка toast: %s", e.message);
+  }
 }
 
 /**
