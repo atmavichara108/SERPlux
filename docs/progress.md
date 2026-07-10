@@ -6,6 +6,28 @@
 
 ## Сделано
 
+- **Session: 2026-07-10 (четвёртая) — POST /labels/import для батч-импорта эталона**
+  - [x] `webhook.py`: доработан `POST /labels/import`:
+    - Bearer-аутентификация (`_verify_token`): 401/403 как у остальных эндпоинтов.
+    - Поддержка двух форматов тела: голый массив и `{"labels": [...]}`.
+    - Каждая запись импортируется через существующий `storage.upsert_domain_label`,
+      поэтому соблюдается приоритет `source` (`manual_l1` не перезаписывается).
+    - Битая запись не роняет батч; считаются `imported`, `skipped`, `errors`,
+      собираются первые ~5 сообщений в `error_samples`.
+    - Ответ HTTP 200 даже при частичных ошибках.
+    - Идемпотентность по PK `(domain, query, geo)`.
+  - [x] `tests/test_webhook.py`: доработаны тесты `TestLabelsImportEndpoint`:
+    - успешный импорт в обоих форматах тела;
+    - идемпотентность;
+    - `manual_l1` не перезаписывается `snippet`;
+    - битая запись в батче пропускается, остальные импортируются;
+    - авторизация (401/403).
+  - [x] Обновлена документация:
+    - `docs/contracts.md` — актуальная сигнатура и коды ответов.
+    - `docs/progress.md` — эта запись.
+  - Status: Ready for commit
+  - Коммит: `feat(labels): add POST /labels/import endpoint (batched, idempotent, manual_l1 priority)`
+
 - **Session: 2026-07-10 (третья) — Восстановлен одноразовый импорт эталона**
   - [x] `webhook.py`: восстановлен `POST /labels/import`:
     - Идемпотентный upsert по PK `(domain, query, geo)` через `storage.upsert_domain_label`.

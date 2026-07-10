@@ -718,10 +718,10 @@ class TestClientProfilePipeline:
 
 
 class TestLabelsImportEndpoint:
-    """Тесты одноразового импорта эталона POST /labels/import."""
+    """Тесты POST /labels/import — батчевый импорт в domain_labels."""
 
-    def test_import_labels_success(self, client, client_db):
-        """Валидный батч импортируется целиком."""
+    def test_import_labels_success_array_format(self, client, client_db):
+        """Валидный батч в виде голого массива импортируется целиком."""
         import storage
 
         payload = [
@@ -736,13 +736,40 @@ class TestLabelsImportEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["processed"] == 2
         assert body["imported"] == 2
         assert body["skipped"] == 0
         assert body["errors"] == 0
+        assert body["error_samples"] == []
 
         assert storage.get_domain_label("a.com", "q1", "Литва", client_db) == "positive"
         assert storage.get_domain_label("b.com", "q2", "Латвия", client_db) == "negative"
+
+        conn = sqlite3.connect(client_db)
+        try:
+            rows = conn.execute(
+                "SELECT source FROM domain_labels WHERE domain = ? AND query = ? AND geo = ?",
+                ("a.com", "q1", "Литва"),
+            ).fetchall()
+            assert rows[0][0] == "manual_l1"
+        finally:
+            conn.close()
+
+    def test_import_labels_success_object_format(self, client, client_db):
+        """Формат тела {labels: [...]} тоже работает."""
+        import storage
+
+        resp = client.post(
+            "/labels/import",
+            json={"labels": [{"domain": "c.com", "query": "q3", "geo": "Эстония", "sentiment": "neutral"}]},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"] == 1
+        assert body["skipped"] == 0
+        assert body["errors"] == 0
+
+        assert storage.get_domain_label("c.com", "q3", "Эстония", client_db) == "neutral"
 
     def test_import_labels_idempotent(self, client, client_db):
         """Повторный импорт тех же записей не плодит дубли."""
@@ -773,7 +800,7 @@ class TestLabelsImportEndpoint:
         assert storage.get_domain_label("a.com", "q1", "Литва", client_db) == "positive"
 
     def test_import_labels_skips_invalid_sentiment(self, client, client_db):
-        """Одна битая запись пропускается, остальные импортируются."""
+        """Одна битая запись попадает в skipped, остальные импортируются."""
         import storage
 
         payload = [
@@ -788,10 +815,11 @@ class TestLabelsImportEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["processed"] == 2
         assert body["imported"] == 1
         assert body["skipped"] == 1
         assert body["errors"] == 0
+        assert len(body["error_samples"]) == 1
+        assert "invalid sentiment" in body["error_samples"][0]
 
         assert storage.get_domain_label("a.com", "q1", "Литва", client_db) == "positive"
         assert storage.get_domain_label("b.com", "q2", "Латвия", client_db) is None
@@ -818,13 +846,15 @@ class TestLabelsImportEndpoint:
         assert storage.get_domain_label("a.com", "q1", "Литва", client_db) == "neutral"
 
     def test_import_labels_respects_manual_l1_priority(self, client, client_db):
-        """Повторный импорт manual_l1 перезаписывает manual_l1; snippet не перезаписывает."""
+        """manual_l1 из импорта перезаписывает snippet; повторный snippet — нет."""
         import storage
 
+        # Предварительно авто-метка
         storage.upsert_domain_label(
             "a.com", "q1", "Литва", "positive", "snippet", db_path=client_db
         )
 
+        # Импорт manual_l1 меняет метку
         resp = client.post(
             "/labels/import",
             json=[{"domain": "a.com", "query": "q1", "geo": "Литва", "sentiment": "negative"}],
@@ -833,6 +863,37 @@ class TestLabelsImportEndpoint:
         assert resp.status_code == 200
         assert resp.json()["imported"] == 1
         assert storage.get_domain_label("a.com", "q1", "Литва", client_db) == "negative"
+
+        # Повторный snippet не должен вернуть positive
+        storage.upsert_domain_label(
+            "a.com", "q1", "Литва", "positive", "snippet", db_path=client_db
+        )
+        assert storage.get_domain_label("a.com", "q1", "Литва", client_db) == "negative"
+
+    def test_import_labels_partial_batch_continues(self, client, client_db):
+        """Битая запись в середине батча не роняет остальные."""
+        import storage
+
+        payload = [
+            {"domain": "a.com", "query": "q1", "geo": "Литва", "sentiment": "positive"},
+            {"domain": "b.com", "query": "q2", "geo": "Латвия", "sentiment": "WRONG"},
+            {"domain": "c.com", "query": "q3", "geo": "Эстония", "sentiment": "neutral"},
+        ]
+
+        resp = client.post(
+            "/labels/import",
+            json=payload,
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"] == 2
+        assert body["skipped"] == 1
+        assert body["errors"] == 0
+
+        assert storage.get_domain_label("a.com", "q1", "Литва", client_db) == "positive"
+        assert storage.get_domain_label("b.com", "q2", "Латвия", client_db) is None
+        assert storage.get_domain_label("c.com", "q3", "Эстония", client_db) == "neutral"
 
     def test_import_labels_empty_list(self, client, client_db):
         """Пустой список возвращает нулевую сводку."""
@@ -843,8 +904,9 @@ class TestLabelsImportEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["processed"] == 0
         assert body["imported"] == 0
+        assert body["skipped"] == 0
+        assert body["errors"] == 0
 
     def test_import_labels_missing_auth_returns_401(self, client):
         resp = client.post("/labels/import", json=[{}])

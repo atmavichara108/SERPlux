@@ -18,7 +18,7 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import Body, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
@@ -543,40 +543,66 @@ def list_providers(authorization: str | None = Header(default=None)) -> JSONResp
 VALID_IMPORT_SENTIMENTS = {"positive", "negative", "neutral"}
 VALID_IMPORT_SOURCES = {"manual_l1", "snippet", "page"}
 DEFAULT_IMPORT_SOURCE = "manual_l1"
+MAX_ERROR_SAMPLES = 5
 
 
 @app.post("/labels/import")
 def import_domain_labels(
-    items: list[dict],
+    body: dict | list = Body(...),
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     """
-    Одноразовый импорт эталонной разметки доменов в domain_labels.
+    Батчевый импорт разметки доменов в domain_labels.
 
-    Принимает массив объектов {domain, query, geo, sentiment, source}.
-    source по умолчанию "manual_l1".
+    Принимает тело в двух формах:
+      - массив объектов [{domain, query, geo, sentiment, source}, ...]
+      - объект {"labels": [...]}
 
-    Идемпотентен: повторный вызов обновляет существующие записи по PK
-    (domain, query, geo), не плодит дубли.
+    Для каждой записи вызывает storage.upsert_domain_label, поэтому
+    срабатывают правила приоритета source (manual_l1 не перезаписывается
+    snippet/page) и идемпотентность по PK (domain, query, geo).
 
-    Устойчив к битым записям: одна невалидная запись не роняет весь батч,
-    пропускается и логируется. В ответе возвращается сводка.
+    Битая запись не прерывает батч. Возвращает сводку imported/skipped/errors
+    и первые ~5 примеров ошибок.
     """
     _verify_token(authorization)
+
+    # Поддержка двух форматов тела
+    if isinstance(body, list):
+        items = body
+        format_name = "array"
+    elif isinstance(body, dict) and "labels" in body:
+        items = body["labels"]
+        format_name = "object"
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="body must be a list of labels or an object {labels: [...]}",
+        )
 
     if not isinstance(items, list):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="items must be a list",
+            detail="labels must be a list",
         )
 
-    processed = 0
+    log.info("labels_import: received %s items in %s format", len(items), format_name)
+
     imported = 0
     skipped = 0
     errors = 0
+    error_samples: list[str] = []
+
+    def _add_sample(message: str) -> None:
+        if len(error_samples) < MAX_ERROR_SAMPLES:
+            error_samples.append(message)
 
     for idx, raw in enumerate(items):
-        processed += 1
+        if not isinstance(raw, dict):
+            skipped += 1
+            _add_sample(f"row {idx}: not an object")
+            log.warning("labels_import: row %s is not an object", idx)
+            continue
 
         # Нормализация полей
         domain = _extract_str(raw.get("domain"))
@@ -587,27 +613,21 @@ def import_domain_labels(
 
         # Валидация
         if not domain or not query or not geo or not sentiment:
-            log.warning(
-                "labels/import: пропускаю запись %s — отсутствуют обязательные поля",
-                idx,
-            )
             skipped += 1
+            _add_sample(f"row {idx}: missing required fields")
+            log.warning("labels_import: row %s missing required fields", idx)
             continue
 
         if sentiment not in VALID_IMPORT_SENTIMENTS:
-            log.warning(
-                "labels/import: пропускаю запись %s — недопустимый sentiment '%s'",
-                idx, sentiment,
-            )
             skipped += 1
+            _add_sample(f"row {idx}: invalid sentiment '{sentiment}'")
+            log.warning("labels_import: row %s invalid sentiment '%s'", idx, sentiment)
             continue
 
         if source not in VALID_IMPORT_SOURCES:
-            log.warning(
-                "labels/import: пропускаю запись %s — недопустимый source '%s'",
-                idx, source,
-            )
             skipped += 1
+            _add_sample(f"row {idx}: invalid source '{source}'")
+            log.warning("labels_import: row %s invalid source '%s'", idx, source)
             continue
 
         try:
@@ -621,23 +641,23 @@ def import_domain_labels(
             )
             imported += 1
         except Exception as exc:
-            log.error(
-                "labels/import: ошибка при записи %s/%s/%s: %s",
-                domain, query, geo, exc,
-            )
             errors += 1
+            _add_sample(f"row {idx}: db error for {domain}/{query}/{geo}: {exc}")
+            log.error(
+                "labels_import: db error row %s %s/%s/%s: %s",
+                idx, domain, query, geo, exc,
+            )
 
     log.info(
-        "labels/import: обработано %s, импортировано %s, пропущено %s, ошибок %s",
-        processed, imported, skipped, errors,
+        "labels_import: imported=%s skipped=%s errors=%s",
+        imported, skipped, errors,
     )
 
     return JSONResponse({
-        "status": "ok",
-        "processed": processed,
         "imported": imported,
         "skipped": skipped,
         "errors": errors,
+        "error_samples": error_samples,
     })
 
 

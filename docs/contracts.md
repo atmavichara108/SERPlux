@@ -82,13 +82,19 @@ Row = {
   не привязанная к меню. Эндпоинт идемпотентен и устойчив к битым записям.
 
 - **`POST /labels/import`**
-  **Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
-  **Тело:** массив объектов `{domain, query, geo, sentiment, source}`.
-  `source` по умолчанию `"manual_l1"`.
+  **Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>` (без токена — 401).
+  **Тело:** допускаются два формата:
+    - голый массив `[{domain, query, geo, sentiment, source}, ...]`;
+    - объект `{"labels": [...]}`.
+  `source` по умолчанию `"manual_l1"` (если не передан или пуст).
   **Поведение:**
-  - Идемпотентный upsert по PK `(domain, query, geo)`.
-  - Одна невалидная запись не прерывает обработку остального батча.
-  - Возвращает сводку: `processed`, `imported`, `skipped`, `errors`.
+  - Каждая запись импортируется через `storage.upsert_domain_label`, поэтому
+    работают правила приоритета `source` (`manual_l1` не перезаписывается
+    `snippet`/`page`) и идемпотентность по PK `(domain, query, geo)`.
+  - Битая запись не прерывает батч: увеличивается `skipped` (валидация) или
+    `errors` (ошибка БД), собираются первые ~5 сообщений в `error_samples`.
+  - Ответ HTTP 200 даже при частичных ошибках:
+    `{"imported": N, "skipped": N, "errors": N, "error_samples": [...]}`.
 
 - `_init_db(db_path: str = DB_PATH) -> None`
   — Создаёт таблицы: clients, positions, labels, domain_labels.
