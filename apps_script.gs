@@ -32,7 +32,7 @@
 var SETTINGS_SHEET_NAME = "Настройки";
 var LOG_SHEET_NAME = "Лог";
 var DEFAULT_DEPTH = 10;
-var DEFAULT_LABEL_MODE = "domains";
+var DEFAULT_LABEL_MODE = "auto";
 var DEFAULT_DATE = "today";
 var DEFAULT_REPORT_DATE = "latest";
 
@@ -44,7 +44,7 @@ var SETTINGS_TEMPLATE = [
   ["client_id",            "",         "ID клиента (например: client01). Выбрать из dropdown или обновить SERPlux → Настройки → [>] Обновить список клиентов"],
   ["depth",                "10",       "Глубина сбора: 10, 20, 50 или 100"],
   ["with_labels",          "true",     "Включить разметку: true или false"],
-  ["label_mode",           "auto",     "Режим разметки: auto, deep или domains/snippets/full"],
+  ["label_mode",           "auto",     "Режим разметки: auto (кэш+сниппет) или deep (страница)"],
   ["date",                 "today",    "Дата сбора: today или YYYY-MM-DD"],
   ["force_relabel",        "false",    "Принудительная переразметка: true или false"],
   ["force_rebuild_report", "false",    "Перестроить отчёт: true или false"],
@@ -264,12 +264,12 @@ function initSettingsSheet() {
       .build()
   );
 
-  // label_mode (строка 4): auto, deep, domains, snippets или full
+  // label_mode (строка 4): auto или deep
   sheet.getRange(4, 2).setDataValidation(
     SpreadsheetApp.newDataValidation()
-      .requireValueInList(["auto", "deep", "domains", "snippets", "full"], true)
+      .requireValueInList(["auto", "deep"], true)
       .setAllowInvalid(false)
-      .setHelpText("Режим разметки: auto, deep, domains, snippets или full")
+      .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
       .build()
   );
 
@@ -367,8 +367,7 @@ function _readSettings() {
         break;
       case "label_mode":
         var mode = String(val).trim().toLowerCase();
-        settings.labelMode = (mode === "domains" || mode === "snippets" || mode === "full")
-          ? mode : DEFAULT_LABEL_MODE;
+        settings.labelMode = (mode === "auto" || mode === "deep") ? mode : DEFAULT_LABEL_MODE;
         break;
       case "date":
         var rawDate = String(val).trim();
@@ -1241,17 +1240,16 @@ function labelOnlyForDate() {
   var modeResponse = ui.prompt(
     "Режим разметки",
     "Введите режим разметки:\n" +
-    "  domains — по справочнику доменов (без LLM)\n" +
-    "  snippets — по сниппетам (с LLM)\n" +
-    "  full — по полному тексту (v2, заглушка)\n\n" +
+    "  auto — кэш доменов + сниппет (с LLM)\n" +
+    "  deep — по содержимому страницы (v2, заглушка)\n\n" +
     "Текущий: " + settings.labelMode,
     ui.ButtonSet.OK_CANCEL
   );
   if (modeResponse.getSelectedButton() !== ui.Button.OK) return;
 
   var labelMode = modeResponse.getResponseText().trim() || settings.labelMode;
-  if (labelMode !== "domains" && labelMode !== "snippets" && labelMode !== "full") {
-    ui.alert("Ошибка", "Недопустимый режим: «" + labelMode + "».\nДопустимо: domains, snippets, full.", ui.ButtonSet.OK);
+  if (labelMode !== "auto" && labelMode !== "deep") {
+    ui.alert("Ошибка", "Недопустимый режим: «" + labelMode + "».\nДопустимо: auto, deep.", ui.ButtonSet.OK);
     return;
   }
 
