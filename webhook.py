@@ -38,13 +38,6 @@ app = FastAPI(title="SERPlux Webhook", version="1.0.0")
 
 # Глобальный флаг: не запускаем два прогона одновременно
 _run_lock = threading.Lock()
-_last_run: dict = {
-    "started_at": None,
-    "finished_at": None,
-    "status": "idle",
-    "message": "",
-    "client_id": None,
-}
 
 
 class RunRequest(BaseModel):
@@ -194,16 +187,35 @@ def _run_pipeline(
     label_only: bool = False,
 ) -> None:
     """Запускает полный пайплайн или только построение/разметку/сбор в фоновом потоке."""
-    global _last_run
-    _last_run["status"] = "running"
-    _last_run["message"] = ""
-    _last_run["client_id"] = client_id
-    _last_run["stats"] = None
+    started_at = datetime.now(timezone.utc).isoformat()
+    storage.update_run_status(
+        {
+            "status": "running",
+            "client_id": client_id,
+            "started_at": started_at,
+            "finished_at": None,
+            "message": "",
+            "stats": None,
+        },
+        db_path=storage.DB_PATH,
+    )
     log.info(
         "Фоновый прогон запущен: client_id=%s, label_mode=%s, force_relabel=%s, "
         "report_only=%s, label_only=%s, date=%s",
         client_id, label_mode, force_relabel, report_only, label_only, date,
     )
+
+    def _set_status(status: str, message: str, stats: dict | None = None) -> None:
+        """Атомарно фиксирует статус прогона в БД."""
+        storage.update_run_status(
+            {
+                "status": status,
+                "message": message,
+                "finished_at": datetime.now(timezone.utc).isoformat() if status in ("ok", "error") else None,
+                "stats": stats,
+            },
+            db_path=storage.DB_PATH,
+        )
 
     try:
         client = storage.get_client(client_id, storage.DB_PATH)
@@ -217,8 +229,7 @@ def _run_pipeline(
 
             build_report(date=date_arg, force=True, sheet_id=sheet_id,
                         client_id=client_id, db_path=storage.DB_PATH)
-            _last_run["status"] = "ok"
-            _last_run["message"] = "Отчёт построен успешно"
+            _set_status("ok", "Отчёт построен успешно")
             log.info("Отчёт построен успешно")
             return
 
@@ -256,9 +267,11 @@ def _run_pipeline(
 
             build_report(date=target_date, force=force_rebuild_report, sheet_id=sheet_id,
                         client_id=client_id, db_path=storage.DB_PATH)
-            _last_run["status"] = "ok"
-            _last_run["message"] = "Разметка завершена успешно"
-            _last_run["stats"] = {"collected": 0, "saved_new": 0, "labeled": len(labeled_rows), "exported": 0}
+            _set_status(
+                "ok",
+                "Разметка завершена успешно",
+                stats={"collected": 0, "saved_new": 0, "labeled": len(labeled_rows), "exported": 0},
+            )
             log.info("Разметка завершена успешно")
             return
 
@@ -288,24 +301,21 @@ def _run_pipeline(
         # Поддерживаем старый int и новый dict
         if isinstance(result, dict):
             exit_code = result.get("exit_code", 0)
-            _last_run["stats"] = result.get("stats")
+            stats = result.get("stats")
         else:
             exit_code = result
+            stats = None
 
         if exit_code == 0:
-            _last_run["status"] = "ok"
-            _last_run["message"] = "Прогон завершён успешно"
+            _set_status("ok", "Прогон завершён успешно", stats=stats)
             log.info("Прогон завершён успешно")
         else:
-            _last_run["status"] = "error"
-            _last_run["message"] = "Прогон завершился с ошибкой (exit_code=%d)" % exit_code
+            _set_status("error", "Прогон завершился с ошибкой (exit_code=%d)" % exit_code, stats=stats)
             log.error("Прогон завершился с ошибкой: exit_code=%d", exit_code)
     except Exception as e:
-        _last_run["status"] = "error"
-        _last_run["message"] = str(e)
+        _set_status("error", str(e))
         log.exception("Необработанное исключение в пайплайне: %s", e)
     finally:
-        _last_run["finished_at"] = datetime.now(timezone.utc).isoformat()
         _run_lock.release()
 
 
@@ -317,9 +327,9 @@ def health() -> JSONResponse:
 
 @app.get("/status")
 def run_status(authorization: str | None = Header(default=None)) -> JSONResponse:
-    """Возвращает статус последнего прогона."""
+    """Возвращает статус последнего прогона из БД."""
     _verify_token(authorization)
-    return JSONResponse(_last_run)
+    return JSONResponse(storage.get_run_status(db_path=storage.DB_PATH))
 
 
 @app.post("/run", status_code=status.HTTP_202_ACCEPTED)
@@ -345,12 +355,18 @@ def trigger_run(
             detail="Прогон уже выполняется, подождите завершения",
         )
 
-    _last_run["started_at"] = datetime.now(timezone.utc).isoformat()
-    _last_run["finished_at"] = None  # сбрасываем при старте нового прогона
-    _last_run["status"] = "starting"
-    _last_run["message"] = ""
-    _last_run["client_id"] = body.client_id
-    _last_run["stats"] = None
+    started_at = datetime.now(timezone.utc).isoformat()
+    storage.update_run_status(
+        {
+            "started_at": started_at,
+            "finished_at": None,
+            "status": "starting",
+            "message": "",
+            "client_id": body.client_id,
+            "stats": None,
+        },
+        db_path=storage.DB_PATH,
+    )
 
     thread = threading.Thread(
         target=_run_pipeline,
@@ -377,7 +393,7 @@ def trigger_run(
         body.regions_map, body.client_id, body.label_mode, body.force_relabel, body.report_only,
     )
     return JSONResponse(
-        {"accepted": True, "started_at": _last_run["started_at"], "client_id": body.client_id},
+        {"accepted": True, "started_at": started_at, "client_id": body.client_id},
         status_code=status.HTTP_202_ACCEPTED,
     )
 

@@ -202,10 +202,10 @@ def test_label_version_increments(init_db, sample_rows):
     """Повторная insert_labels создаёт новую версию для той же позиции."""
     storage.save(sample_rows, init_db)
 
-    labeled = [{**sample_rows[0], "sentiment": "positive", "label_mode": "snippets"}]
+    labeled = [{**sample_rows[0], "sentiment": "positive", "label_mode": "auto"}]
     assert storage.insert_labels(labeled, init_db) == 1
 
-    labeled2 = [{**sample_rows[0], "sentiment": "neutral", "label_mode": "snippets"}]
+    labeled2 = [{**sample_rows[0], "sentiment": "neutral", "label_mode": "auto"}]
     assert storage.insert_labels(labeled2, init_db) == 1
 
     conn = sqlite3.connect(init_db)
@@ -223,16 +223,16 @@ def test_label_version_independent_per_mode(init_db, sample_rows):
     storage.save(sample_rows, init_db)
 
     row = {**sample_rows[0], "sentiment": "positive"}
-    storage.insert_labels([{**row, "label_mode": "snippets"}], init_db)
-    storage.insert_labels([{**row, "label_mode": "domains"}], init_db)
-    storage.insert_labels([{**row, "label_mode": "snippets"}], init_db)
+    storage.insert_labels([{**row, "label_mode": "auto"}], init_db)
+    storage.insert_labels([{**row, "label_mode": "deep"}], init_db)
+    storage.insert_labels([{**row, "label_mode": "auto"}], init_db)
 
     conn = sqlite3.connect(init_db)
     try:
         rows = conn.execute(
             "SELECT label_mode, label_version FROM labels WHERE position_id = 1 ORDER BY label_mode, label_version"
         ).fetchall()
-        assert rows == [("domains", 1), ("snippets", 1), ("snippets", 2)]
+        assert rows == [("auto", 1), ("auto", 2), ("deep", 1)]
     finally:
         conn.close()
 
@@ -246,7 +246,7 @@ def test_insert_label_retry_on_race(init_db, sample_rows, monkeypatch):
     try:
         conn.execute(
             "INSERT INTO labels (position_id, client_id, label_mode, label_version, sentiment) VALUES (?, ?, ?, ?, ?)",
-            (1, "default", "snippets", 1, "positive")
+            (1, "default", "auto", 1, "positive")
         )
         conn.commit()
     finally:
@@ -264,7 +264,7 @@ def test_insert_label_retry_on_race(init_db, sample_rows, monkeypatch):
 
     monkeypatch.setattr(storage, "_next_label_version", fake_next_label_version)
 
-    labeled = [{**sample_rows[0], "sentiment": "negative", "label_mode": "snippets"}]
+    labeled = [{**sample_rows[0], "sentiment": "negative", "label_mode": "auto"}]
     inserted = storage.insert_labels(labeled, init_db)
 
     assert inserted == 1
@@ -288,8 +288,8 @@ def test_get_history_default_latest_label(init_db, sample_rows):
     storage.save(sample_rows, init_db)
 
     # Две версии для первой позиции
-    storage.insert_labels([{**sample_rows[0], "sentiment": "positive", "label_mode": "snippets"}], init_db)
-    storage.insert_labels([{**sample_rows[0], "sentiment": "neutral", "label_mode": "snippets"}], init_db)
+    storage.insert_labels([{**sample_rows[0], "sentiment": "positive", "label_mode": "auto"}], init_db)
+    storage.insert_labels([{**sample_rows[0], "sentiment": "neutral", "label_mode": "auto"}], init_db)
 
     history = storage.get_history(db_path=init_db)
     by_url = {r["url"]: r for r in history}
@@ -436,7 +436,7 @@ def test_atomic_retry_gives_up_after_three_attempts(init_db, sample_rows, monkey
     try:
         conn.execute(
             "INSERT INTO labels (position_id, client_id, label_mode, label_version, sentiment) VALUES (?, ?, ?, ?, ?)",
-            (1, "default", "snippets", 1, "positive")
+            (1, "default", "auto", 1, "positive")
         )
         conn.commit()
     finally:
@@ -445,7 +445,7 @@ def test_atomic_retry_gives_up_after_three_attempts(init_db, sample_rows, monkey
     # Всегда возвращаем занятую версию
     monkeypatch.setattr(storage, "_next_label_version", lambda conn, pid, mode: 1)
 
-    labeled = [{**sample_rows[0], "sentiment": "negative", "label_mode": "snippets"}]
+    labeled = [{**sample_rows[0], "sentiment": "negative", "label_mode": "auto"}]
     inserted = storage.insert_labels(labeled, init_db)
 
     assert inserted == 0
@@ -465,7 +465,7 @@ def test_concurrent_inserts_do_not_corrupt_db(init_db, sample_rows):
 
     def worker(sentiment):
         try:
-            rows = [{**sample_rows[0], "sentiment": sentiment, "label_mode": "snippets"}]
+            rows = [{**sample_rows[0], "sentiment": sentiment, "label_mode": "auto"}]
             storage.insert_labels(rows, init_db)
         except Exception as e:
             errors.append(e)

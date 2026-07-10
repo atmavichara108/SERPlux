@@ -13,20 +13,17 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+import storage
 import webhook
 
 
 @pytest.fixture(autouse=True)
-def reset_state(monkeypatch):
-    """Сбрасываем глобальное состояние и задаём тестовый секрет."""
+def reset_state(monkeypatch, tmp_path):
+    """Сбрасываем глобальное состояние, инициализируем тестовую БД и задаём секрет."""
     monkeypatch.setenv("WEBHOOK_SECRET", "test-secret")
-    webhook._last_run = {
-        "started_at": None,
-        "finished_at": None,
-        "status": "idle",
-        "message": "",
-        "client_id": None,
-    }
+    db_path = str(tmp_path / "webhook_test.db")
+    monkeypatch.setattr(storage, "DB_PATH", db_path)
+    storage._init_db(db_path)
     if webhook._run_lock.locked():
         webhook._run_lock.release()
 
@@ -173,7 +170,7 @@ class TestRunEndpoint:
             for r in rows:
                 r["sentiment"] = "positive"
                 r["label"] = "positive"
-                r["label_mode"] = kwargs.get("label_mode", "snippets")
+                r["label_mode"] = kwargs.get("label_mode", "auto")
                 r["client_id"] = kwargs.get("client_id", "default")
                 r["confidence"] = "high"
             return rows
@@ -195,7 +192,7 @@ class TestRunEndpoint:
                 with_labels=True,
                 depth=10,
                 client_id="acme",
-                label_mode="snippets",
+                label_mode="auto",
                 force_relabel=False,
                 label_only=True,
                 date="2026-07-01",
@@ -525,7 +522,7 @@ class TestReportOnly:
         )
         assert resp.status_code == 202
         # Вызываем пайплайн синхронно для проверки
-        webhook._run_pipeline("map.json", True, 10, "default", "domains", False, True, "2026-07-01")
+        webhook._run_pipeline("map.json", True, 10, "default", "auto", False, True, "2026-07-01")
         assert collector_called["value"] is False
         assert reporter_called["value"] is True
 
@@ -546,7 +543,7 @@ class TestReportOnly:
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 202
-        webhook._run_pipeline("map.json", True, 10, "default", "domains", False, False, "latest")
+        webhook._run_pipeline("map.json", True, 10, "default", "auto", False, False, "latest")
         assert collector_called["value"] is True
 
 
@@ -554,15 +551,17 @@ class TestStatusExtendedFields:
     """Тесты расширенных полей GET /status (finished_at, client_id)."""
 
     def test_status_returns_finished_at_and_client_id(self, client):
-        """GET /status возвращает finished_at и client_id."""
-        # Устанавливаем тестовое состояние
-        webhook._last_run = {
-            "started_at": "2026-07-01T10:00:00Z",
-            "finished_at": "2026-07-01T10:05:00Z",
-            "status": "ok",
-            "message": "Прогон завершён успешно",
-            "client_id": "acme",
-        }
+        """GET /status возвращает finished_at и client_id из БД."""
+        storage.update_run_status(
+            {
+                "started_at": "2026-07-01T10:00:00Z",
+                "finished_at": "2026-07-01T10:05:00Z",
+                "status": "ok",
+                "message": "Прогон завершён успешно",
+                "client_id": "acme",
+            },
+            db_path=storage.DB_PATH,
+        )
 
         resp = client.get("/status", headers={"Authorization": "Bearer test-secret"})
         assert resp.status_code == 200
@@ -572,13 +571,16 @@ class TestStatusExtendedFields:
 
     def test_status_finished_at_null_during_run(self, client):
         """Во время прогона finished_at=null."""
-        webhook._last_run = {
-            "started_at": "2026-07-01T10:00:00Z",
-            "finished_at": None,
-            "status": "running",
-            "message": "",
-            "client_id": "acme",
-        }
+        storage.update_run_status(
+            {
+                "started_at": "2026-07-01T10:00:00Z",
+                "finished_at": None,
+                "status": "running",
+                "message": "",
+                "client_id": "acme",
+            },
+            db_path=storage.DB_PATH,
+        )
 
         resp = client.get("/status", headers={"Authorization": "Bearer test-secret"})
         assert resp.status_code == 200
@@ -587,14 +589,16 @@ class TestStatusExtendedFields:
         assert body["status"] == "running"
 
     def test_status_client_id_from_run_request(self, client, pipeline_spy):
-        """POST /run сохраняет client_id в _last_run."""
+        """POST /run сохраняет client_id в run_status БД."""
         resp = client.post(
             "/run",
             json={"client_id": "test-client"},
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 202
-        assert webhook._last_run["client_id"] == "test-client"
+        status = storage.get_run_status(db_path=storage.DB_PATH)
+        assert status["client_id"] == "test-client"
+        assert status["status"] == "starting"
 
     def test_status_initial_state_has_null_finished_at(self, client):
         """В начальном состоянии finished_at=null."""
@@ -604,6 +608,70 @@ class TestStatusExtendedFields:
         assert body["finished_at"] is None
         assert body["client_id"] is None
         assert body["status"] == "idle"
+
+
+class TestRunStatusPersistence:
+    """Тесты персистентности статуса прогона в БД."""
+
+    def test_run_pipeline_persists_ok_status(self, monkeypatch, client_db):
+        """После успешного прогона run_status в БД = ok."""
+        import main
+
+        storage.create_client("acme", "Acme Corp", db_path=client_db)
+        monkeypatch.setattr(storage, "DB_PATH", client_db)
+
+        monkeypatch.setattr(main, "run", lambda config: {"exit_code": 0, "stats": {"collected": 5}})
+
+        webhook._run_lock.acquire()
+        try:
+            webhook._run_pipeline(
+                regions_map="map.json",
+                with_labels=True,
+                depth=10,
+                client_id="acme",
+                label_mode="auto",
+                force_relabel=False,
+            )
+        finally:
+            if webhook._run_lock.locked():
+                webhook._run_lock.release()
+
+        status = storage.get_run_status(db_path=client_db)
+        assert status["status"] == "ok"
+        assert status["client_id"] == "acme"
+        assert status["stats"] == {"collected": 5}
+        assert status["finished_at"] is not None
+
+    def test_run_pipeline_persists_error_status(self, monkeypatch, client_db):
+        """При падении прогона run_status в БД = error."""
+        import main
+
+        storage.create_client("acme", "Acme Corp", db_path=client_db)
+        monkeypatch.setattr(storage, "DB_PATH", client_db)
+
+        def boom(config):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(main, "run", boom)
+
+        webhook._run_lock.acquire()
+        try:
+            webhook._run_pipeline(
+                regions_map="map.json",
+                with_labels=True,
+                depth=10,
+                client_id="acme",
+                label_mode="auto",
+                force_relabel=False,
+            )
+        finally:
+            if webhook._run_lock.locked():
+                webhook._run_lock.release()
+
+        status = storage.get_run_status(db_path=client_db)
+        assert status["status"] == "error"
+        assert "boom" in status["message"]
+        assert status["finished_at"] is not None
 
 
 class TestClientProfilePipeline:
@@ -700,7 +768,7 @@ class TestClientProfilePipeline:
                 with_labels=True,
                 depth=10,
                 client_id="acme",
-                label_mode="domains",
+                label_mode="auto",
                 force_relabel=False,
             )
         finally:

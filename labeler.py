@@ -154,6 +154,8 @@ def _label_group_auto(
     for row in group_rows:
         row["label_mode"] = "auto"
         row["client_id"] = client_id
+        # confidence будет переопределён ниже: high для успешного LLM,
+        # uncertain для пустого сниппета / ошибки провайдера
         row["confidence"] = "high"
 
         domain = row.get("domain")
@@ -171,12 +173,13 @@ def _label_group_auto(
                 result.append(row)
                 continue
 
-        # Шаг 2: Если сниппет пуст — ставим neutral
+        # Шаг 2: Если сниппет пуст — ставим neutral (маркер неуверенности)
         if not snippet or not snippet.strip():
             log.warning("AUTO: пустой сниппет для url=%s query='%s', ставлю neutral",
                         row.get("url", "—"), query)
             row["sentiment"] = "neutral"
             row["label"] = "neutral"
+            row["confidence"] = "uncertain"
             stats["snippet_fallback_neutral"] += 1
             # Сохраняем в кэш (источник snippet — нейтральный фоллбэк)
             if domain:
@@ -201,6 +204,7 @@ def _label_group_auto(
             log.warning("AUTO: ошибка провайдера для url=%s query='%s', ставлю neutral",
                         row.get("url", "—"), query)
             sentiment = "neutral"
+            row["confidence"] = "uncertain"
             stats["provider_error"] += 1
         else:
             stats["snippet_success"] += 1

@@ -18,6 +18,10 @@ def _get_project_id(config: dict[str, Any]) -> int:
     """project_id из config['project_id'], fallback на env/get_project_id()."""
     if config.get("project_id") is not None:
         return int(config["project_id"])
+    log.warning(
+        "TOPVISOR_PROJECT_ID взят из env (fallback); "
+        "рекомендуется задать project_id в профиле клиента"
+    )
     return get_project_id()
 
 log = config.setup_logging(__name__)

@@ -644,6 +644,21 @@ REGIONS_MAP=regions_map.json
   - Упоминания `domains`/`snippets`/`full` в `apps_script.gs` отсутствуют.
   - Коммит: `fix(ui): resilient initSettingsSheet — always builds sheet, no fatal throw (release fallback)`
 
+## 2026-07-10 — Pre-release аудит кода
+- **Аудит:** `docs/audit_2026-07-10.md` — полный разбор дефектов, системных проверок и tech debt.
+- **Исправлено:**
+  - `run_status` персистентен в БД (таблица `run_status` + `get/update_run_status`), `/status` читает из БД.
+  - `exporter.py` / `reporter.py`: HTTP-таймаут `(10, 60)` для Google Sheets API.
+  - `labeler.py`: neutral fallback теперь имеет `confidence='uncertain'`.
+  - `labels.label_mode`: `CHECK` constraint и `LABEL_MODES` приведены в соответствие с контрактом (`auto`/`deep`).
+  - `main.py`: дефолт `label_mode='auto'`.
+  - `collector.py`: `WARNING` при использовании env-fallback `TOPVISOR_PROJECT_ID`.
+  - Создан `openapi.json` из FastAPI.
+  - `verify.sh` проверяет таблицу `run_status`.
+- **Тесты:** 213/213 passed (`tests/test_exporter.py`, `TestRunStatusPersistence` + обновления).
+- **Документация:** обновлены `docs/techdebt.md`, `docs/audit_2026-07-10.md`.
+- **Tech debt:** watchdog для зависших прогонов (P0), CRUD `/providers` (P1), таймаут `UrlFetchApp` (P2).
+
 ## Дальше
 - Первый тестовый прогон на боевом сервере после миграции БД.
 - Проверка режимов `auto` и `deep` в labeler на реальных данных.

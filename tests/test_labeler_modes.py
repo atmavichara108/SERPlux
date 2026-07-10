@@ -74,7 +74,7 @@ def test_auto_mode_cache_hit_from_domain_labels(init_db, sample_row, monkeypatch
 
 
 def test_auto_mode_snippet_fallback_to_neutral_on_empty_snippet(init_db, sample_row, monkeypatch):
-    """AUTO режим: пустой сниппет → neutral (без LLM вызова)."""
+    """AUTO режим: пустой сниппет → neutral с confidence='uncertain' (без LLM вызова)."""
     sample_row["snippet"] = ""  # Пустой сниппет
 
     monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "positive")
@@ -86,11 +86,12 @@ def test_auto_mode_snippet_fallback_to_neutral_on_empty_snippet(init_db, sample_
     labeled = result[0]
     assert labeled["sentiment"] == "neutral"
     assert labeled["label"] == "neutral"
+    assert labeled["confidence"] == "uncertain"
     assert labeled["label_mode"] == "auto"
 
 
 def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample_row, monkeypatch):
-    """AUTO режим: ошибка провайдера → neutral."""
+    """AUTO режим: ошибка провайдера → neutral с confidence='uncertain'."""
     monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: None)
 
     rows = [sample_row]
@@ -100,6 +101,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample
     labeled = result[0]
     assert labeled["sentiment"] == "neutral"
     assert labeled["label"] == "neutral"
+    assert labeled["confidence"] == "uncertain"
 
 
 def test_auto_mode_snippet_success_and_saves_to_domain_labels(init_db, sample_row, monkeypatch):

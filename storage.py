@@ -12,8 +12,10 @@ DB_PATH = os.environ.get("DB_PATH", "serplux.db")
 
 Row = dict[str, Any]
 
-# Допустимые режимы разметки (должны совпадать с CHECK в БД)
-LABEL_MODES = {"domains", "snippets", "full"}
+# Допустимые режимы разметки (должны совпадать с CHECK в БД).
+# auto/deep — актуальные режимы labeler.py; domains/snippets/full оставлены
+# для обратной совместимости со старыми метками в БД.
+LABEL_MODES = {"auto", "deep", "domains", "snippets", "full"}
 
 # Допустимые значения тональности (должны совпадать с CHECK в БД)
 SENTIMENTS = {"positive", "negative", "neutral"}
@@ -114,13 +116,31 @@ def _init_db(db_path: str = DB_PATH) -> None:
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 position_id    INTEGER NOT NULL REFERENCES positions(id) ON DELETE CASCADE,
                 client_id      TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
-                label_mode     TEXT NOT NULL CHECK(label_mode IN ('domains','snippets','full')),
+                label_mode     TEXT NOT NULL CHECK(label_mode IN ('auto','deep','domains','snippets','full')),
                 label_version  INTEGER NOT NULL,
                 sentiment      TEXT CHECK(sentiment IN ('positive','negative','neutral')),
                 confidence     TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high',
                 created_at     TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(position_id, label_mode, label_version)
             )
+        """)
+
+        # Статус последнего прогона (персистентный, переживает рестарт контейнера)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS run_status (
+                id            INTEGER PRIMARY KEY CHECK(id = 1),
+                started_at    TEXT,
+                finished_at   TEXT,
+                status        TEXT NOT NULL DEFAULT 'idle',
+                client_id     TEXT,
+                stats         TEXT,
+                message       TEXT DEFAULT '',
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO run_status (id, status)
+            VALUES (1, 'idle')
         """)
 
         # Справочник размеченных доменов (источник истины для режима domains).
@@ -651,6 +671,80 @@ def bulk_upsert_domain_labels(
                        updated_at = datetime('now')""",
                 (domain, query, geo, sentiment, source),
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ─── Управление статусом прогона ──────────────────────────────────────────────
+
+
+def get_run_status(db_path: str = DB_PATH) -> dict:
+    """
+    Возвращает последний статус прогона из таблицы run_status.
+    Поле stats десериализуется из JSON.
+    """
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute(
+            """SELECT started_at, finished_at, status, client_id, stats, message
+               FROM run_status WHERE id = 1"""
+        ).fetchone()
+        if row is None:
+            return {
+                "started_at": None,
+                "finished_at": None,
+                "status": "idle",
+                "client_id": None,
+                "stats": None,
+                "message": "",
+            }
+        result = dict(row)
+        stats = result.get("stats")
+        if isinstance(stats, str) and stats:
+            try:
+                result["stats"] = _json.loads(stats)
+            except (ValueError, TypeError):
+                result["stats"] = None
+        return result
+    finally:
+        conn.close()
+
+
+def update_run_status(fields: dict, db_path: str = DB_PATH) -> None:
+    """
+    Атомарно обновляет поля статуса прогона (id=1).
+    Допустимые поля: started_at, finished_at, status, client_id, stats, message.
+    stats может быть dict/list — будет сериализован в JSON.
+    """
+    allowed = {"started_at", "finished_at", "status", "client_id", "stats", "message"}
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"Недопустимые поля run_status: {', '.join(sorted(unknown))}")
+
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        values = {}
+        for key, value in fields.items():
+            if key == "stats" and not isinstance(value, (str, type(None))):
+                values[key] = _json.dumps(value, ensure_ascii=False)
+            else:
+                values[key] = value
+
+        if not values:
+            return
+
+        set_clause = ", ".join(f"{col} = ?" for col in values)
+        params = list(values.values())
+        params.append(1)  # id
+        conn.execute(
+            f"""UPDATE run_status
+                SET {set_clause}, updated_at = datetime('now')
+                WHERE id = ?""",
+            params,
+        )
         conn.commit()
     finally:
         conn.close()

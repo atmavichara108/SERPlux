@@ -71,7 +71,7 @@ class TestMainPipelineParams:
             {
                 "with_labels": True,
                 "client_id": "acme",
-                "label_mode": "snippets",
+                "label_mode": "auto",
                 "force_relabel": True,
                 "provider_chain": "zen",
             }
@@ -81,7 +81,7 @@ class TestMainPipelineParams:
         assert label_spy.call_args.args[0] == sample_rows
         kwargs = label_spy.call_args.kwargs
         assert kwargs["client_id"] == "acme"
-        assert kwargs["label_mode"] == "snippets"
+        assert kwargs["label_mode"] == "auto"
         assert kwargs["force_relabel"] is True
         assert kwargs["provider_chain"] == "zen"
 
@@ -92,7 +92,7 @@ class TestMainPipelineParams:
         assert result["exit_code"] == 0
         kwargs = label_spy.call_args.kwargs
         assert kwargs["client_id"] == "default"
-        assert kwargs["label_mode"] == "domains"
+        assert kwargs["label_mode"] == "auto"
         assert kwargs["force_relabel"] is False
 
     def test_run_with_labels_false_skips_label(self, mock_pipeline):

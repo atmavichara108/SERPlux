@@ -124,7 +124,7 @@ def _create_new_schema(conn: sqlite3.Connection) -> None:
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             position_id    INTEGER NOT NULL REFERENCES positions(id) ON DELETE CASCADE,
             client_id      TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
-            label_mode     TEXT NOT NULL CHECK(label_mode IN ('domains','snippets','full')),
+                label_mode     TEXT NOT NULL CHECK(label_mode IN ('auto','deep','domains','snippets','full')),
             label_version  INTEGER NOT NULL,
             sentiment      TEXT CHECK(sentiment IN ('positive','negative','neutral')),
             confidence     TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high',
@@ -193,6 +193,60 @@ def _apply_schema_patches(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_domain_query ON domain_labels(domain, query)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_geo ON domain_labels(geo)")
 
+    # Персистентный статус прогона (singleton, id=1)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS run_status (
+            id            INTEGER PRIMARY KEY CHECK(id = 1),
+            started_at    TEXT,
+            finished_at   TEXT,
+            status        TEXT NOT NULL DEFAULT 'idle',
+            client_id     TEXT,
+            stats         TEXT,
+            message       TEXT DEFAULT '',
+            updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("INSERT OR IGNORE INTO run_status (id, status) VALUES (1, 'idle')")
+
+    # Обновление CHECK constraint labels для режимов auto/deep
+    create_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='labels'"
+    ).fetchone()
+    if create_sql_row and "'auto'" not in create_sql_row[0]:
+        log.warning("labels: обнаружен устаревший CHECK(label_mode), пересоздаю таблицу")
+        conn.execute("ALTER TABLE labels RENAME TO labels_old")
+        conn.execute("""
+            CREATE TABLE labels (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id    INTEGER NOT NULL REFERENCES positions(id) ON DELETE CASCADE,
+                client_id      TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+                label_mode     TEXT NOT NULL CHECK(label_mode IN ('auto','deep','domains','snippets','full')),
+                label_version  INTEGER NOT NULL,
+                sentiment      TEXT CHECK(sentiment IN ('positive','negative','neutral')),
+                confidence     TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high',
+                created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(position_id, label_mode, label_version)
+            )
+        """)
+        # Копируем только те колонки, которые реально есть в labels_old
+        old_cols = {row[1] for row in conn.execute("PRAGMA table_info(labels_old)").fetchall()}
+        new_cols = ["position_id", "client_id", "label_mode", "label_version", "sentiment"]
+        if "confidence" in old_cols:
+            new_cols.append("confidence")
+        if "created_at" in old_cols:
+            new_cols.append("created_at")
+        if "id" in old_cols:
+            new_cols.insert(0, "id")
+        src_cols = ", ".join(new_cols)
+        conn.execute(f"""
+            INSERT INTO labels ({src_cols})
+            SELECT {src_cols} FROM labels_old
+        """)
+        conn.execute("DROP TABLE labels_old")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_position ON labels(position_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_client_mode ON labels(client_id, label_mode)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_latest ON labels(position_id, label_mode, label_version DESC)")
+
 
 def _migrate_results_to_positions(conn: sqlite3.Connection) -> int:
     """Переносит строки из results в positions. Возвращает количество перенесённых."""
@@ -245,6 +299,14 @@ def _verify_schema(conn: sqlite3.Connection) -> None:
         raise RuntimeError("Схема не доведена: таблица domain_labels отсутствует")
     if "confidence" not in label_cols:
         raise RuntimeError("Схема не доведена: колонка labels.confidence отсутствует")
+    if not _table_exists(conn, "run_status"):
+        raise RuntimeError("Схема не доведена: таблица run_status отсутствует")
+
+    create_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='labels'"
+    ).fetchone()
+    if create_sql_row and "'auto'" not in create_sql_row[0]:
+        raise RuntimeError("Схема не доведена: labels.label_mode не поддерживает auto/deep")
 
     client_cols = {row[1] for row in conn.execute("PRAGMA table_info(clients)").fetchall()}
     for col in ("searchers", "geos", "regions_map", "queries"):

@@ -36,6 +36,8 @@ def _get_sheet(sheet_id: str | None = None):
 
     try:
         gc = gspread.service_account(filename=credentials_path)
+        # Таймаут на все HTTP-вызовы Google API (connect, read) — защита от зависания
+        gc.http_client.timeout = (10, 60)
         spreadsheet = gc.open_by_key(sheet_id)
         worksheet = spreadsheet.sheet1
         return worksheet

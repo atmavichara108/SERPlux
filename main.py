@@ -49,7 +49,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     log.info("Параметры: %s", config)
 
     client_id = config.get("client_id", "default")
-    label_mode = config.get("label_mode", "domains")
+    label_mode = config.get("label_mode", "auto")
     force_relabel = config.get("force_relabel", False)
     sheet_id = config.get("sheet_id")
     force_rebuild_report = config.get("force_rebuild_report", False)

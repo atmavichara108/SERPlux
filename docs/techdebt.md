@@ -5,7 +5,67 @@
 
 ---
 
+## Критичный приоритет (P0)
+
+### 2026-07-10 — Watchdog для зависших прогонов
+
+**Проблема:** Нет фонового наблюдателя, который помечал бы прогон в `running` без обновления более N часов как `stalled`/`error`. При зависании внешнего вызова (Google Sheets, Topvisor, LLM) статус может оставаться `running` бесконечно, даже после перезапуска контейнера.
+
+**Где:** `webhook.py` — теперь статус персистентен, но нет логики устаревания.
+
+**Влияние:** Оператор видит "прогон выполняется" в течение многих часов; невозможно отличить реальный длительный прогон от зависшего.
+
+**Статус:** Отложено. Для релиза v1 статус переживает рестарт и обновляется атомарно; watchdog добавить в v1.1.
+
+**Что делать:**
+- Добавить фоновый поток или cron-триггер, который раз в 15 минут проверяет `run_status.updated_at`.
+- Если `status='running'` и `updated_at` старше порога (например, 2 часа), переводить в `stalled`/`error` с сообщением "прогон завис".
+- Дать API/меню возможность сбросить статус вручную.
+
+---
+
 ## Высокий приоритет (влияет на мультиклиентность и корректность)
+
+### 2026-07-10 — `label_mode` в БД не соответствовал контракту
+
+**Статус:** ✔ Исправлено в ходе аудита.
+
+`webhook.py`/`labeler.py` работали с `"auto"`/`"deep"`, а `CHECK` constraint в `labels.label_mode` допускал только `"domains"/"snippets"/"full"`. Новые метки не сохранялись бы в БД.
+
+**Исправление:**
+- `storage.py`: `LABEL_MODES` и `CHECK` расширены до `"auto","deep","domains","snippets","full"`.
+- `migrate.py`: пересоздаёт `labels` при устаревшем `CHECK`.
+- `main.py`: дефолт `label_mode` = `"auto"`.
+
+---
+
+### 2026-07-10 — `neutral` fallback всегда имел `confidence='high'`
+
+**Статус:** ✔ Исправлено в ходе аудита.
+
+Пустой сниппет и ошибка провайдера проставляли `sentiment='neutral'`, но `confidence` оставался `'high'`, что противоречит контракту (`contracts.md`: neutral — маркер неуверенности → `confidence='uncertain'`).
+
+**Исправление:** `labeler.py::_label_group_auto()` теперь ставит `confidence='uncertain'` для neutral fallback.
+
+---
+
+### 2026-07-10 — `run_status` терялся при рестарте контейнера
+
+**Статус:** ✔ Исправлено в ходе аудита.
+
+Глобальный `_last_run` в `webhook.py` не переживал рестарт. Добавлена таблица `run_status` и функции `get_run_status()` / `update_run_status()`. `/status` читает из БД.
+
+---
+
+### 2026-07-10 — Экспорт в Google Sheets без HTTP-таймаута
+
+**Статус:** ✔ Исправлено в ходе аудита.
+
+`exporter.py` и `reporter.py` вызывали `gspread` без `timeout`. При зависании Google API прогон зависал.
+
+**Исправление:** `gc.http_client.timeout = (10, 60)` в `_get_sheet()` и `_get_spreadsheet()`.
+
+---
 
 ### 2026-07-07 — Default `db_path` в `storage.py` захвачен при импорте
 
@@ -84,19 +144,11 @@
 
 ### 2026-07-04 — /status не отдаёт stats (provider_used, collected, cost_estimate)
 
-**Проблема:** UI (apps_script.gs → `checkStatus()`) ожидает `stats` в ответе GET /status
-(collected, saved_new, labeled, exported, provider_used, cost_estimate, fallback_triggered).
-Фактический `_last_run` в webhook.py содержит только `{started_at, finished_at, status, message, client_id}`.
-UI работает через defensive-доступ (`stats?.provider_used ?? '—'`), но статистика не отображается.
+**Статус:** ✔ Исправлено в ходе аудита 2026-07-10.
 
-**Где:** `webhook.py:37-43` (_last_run), `webhook.py:95-143` (_run_pipeline)
+Статус прогона теперь хранится в таблице `run_status`, поле `stats` JSON сохраняется из результата `main.run()` и из `label_only`. `GET /status` отдаёт `stats` целиком.
 
-**Статус:** `finished_at` и `client_id` реализованы (2026-07-04). Остальные поля stats отложены.
-
-**Что делать:** Расширить `_last_run` полем `stats: dict`. В `_run_pipeline()` собирать
-статистику из результатов `save()`, `labeler.label()`, `exporter.export()` и записывать
-в `_last_run["stats"]`. Записать `provider_used` из labeler (какой провайдер фактически
-использовался). Требует рефакторинга `_run_pipeline()` для возврата статистики из `main.run()`.
+**Что делать:** В будущем добавить `provider_used` и `cost_estimate` из `labeler.py` при появлении нескольких провайдеров.
 
 ---
 
@@ -118,20 +170,24 @@ POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: пров
 
 ### 2026-07-02 — date, force_rebuild_report, provider_chain не принимаются в /run
 
-**Проблема:** docs/ui-spec.md §5.2 описывает целевой контракт `/run` с полями `date`,
-`force_rebuild_report`, `provider_chain`. Фактический webhook.py принимает
-`client_id`, `label_mode`, `force_relabel`, `report_only`, `report_date` (реализовано),
-но НЕ принимает `date`, `force_rebuild_report`, `provider_chain`. apps_script.gs читает
-эти ключи из листа «Настройки», но сервер их проигнорирует.
+**Статус:** ✔ Исправлено ранее.
 
-**Где:** `webhook.py:40-58` (RunRequest), `apps_script.gs` → `runCollection()` (payload)
+`RunRequest` и `_run_pipeline` поддерживают `date`, `force_rebuild_report`, `provider_chain`.
 
-**Статус:** `report_only` и `report_date` реализованы (2026-07-04).
-Остальные поля (`date`, `force_rebuild_report`, `provider_chain`) отложены.
+---
 
-**Что делать:** Расширить `RunRequest` полями `date`, `force_rebuild_report`,
-`provider_chain`. Требует доработки collector.py (передача date), reporter.py
-(force_rebuild_report), labeler.py (provider_chain).
+### 2026-07-10 — Отсутствие watchdog для зависших прогонов
+
+**Проблема:** Нет фонового наблюдателя, который помечал бы прогон в `running` без обновления более N часов как `stalled`/`error`. Статус теперь персистентен, но сам не устаревает.
+
+**Где:** `webhook.py`, `storage.py::run_status`.
+
+**Влияние:** При зависании внешнего вызова оператор видит "прогон выполняется" часами.
+
+**Что делать:**
+- Фоновый поток / cron, проверяющий `run_status.updated_at`.
+- Перевод в `stalled`/`error` при отсутствии обновлений > порога.
+- Ручной сброс статуса через API/меню.
 
 ---
 
@@ -184,6 +240,22 @@ POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: пров
 
 ---
 
+### 2026-07-10 — Отсутствовал `openapi.json`
+
+**Статус:** ✔ Исправлено в ходе аудита.
+
+В репозитории не было `openapi.json`, что затрудняло сверку контрактов и аутентификации роутов. Сгенерирован из FastAPI `app.openapi()`.
+
+---
+
+### 2026-07-10 — `TOPVISOR_PROJECT_ID` env-fallback остаётся
+
+**Статус:** ✔ Частично исправлено в ходе аудита.
+
+Добавлен `WARNING` в `collector.py::_get_project_id()` при использовании env-fallback. Рекомендуется хранить `project_id` в профиле клиента и со временем удалить fallback.
+
+---
+
 ### 2026-07-03 — Deprecation warning httpx/starlette в тестах
 
 **Проблема:** `test_webhook.py` выдаёт `StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead`. Не влияет на функциональность, но засоряет вывод pytest и может стать загадкой при обновлении зависимостей.
@@ -191,6 +263,16 @@ POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: пров
 **Где:** `tests/test_webhook.py` (через `fastapi.testclient`), `requirements.txt` / `requirements-dev.txt`
 
 **Что делать:** Обновить `httpx` до `httpx2` (или обновить `starlette`/`fastapi` до версии, где warning убран). Проверить совместимость с `TestClient`.
+
+---
+
+### 2026-07-10 — Таймаут `UrlFetchApp.fetch` в Apps Script
+
+**Проблема:** `_request()` в `apps_script.gs` использует `muteHttpExceptions: true`, но не задаёт явный таймаут. `UrlFetchApp.fetch` по умолчанию ждёт 60 с, что при недоступном webhook даёт длительное зависание UI.
+
+**Где:** `apps_script.gs::_request()`.
+
+**Что делать:** Добавить retry-обёртку и/или обрабатывать таймаут через `UrlFetchApp` limits. Возможно, разбить на синхронный запуск + асинхронный poll статуса.
 
 ---
 
