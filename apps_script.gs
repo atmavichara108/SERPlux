@@ -1943,3 +1943,156 @@ function _getSecret() {
 function _getWebhookUrl() {
   return PropertiesService.getScriptProperties().getProperty("WEBHOOK_URL") || "";
 }
+
+// ─── Разовый импорт эталона (НЕ в меню, запускать вручную через Run) ──────────
+
+var ETALON_SHEET_NAME = "Эталон разметки";
+var IMPORT_BATCH_SIZE = 100;
+var VALID_ETALON_SENTIMENTS = ["positive", "negative", "neutral"];
+
+/**
+ * Разовый импорт эталонной разметки из листа «Эталон разметки» в БД domain_labels.
+ *
+ * Запуск: в редакторе Apps Script выбрать функцию importEtalonToDb() → Run.
+ * НЕ добавляется в меню onOpen и не вызывается автоматически.
+ *
+ * Ожидаемые колонки (первая строка): domain, query, geo, sentiment.
+ * Если колонки не распознаны — логирует заголовки и останавливается.
+ * Отправляет батчами по 100 строк на POST /labels/import.
+ * Битые записи и ошибки батча не прерывают импорт остальных записей.
+ */
+function importEtalonToDb() {
+  var ui = SpreadsheetApp.getUi();
+
+  var secret = _getSecret();
+  if (!secret) {
+    var msg = "Секрет не задан. Запустите SERPlux → Настройки → Установить секрет.";
+    Logger.log("importEtalonToDb: " + msg);
+    ui.alert("Ошибка", msg, ui.ButtonSet.OK);
+    return;
+  }
+
+  var webhookUrl = _getWebhookUrl();
+  if (!webhookUrl) {
+    var msg = "URL сервера не задан. Запустите SERPlux → Настройки → Установить URL сервера.";
+    Logger.log("importEtalonToDb: " + msg);
+    ui.alert("Ошибка", msg, ui.ButtonSet.OK);
+    return;
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(ETALON_SHEET_NAME);
+  if (!sheet) {
+    Logger.log("importEtalonToDb: лист '" + ETALON_SHEET_NAME + "' не найден");
+    ui.alert("Ошибка", "Лист «" + ETALON_SHEET_NAME + "» не найден.", ui.ButtonSet.OK);
+    return;
+  }
+
+  var values = sheet.getDataRange().getValues();
+  if (!values || values.length < 2) {
+    Logger.log("importEtalonToDb: лист '" + ETALON_SHEET_NAME + "' пуст или содержит только заголовки");
+    ui.alert("Ошибка", "Лист «" + ETALON_SHEET_NAME + "» пуст.", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Распознаём заголовки
+  var headers = values[0].map(function (h) { return String(h).trim().toLowerCase(); });
+  Logger.log("importEtalonToDb: заголовки листа '" + ETALON_SHEET_NAME + "': " + JSON.stringify(headers));
+
+  var colMap = {};
+  for (var i = 0; i < headers.length; i++) {
+    colMap[headers[i]] = i;
+  }
+
+  var required = ["domain", "query", "geo", "sentiment"];
+  var missing = required.filter(function (k) { return !(k in colMap); });
+  if (missing.length > 0) {
+    var err = "Не удалось определить обязательные колонки: " + missing.join(", ") +
+              ". Найдены заголовки: " + JSON.stringify(headers);
+    Logger.log("importEtalonToDb: " + err);
+    ui.alert("Ошибка маппинга колонок", err, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Собираем записи
+  var labels = [];
+  var localSkipped = 0;
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var domain = String(row[colMap["domain"]] || "").trim().toLowerCase();
+    var query = String(row[colMap["query"]] || "").trim().toLowerCase();
+    var geo = String(row[colMap["geo"]] || "").trim();
+    var sentiment = String(row[colMap["sentiment"]] || "").trim().toLowerCase();
+
+    if (!domain || !query || !geo || !sentiment) {
+      localSkipped++;
+      continue;
+    }
+
+    if (VALID_ETALON_SENTIMENTS.indexOf(sentiment) === -1) {
+      localSkipped++;
+      Logger.log("importEtalonToDb: строка " + (r + 1) + " — неизвестная тональность '" + sentiment + "'");
+      continue;
+    }
+
+    labels.push({
+      domain: domain,
+      query: query,
+      geo: geo,
+      sentiment: sentiment,
+      source: "manual_l1"
+    });
+  }
+
+  Logger.log("importEtalonToDb: собрано " + labels.length + " записей, пропущено локально " + localSkipped);
+
+  if (labels.length === 0) {
+    ui.alert("Нет данных", "Не найдено валидных записей для импорта.", ui.ButtonSet.OK);
+    return;
+  }
+
+  var confirm = ui.alert(
+    "Импорт эталона",
+    "Будет импортировано " + labels.length + " записей в domain_labels (source=manual_l1). Продолжить?",
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) {
+    Logger.log("importEtalonToDb: импорт отменён пользователем");
+    return;
+  }
+
+  // Отправляем батчами
+  var totalImported = 0;
+  var totalSkipped = localSkipped;
+  var totalErrors = 0;
+  var batchCount = Math.ceil(labels.length / IMPORT_BATCH_SIZE);
+
+  for (var b = 0; b < batchCount; b++) {
+    var start = b * IMPORT_BATCH_SIZE;
+    var batch = labels.slice(start, start + IMPORT_BATCH_SIZE);
+
+    var result = _post("/labels/import", batch, secret);
+    Logger.log(
+      "importEtalonToDb: батч " + (b + 1) + "/" + batchCount +
+      ", отправлено " + batch.length + ", код " + result.code + ", ok=" + result.ok
+    );
+
+    if (result.ok && result.data) {
+      totalImported += result.data.imported || 0;
+      totalSkipped += result.data.skipped || 0;
+      totalErrors += result.data.errors || 0;
+    } else {
+      totalErrors += batch.length;
+      Logger.log("importEtalonToDb: ошибка батча " + (b + 1) + ": " + result.body);
+    }
+  }
+
+  var summary = "Импорт эталона завершён.\n\n" +
+    "Отправлено: " + labels.length + "\n" +
+    "Импортировано в БД: " + totalImported + "\n" +
+    "Пропущено: " + totalSkipped + "\n" +
+    "Ошибок: " + totalErrors;
+
+  Logger.log("importEtalonToDb: " + summary.replace(/\n/g, " | "));
+  ui.alert("Готово", summary, ui.ButtonSet.OK);
+}

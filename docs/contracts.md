@@ -76,10 +76,19 @@ Row = {
   Применяются те же правила приоритета `source`, что и в `upsert_domain_label`.
 
 - **Заполнение `domain_labels`:**
-  Ручная эталонная разметка (source=`manual_l1`) заполняется вне приложения —
-  через SQL/админку или разовый скрипт. В production-коде репозитория нет
-  эндпоинта для массового импорта, чтобы не держать одноразовую логику в
-  поддерживаемом коде. Разовый импорт Михаила выполнен вне репозитория.
+  Ручная эталонная разметка (source=`manual_l1`) обычно заполняется вне приложения.
+  Для разовых импортов из Google Sheets предусмотрен изолированный
+  `POST /labels/import` (см. ниже) и функция `importEtalonToDb()` в `apps_script.gs`,
+  не привязанная к меню. Эндпоинт идемпотентен и устойчив к битым записям.
+
+- **`POST /labels/import`**
+  **Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+  **Тело:** массив объектов `{domain, query, geo, sentiment, source}`.
+  `source` по умолчанию `"manual_l1"`.
+  **Поведение:**
+  - Идемпотентный upsert по PK `(domain, query, geo)`.
+  - Одна невалидная запись не прерывает обработку остального батча.
+  - Возвращает сводку: `processed`, `imported`, `skipped`, `errors`.
 
 - `_init_db(db_path: str = DB_PATH) -> None`
   — Создаёт таблицы: clients, positions, labels, domain_labels.

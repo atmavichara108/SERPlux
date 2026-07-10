@@ -540,6 +540,114 @@ def list_providers(authorization: str | None = Header(default=None)) -> JSONResp
     return JSONResponse(result)
 
 
+VALID_IMPORT_SENTIMENTS = {"positive", "negative", "neutral"}
+VALID_IMPORT_SOURCES = {"manual_l1", "snippet", "page"}
+DEFAULT_IMPORT_SOURCE = "manual_l1"
+
+
+@app.post("/labels/import")
+def import_domain_labels(
+    items: list[dict],
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """
+    Одноразовый импорт эталонной разметки доменов в domain_labels.
+
+    Принимает массив объектов {domain, query, geo, sentiment, source}.
+    source по умолчанию "manual_l1".
+
+    Идемпотентен: повторный вызов обновляет существующие записи по PK
+    (domain, query, geo), не плодит дубли.
+
+    Устойчив к битым записям: одна невалидная запись не роняет весь батч,
+    пропускается и логируется. В ответе возвращается сводка.
+    """
+    _verify_token(authorization)
+
+    if not isinstance(items, list):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="items must be a list",
+        )
+
+    processed = 0
+    imported = 0
+    skipped = 0
+    errors = 0
+
+    for idx, raw in enumerate(items):
+        processed += 1
+
+        # Нормализация полей
+        domain = _extract_str(raw.get("domain"))
+        query = _extract_str(raw.get("query"))
+        geo = _extract_str(raw.get("geo"))
+        sentiment = _extract_str(raw.get("sentiment")).lower()
+        source = _extract_str(raw.get("source")).lower() or DEFAULT_IMPORT_SOURCE
+
+        # Валидация
+        if not domain or not query or not geo or not sentiment:
+            log.warning(
+                "labels/import: пропускаю запись %s — отсутствуют обязательные поля",
+                idx,
+            )
+            skipped += 1
+            continue
+
+        if sentiment not in VALID_IMPORT_SENTIMENTS:
+            log.warning(
+                "labels/import: пропускаю запись %s — недопустимый sentiment '%s'",
+                idx, sentiment,
+            )
+            skipped += 1
+            continue
+
+        if source not in VALID_IMPORT_SOURCES:
+            log.warning(
+                "labels/import: пропускаю запись %s — недопустимый source '%s'",
+                idx, source,
+            )
+            skipped += 1
+            continue
+
+        try:
+            storage.upsert_domain_label(
+                domain=domain,
+                query=query,
+                geo=geo,
+                sentiment=sentiment,
+                source=source,
+                db_path=storage.DB_PATH,
+            )
+            imported += 1
+        except Exception as exc:
+            log.error(
+                "labels/import: ошибка при записи %s/%s/%s: %s",
+                domain, query, geo, exc,
+            )
+            errors += 1
+
+    log.info(
+        "labels/import: обработано %s, импортировано %s, пропущено %s, ошибок %s",
+        processed, imported, skipped, errors,
+    )
+
+    return JSONResponse({
+        "status": "ok",
+        "processed": processed,
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+    })
+
+
+def _extract_str(value: Any) -> str:
+    """Приводит значение к строке и обрезает пробелы; для None/не-строки — пустая строка."""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 if __name__ == "__main__":
     import uvicorn
 

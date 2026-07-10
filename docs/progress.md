@@ -6,6 +6,25 @@
 
 ## Сделано
 
+- **Session: 2026-07-10 (третья) — Восстановлен одноразовый импорт эталона**
+  - [x] `webhook.py`: восстановлен `POST /labels/import`:
+    - Идемпотентный upsert по PK `(domain, query, geo)` через `storage.upsert_domain_label`.
+    - Устойчив к битым записям: одна невалидная запись пропускается, батч продолжается.
+    - Возвращает сводку `processed`/`imported`/`skipped`/`errors`.
+  - [x] `apps_script.gs`: добавлена изолированная функция `importEtalonToDb()`:
+    - Запускается вручную из редактора через Run, НЕ добавляется в меню `onOpen`.
+    - Читает уже распарсенный лист «Эталон разметки» (не Лист1).
+    - Определяет колонки по заголовкам; при неизвестной структуре логирует и останавливается.
+    - Отправляет батчами по 100 строк с Bearer-авторизацией.
+    - Не прерывается на ошибках батчей, в конце логирует итог.
+  - [x] Тесты: 8 новых тестов `TestLabelsImportEndpoint` в `tests/test_webhook.py`.
+  - [x] Обновлена документация:
+    - `docs/contracts.md` — описан контракт `POST /labels/import`.
+    - `docs/decisions.md` — новый ADR об изолированном одноразовом импорте.
+    - `docs/progress.md` — эта запись.
+  - Status: Ready for commit
+  - Коммит: `feat(labels): resilient one-shot etalon import (Эталон разметки → domain_labels), batched + idempotent`
+
 - **Session: 2026-07-10 (вторая) — Dynamic reporter + date normalization (apps_script)**
   - [x] reporter.py полностью переписан на динамическую раскладку:
     - Новая функция `_build_subject_layout(queries)` вычисляет N колонок вместо фиксированных 16
