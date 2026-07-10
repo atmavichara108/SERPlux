@@ -222,174 +222,164 @@ function deleteAndRecreateSettingsSheet() {
  * Формат: колонка A = ключ, B = значение, C = подсказка.
  */
 function initSettingsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(SETTINGS_SHEET_NAME);
+  }
+
+  // Очищаем содержимое (сохраняем форматирование если есть)
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
-
-    if (!sheet) {
-      sheet = ss.insertSheet(SETTINGS_SHEET_NAME);
-    }
-
-    // Очищаем содержимое (сохраняем форматирование если есть)
     sheet.clearContents();
+  } catch (e) {
+    Logger.log("initSettingsSheet: clearContents пропущен: %s", e.message);
+  }
 
-    // Записываем шаблон
-    var numRows = SETTINGS_TEMPLATE.length;
-    var numCols = 3;
-    // Проверяем прямоугольность шаблона
-    for (var r = 0; r < numRows; r++) {
-      if (!SETTINGS_TEMPLATE[r] || SETTINGS_TEMPLATE[r].length !== numCols) {
-        throw new Error(
-          "SETTINGS_TEMPLATE непрямоугольный: строка " + (r + 1) +
-          " имеет " + (SETTINGS_TEMPLATE[r] ? SETTINGS_TEMPLATE[r].length : "null") +
-          " колонок вместо " + numCols
-        );
-      }
-    }
-    sheet.getRange(1, 1, numRows, numCols).setValues(SETTINGS_TEMPLATE);
+  // Записываем шаблон целиком. Это основная задача — лист должен быть заполнен.
+  try {
+    sheet.getRange(1, 1, SETTINGS_TEMPLATE.length, 3).setValues(SETTINGS_TEMPLATE);
+  } catch (e) {
+    Logger.log("initSettingsSheet FATAL setValues: %s", e.message);
+    // Если setValues не удался — лист бесполезен, но не бросаем исключение,
+    // чтобы пользователь мог увидеть лог и попробовать ещё раз.
+    return;
+  }
 
-    // Форматирование: ключи жирным, ширина колонок
-    sheet.getRange(1, 1, numRows, 1).setFontWeight("bold");
+  // Форматирование — не критично, оборачиваем целиком
+  try {
+    sheet.getRange(1, 1, SETTINGS_TEMPLATE.length, 1).setFontWeight("bold");
     sheet.setColumnWidth(1, 200);
     sheet.setColumnWidth(2, 250);
     sheet.setColumnWidth(3, 400);
-
-    // Data Validation для колонки B (значения).
-    // Каждый блок обёрнут в try-catch, чтобы ошибка одной валидации
-    // не роняла всю инициализацию и была локализована в логах.
-    var validators = [
-    {
-      name: "client_id",
-      row: 1,
-      fn: function() { _setupClientIdValidation(sheet); }
-    },
-    {
-      name: "depth",
-      row: 2,
-      fn: function() {
-        sheet.getRange(2, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .requireValueInList(["10", "20", "50", "100"], true)
-            .setAllowInvalid(false)
-            .setHelpText("Глубина сбора: 10, 20, 50 или 100")
-            .build()
-        );
-      }
-    },
-    {
-      name: "with_labels",
-      row: 3,
-      fn: function() {
-        sheet.getRange(3, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .requireValueInList(["true", "false"], true)
-            .setAllowInvalid(false)
-            .setHelpText("true или false")
-            .build()
-        );
-      }
-    },
-    {
-      name: "label_mode",
-      row: 4,
-      fn: function() {
-        sheet.getRange(4, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .requireValueInList(["auto", "deep"], true)
-            .setAllowInvalid(false)
-            .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
-            .build()
-        );
-      }
-    },
-    {
-      name: "date",
-      row: 5,
-      fn: function() {
-        sheet.getRange(5, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .setAllowInvalid(true)
-            .setHelpText("today или дата в формате YYYY-MM-DD")
-            .build()
-        );
-      }
-    },
-    {
-      name: "force_relabel",
-      row: 6,
-      fn: function() {
-        sheet.getRange(6, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .requireValueInList(["true", "false"], true)
-            .setAllowInvalid(false)
-            .setHelpText("true или false")
-            .build()
-        );
-      }
-    },
-    {
-      name: "force_rebuild_report",
-      row: 7,
-      fn: function() {
-        sheet.getRange(7, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .requireValueInList(["true", "false"], true)
-            .setAllowInvalid(false)
-            .setHelpText("true или false")
-            .build()
-        );
-      }
-    },
-    {
-      name: "report_date",
-      row: 8,
-      fn: function() {
-        sheet.getRange(8, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .setAllowInvalid(true)
-            .setHelpText("latest или дата в формате YYYY-MM-DD")
-            .build()
-        );
-      }
-    },
-    {
-      name: "provider_chain",
-      row: 9,
-      fn: function() {
-        sheet.getRange(9, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .setAllowInvalid(true)
-            .setHelpText("Провайдер LLM или цепочка через запятую (напр. zen)")
-            .build()
-        );
-      }
-    }
-  ];
-
-  for (var i = 0; i < validators.length; i++) {
-    var v = validators[i];
-    try {
-      v.fn();
-    } catch (e) {
-      Logger.log("initSettingsSheet: ошибка валидации поля '%s' (строка %s): %s", v.name, v.row, e.message);
-    }
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка форматирования: %s", e.message);
   }
 
-  // Косметика в конце не должна ломать инициализацию
+  // Валидации по одному полю. При сбое логируем поле и продолжаем.
+  // Важно: sheet уже заполнен значениями, поэтому даже при полном сбое валидаций
+  // пользователь может редактировать значения вручную.
+
+  // depth (строка 2)
+  try {
+    sheet.getRange(2, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["10", "20", "50", "100"], true)
+        .setAllowInvalid(false)
+        .setHelpText("Глубина сбора: 10, 20, 50 или 100")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации depth: %s", e.message);
+  }
+
+  // with_labels (строка 3)
+  try {
+    sheet.getRange(3, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["true", "false"], true)
+        .setAllowInvalid(false)
+        .setHelpText("true или false")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации with_labels: %s", e.message);
+  }
+
+  // label_mode (строка 4): только auto/deep
+  try {
+    sheet.getRange(4, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["auto", "deep"], true)
+        .setAllowInvalid(false)
+        .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации label_mode: %s", e.message);
+  }
+
+  // date (строка 5): свободный ввод
+  try {
+    sheet.getRange(5, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .setAllowInvalid(true)
+        .setHelpText("today или дата в формате YYYY-MM-DD")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации date: %s", e.message);
+  }
+
+  // force_relabel (строка 6)
+  try {
+    sheet.getRange(6, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["true", "false"], true)
+        .setAllowInvalid(false)
+        .setHelpText("true или false")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации force_relabel: %s", e.message);
+  }
+
+  // force_rebuild_report (строка 7)
+  try {
+    sheet.getRange(7, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["true", "false"], true)
+        .setAllowInvalid(false)
+        .setHelpText("true или false")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации force_rebuild_report: %s", e.message);
+  }
+
+  // report_date (строка 8): свободный ввод
+  try {
+    sheet.getRange(8, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .setAllowInvalid(true)
+        .setHelpText("latest или дата в формате YYYY-MM-DD")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации report_date: %s", e.message);
+  }
+
+  // provider_chain (строка 9): свободный ввод
+  try {
+    sheet.getRange(9, 2).setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .setAllowInvalid(true)
+        .setHelpText("Провайдер LLM или цепочка через запятую")
+        .build()
+    );
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации provider_chain: %s", e.message);
+  }
+
+  // client_id (строка 1) — последний, потому что может потребовать сетевой запрос к серверу.
+  // Сетевой сбой не должен мешать остальному листу.
+  try {
+    _setupClientIdValidation(sheet);
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка валидации client_id: %s", e.message);
+  }
+
+  // Косметика — каждая операция отдельно, не критична
   try {
     ss.setActiveSheet(sheet);
-    ss.toast("Лист «Настройки» инициализирован", "SERPlux", 5);
   } catch (e) {
-    Logger.log("initSettingsSheet: ошибка при setActiveSheet/toast: %s", e.message);
+    Logger.log("initSettingsSheet: ошибка setActiveSheet: %s", e.message);
   }
 
-  } catch (fatal) {
-    // Верхнеуровневый guard: любое исключение, не пойманное внутри,
-    // логируется с полным стеком, чтобы можно было найти реальную строку падения.
-    Logger.log("initSettingsSheet FATAL: " + fatal + " | stack: " + (fatal.stack || "(no stack)"));
-    // Повторно бросаем, чтобы пользователь увидел ошибку в редакторе,
-    // но в логах уже есть точная причина.
-    throw fatal;
+  try {
+    ss.toast("Лист «Настройки» инициализирован", "SERPlux", 5);
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка toast: %s", e.message);
   }
 }
 

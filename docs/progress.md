@@ -591,16 +591,17 @@ REGIONS_MAP=regions_map.json
 
 ## В работе
 - **Починка `initSettingsSheet` в `apps_script.gs` (регресс)**
-  - Переписана функция: все `setDataValidation` обёрнуты в индивидуальные `try-catch` с `Logger.log` поля при ошибке.
-  - Добавлен верхнеуровневый `try-catch` с `Logger.log("initSettingsSheet FATAL: ... | stack: ...")` и повторным throw — логирует реальный стек падения, а не косвенную ошибку на toast.
-  - Добавлена проверка прямоугольности `SETTINGS_TEMPLATE` перед `setValues`.
-  - Исправлена `_normalizeDateToString`: не бросает исключений, сохраняет `today`/`latest`/пустую строку, возвращает исходную строку при ошибке парсинга.
+  - Полностью переписана функция по проверенному релизному паттерну: минимум промежуточных операций, функция всегда доводит лист до заполненного состояния.
+  - Не удаляет существующий лист, только `clearContents` (в try-catch).
+  - Один `setValues` для `SETTINGS_TEMPLATE` (10×3); при фатальном сбое `setValues` — лог и return, без throw.
+  - Форматирование обёрнуто в try-catch; при сбое логируется, но продолжается.
+  - Все валидации навешиваются по одному, каждая в индивидуальном try-catch с `Logger.log("initSettingsSheet: ошибка валидации <поле>: ...")`.
+  - `_setupClientIdValidation` вызывается последним и обёрнут в try-catch — сетевой/серверный сбой не роняет остальное.
+  - `setActiveSheet` и `toast` — каждый в отдельном try-catch (косметика, не критично).
+  - Убран верхнеуровневый `throw fatal`: функция не бросает исключения, лист всегда создаётся/заполняется, даже при частичных сбоях.
   - `label_mode` (строка 4): dropdown строго `["auto", "deep"]`.
-  - `date`/`report_date` — текстовые значения по умолчанию (`"today"`, `"latest"`), без формулы `=TODAY()`.
-  - `setActiveSheet`/`toast` в конце обёрнуты в `try-catch`.
-  - `_readSettings` разрешает только `auto`/`deep`, иначе fallback на `DEFAULT_LABEL_MODE`.
   - Упоминания `domains`/`snippets`/`full` в `apps_script.gs` отсутствуют.
-  - Коммит: `fix(ui): add missing _normalizeDateToString + top-level guard in initSettingsSheet (fix mystery crash)`
+  - Коммит: `fix(ui): resilient initSettingsSheet — always builds sheet, no fatal throw (release fallback)`
 
 ## Дальше
 - Первый тестовый прогон на боевом сервере после миграции БД.
