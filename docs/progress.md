@@ -592,12 +592,15 @@ REGIONS_MAP=regions_map.json
 ## В работе
 - **Починка `initSettingsSheet` в `apps_script.gs` (регресс)**
   - Переписана функция: все `setDataValidation` обёрнуты в индивидуальные `try-catch` с `Logger.log` поля при ошибке.
+  - Добавлен верхнеуровневый `try-catch` с `Logger.log("initSettingsSheet FATAL: ... | stack: ...")` и повторным throw — логирует реальный стек падения, а не косвенную ошибку на toast.
+  - Добавлена проверка прямоугольности `SETTINGS_TEMPLATE` перед `setValues`.
+  - Исправлена `_normalizeDateToString`: не бросает исключений, сохраняет `today`/`latest`/пустую строку, возвращает исходную строку при ошибке парсинга.
   - `label_mode` (строка 4): dropdown строго `["auto", "deep"]`.
   - `date`/`report_date` — текстовые значения по умолчанию (`"today"`, `"latest"`), без формулы `=TODAY()`.
   - `setActiveSheet`/`toast` в конце обёрнуты в `try-catch`.
   - `_readSettings` разрешает только `auto`/`deep`, иначе fallback на `DEFAULT_LABEL_MODE`.
   - Упоминания `domains`/`snippets`/`full` в `apps_script.gs` отсутствуют.
-  - Коммит: `fix(ui): repair initSettingsSheet regression — isolate setDataValidation, fix label_mode list, remove TODAY formula`
+  - Коммит: `fix(ui): add missing _normalizeDateToString + top-level guard in initSettingsSheet (fix mystery crash)`
 
 ## Дальше
 - Первый тестовый прогон на боевом сервере после миграции БД.

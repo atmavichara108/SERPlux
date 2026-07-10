@@ -222,30 +222,42 @@ function deleteAndRecreateSettingsSheet() {
  * Формат: колонка A = ключ, B = значение, C = подсказка.
  */
 function initSettingsSheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
 
-  if (!sheet) {
-    sheet = ss.insertSheet(SETTINGS_SHEET_NAME);
-  }
+    if (!sheet) {
+      sheet = ss.insertSheet(SETTINGS_SHEET_NAME);
+    }
 
-  // Очищаем содержимое (сохраняем форматирование если есть)
-  sheet.clearContents();
+    // Очищаем содержимое (сохраняем форматирование если есть)
+    sheet.clearContents();
 
-  // Записываем шаблон
-  var numRows = SETTINGS_TEMPLATE.length;
-  sheet.getRange(1, 1, numRows, 3).setValues(SETTINGS_TEMPLATE);
+    // Записываем шаблон
+    var numRows = SETTINGS_TEMPLATE.length;
+    var numCols = 3;
+    // Проверяем прямоугольность шаблона
+    for (var r = 0; r < numRows; r++) {
+      if (!SETTINGS_TEMPLATE[r] || SETTINGS_TEMPLATE[r].length !== numCols) {
+        throw new Error(
+          "SETTINGS_TEMPLATE непрямоугольный: строка " + (r + 1) +
+          " имеет " + (SETTINGS_TEMPLATE[r] ? SETTINGS_TEMPLATE[r].length : "null") +
+          " колонок вместо " + numCols
+        );
+      }
+    }
+    sheet.getRange(1, 1, numRows, numCols).setValues(SETTINGS_TEMPLATE);
 
-  // Форматирование: ключи жирным, ширина колонок
-  sheet.getRange(1, 1, numRows, 1).setFontWeight("bold");
-  sheet.setColumnWidth(1, 200);
-  sheet.setColumnWidth(2, 250);
-  sheet.setColumnWidth(3, 400);
+    // Форматирование: ключи жирным, ширина колонок
+    sheet.getRange(1, 1, numRows, 1).setFontWeight("bold");
+    sheet.setColumnWidth(1, 200);
+    sheet.setColumnWidth(2, 250);
+    sheet.setColumnWidth(3, 400);
 
-  // Data Validation для колонки B (значения).
-  // Каждый блок обёрнут в try-catch, чтобы ошибка одной валидации
-  // не роняла всю инициализацию и была локализована в логах.
-  var validators = [
+    // Data Validation для колонки B (значения).
+    // Каждый блок обёрнут в try-catch, чтобы ошибка одной валидации
+    // не роняла всю инициализацию и была локализована в логах.
+    var validators = [
     {
       name: "client_id",
       row: 1,
@@ -369,6 +381,15 @@ function initSettingsSheet() {
     ss.toast("Лист «Настройки» инициализирован", "SERPlux", 5);
   } catch (e) {
     Logger.log("initSettingsSheet: ошибка при setActiveSheet/toast: %s", e.message);
+  }
+
+  } catch (fatal) {
+    // Верхнеуровневый guard: любое исключение, не пойманное внутри,
+    // логируется с полным стеком, чтобы можно было найти реальную строку падения.
+    Logger.log("initSettingsSheet FATAL: " + fatal + " | stack: " + (fatal.stack || "(no stack)"));
+    // Повторно бросаем, чтобы пользователь увидел ошибку в редакторе,
+    // но в логах уже есть точная причина.
+    throw fatal;
   }
 }
 
@@ -1879,9 +1900,16 @@ function _friendlyError(result) {
  * или сериализованную дату вместо строки "YYYY-MM-DD".
  */
 function _normalizeDateToString(dateInput) {
-  if (!dateInput) return "latest";
+  // Пустое или специальное значение — возвращаем как есть, не бросаем исключение
+  if (!dateInput) return String(dateInput || "");
   
   var dateStr = String(dateInput).trim();
+  var lower = dateStr.toLowerCase();
+  
+  // Специальные маркеры не трогаем
+  if (lower === "today" || lower === "latest" || lower === "") {
+    return dateStr;
+  }
   
   // Если уже в формате YYYY-MM-DD, возвращаем как есть
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
@@ -1902,7 +1930,7 @@ function _normalizeDateToString(dateInput) {
     
     // Проверяем, валидная ли дата
     if (isNaN(date.getTime())) {
-      return "latest";  // Невалидная дата — fallback
+      return dateStr;  // Невалидная дата — возвращаем исходную строку без изменений
     }
     
     // Конвертируем в YYYY-MM-DD (UTC)
@@ -1911,8 +1939,8 @@ function _normalizeDateToString(dateInput) {
     var day = String(date.getUTCDate()).padStart(2, "0");
     return year + "-" + month + "-" + day;
   } catch (e) {
-    // Ошибка парсинга — возвращаем "latest"
-    return "latest";
+    // Ошибка парсинга — возвращаем исходную строку, не бросаем исключение
+    return dateStr;
   }
 }
 
