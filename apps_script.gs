@@ -242,83 +242,134 @@ function initSettingsSheet() {
   sheet.setColumnWidth(2, 250);
   sheet.setColumnWidth(3, 400);
 
-  // Data Validation для колонки B (значения)
-  // client_id (строка 1): dropdown из GET /clients API
-  _setupClientIdValidation(sheet);
+  // Data Validation для колонки B (значения).
+  // Каждый блок обёрнут в try-catch, чтобы ошибка одной валидации
+  // не роняла всю инициализацию и была локализована в логах.
+  var validators = [
+    {
+      name: "client_id",
+      row: 1,
+      fn: function() { _setupClientIdValidation(sheet); }
+    },
+    {
+      name: "depth",
+      row: 2,
+      fn: function() {
+        sheet.getRange(2, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .requireValueInList(["10", "20", "50", "100"], true)
+            .setAllowInvalid(false)
+            .setHelpText("Глубина сбора: 10, 20, 50 или 100")
+            .build()
+        );
+      }
+    },
+    {
+      name: "with_labels",
+      row: 3,
+      fn: function() {
+        sheet.getRange(3, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .requireValueInList(["true", "false"], true)
+            .setAllowInvalid(false)
+            .setHelpText("true или false")
+            .build()
+        );
+      }
+    },
+    {
+      name: "label_mode",
+      row: 4,
+      fn: function() {
+        sheet.getRange(4, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .requireValueInList(["auto", "deep"], true)
+            .setAllowInvalid(false)
+            .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
+            .build()
+        );
+      }
+    },
+    {
+      name: "date",
+      row: 5,
+      fn: function() {
+        sheet.getRange(5, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .setAllowInvalid(true)
+            .setHelpText("today или дата в формате YYYY-MM-DD")
+            .build()
+        );
+      }
+    },
+    {
+      name: "force_relabel",
+      row: 6,
+      fn: function() {
+        sheet.getRange(6, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .requireValueInList(["true", "false"], true)
+            .setAllowInvalid(false)
+            .setHelpText("true или false")
+            .build()
+        );
+      }
+    },
+    {
+      name: "force_rebuild_report",
+      row: 7,
+      fn: function() {
+        sheet.getRange(7, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .requireValueInList(["true", "false"], true)
+            .setAllowInvalid(false)
+            .setHelpText("true или false")
+            .build()
+        );
+      }
+    },
+    {
+      name: "report_date",
+      row: 8,
+      fn: function() {
+        sheet.getRange(8, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .setAllowInvalid(true)
+            .setHelpText("latest или дата в формате YYYY-MM-DD")
+            .build()
+        );
+      }
+    },
+    {
+      name: "provider_chain",
+      row: 9,
+      fn: function() {
+        sheet.getRange(9, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .setAllowInvalid(true)
+            .setHelpText("Провайдер LLM или цепочка через запятую (напр. zen)")
+            .build()
+        );
+      }
+    }
+  ];
 
-  // depth (строка 2): список 10, 20, 50, 100
-  sheet.getRange(2, 2).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .requireValueInList(["10", "20", "50", "100"], true)
-      .setAllowInvalid(false)
-      .setHelpText("Глубина сбора: 10, 20, 50 или 100")
-      .build()
-  );
+  for (var i = 0; i < validators.length; i++) {
+    var v = validators[i];
+    try {
+      v.fn();
+    } catch (e) {
+      Logger.log("initSettingsSheet: ошибка валидации поля '%s' (строка %s): %s", v.name, v.row, e.message);
+    }
+  }
 
-  // with_labels (строка 3): true/false
-  sheet.getRange(3, 2).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .requireValueInList(["true", "false"], true)
-      .setAllowInvalid(false)
-      .setHelpText("true или false")
-      .build()
-  );
-
-  // label_mode (строка 4): auto или deep
-  sheet.getRange(4, 2).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .requireValueInList(["auto", "deep"], true)
-      .setAllowInvalid(false)
-      .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
-      .build()
-  );
-
-  // date (строка 5): свободный ввод с подсказкой
-  sheet.getRange(5, 2).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .setAllowInvalid(true)
-      .setHelpText("today или дата в формате YYYY-MM-DD")
-      .build()
-  );
-
-  // force_relabel (строка 6): true/false
-  sheet.getRange(6, 2).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .requireValueInList(["true", "false"], true)
-      .setAllowInvalid(false)
-      .setHelpText("true или false")
-      .build()
-  );
-
-  // force_rebuild_report (строка 7): true/false
-  sheet.getRange(7, 2).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .requireValueInList(["true", "false"], true)
-      .setAllowInvalid(false)
-      .setHelpText("true или false")
-      .build()
-  );
-
-  // report_date (строка 8): свободный ввод с подсказкой
-  sheet.getRange(8, 2).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .setAllowInvalid(true)
-      .setHelpText("latest или дата в формате YYYY-MM-DD")
-      .build()
-  );
-
-  // provider_chain (строка 9): свободный ввод с подсказкой
-  // Dropdown будет установлен через refreshProviderChain()
-  sheet.getRange(9, 2).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .setAllowInvalid(true)
-      .setHelpText("Провайдер LLM или цепочка через запятую (напр. zen)")
-      .build()
-  );
-
-  // Переключаемся на лист настроек
-  ss.setActiveSheet(sheet);
-  ss.toast("Лист «Настройки» инициализирован", "SERPlux", 5);
+  // Косметика в конце не должна ломать инициализацию
+  try {
+    ss.setActiveSheet(sheet);
+    ss.toast("Лист «Настройки» инициализирован", "SERPlux", 5);
+  } catch (e) {
+    Logger.log("initSettingsSheet: ошибка при setActiveSheet/toast: %s", e.message);
+  }
 }
 
 /**
