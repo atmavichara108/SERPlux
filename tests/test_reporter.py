@@ -360,5 +360,69 @@ class TestLayoutBuffers:
                 f"Блок субъекта {i} пересекается с предыдущим: pos={curr_pos} <= prev_url={prev_url}"
 
 
+class TestSentimentFillCoordinates:
+    """Тесты точных координат заливки sentiment (канон Лист1)."""
+
+    def test_fill_coordinates_n3_subjects(self):
+        """Для N=3: заливка строго на pos-колонках B(1), G(6), J(9)."""
+        queries = [
+            {"key": "s1", "display": "Subject 1"},
+            {"key": "s2", "display": "Subject 2"},
+            {"key": "s3", "display": "Subject 3"},
+        ]
+        layout = _build_subject_layout(queries)
+        
+        expected_positions = [1, 6, 9]
+        expected_urls = [2, 7, 10]
+        
+        for i, sb in enumerate(layout["subjects"]):
+            assert sb["pos"] == expected_positions[i], \
+                f"S{i+1}: pos-колонка должна быть {expected_positions[i]}, получено {sb['pos']}"
+            assert sb["url"] == expected_urls[i], \
+                f"S{i+1}: url-колонка должна быть {expected_urls[i]}, получено {sb['url']}"
+        
+        buffer_cols = {3, 4, 5, 8}
+        for sb in layout["subjects"]:
+            assert sb["pos"] not in buffer_cols, \
+                f"pos-колонка {sb['pos']} не должна быть в буфере"
+            assert sb["url"] not in buffer_cols, \
+                f"url-колонка {sb['url']} не должна быть в буфере"
+
+    def test_fill_coordinates_n4_subjects(self):
+        """Для N=4: заливка строго на pos-колонках B(1), G(6), J(9), M(12)."""
+        queries = [
+            {"key": "s1", "display": "Subject 1"},
+            {"key": "s2", "display": "Subject 2"},
+            {"key": "s3", "display": "Subject 3"},
+            {"key": "s4", "display": "Subject 4"},
+        ]
+        layout = _build_subject_layout(queries)
+        
+        expected_positions = [1, 6, 9, 12]
+        expected_urls = [2, 7, 10, 13]
+        
+        for i, sb in enumerate(layout["subjects"]):
+            assert sb["pos"] == expected_positions[i], \
+                f"S{i+1}: pos-колонка должна быть {expected_positions[i]}, получено {sb['pos']}"
+            assert sb["url"] == expected_urls[i], \
+                f"S{i+1}: url-колонка должна быть {expected_urls[i]}, получено {sb['url']}"
+        
+        buffer_cols = {3, 4, 5, 8, 11}
+        for sb in layout["subjects"]:
+            assert sb["pos"] not in buffer_cols, \
+                f"pos-колонка {sb['pos']} не должна быть в буфере"
+            assert sb["url"] not in buffer_cols, \
+                f"url-колонка {sb['url']} не должна быть в буфере"
+
+    def test_url_is_always_pos_plus_one(self):
+        """URL-колонка всегда = pos-колонка + 1."""
+        for n in range(1, 8):
+            queries = [{"key": f"s{i}", "display": f"Subject {i}"} for i in range(n)]
+            layout = _build_subject_layout(queries)
+            for sb in layout["subjects"]:
+                assert sb["url"] == sb["pos"] + 1, \
+                    f"url ({sb['url']}) должен быть pos+1 ({sb['pos']+1})"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
