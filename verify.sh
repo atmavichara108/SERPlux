@@ -131,8 +131,8 @@ db_path = '/app/data/serplux.db'
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 
-    # Проверяем таблицы
-    required_tables = ['clients', 'positions', 'labels', 'domain_labels', 'run_status']
+# Проверяем таблицы
+required_tables = ['clients', 'positions', 'labels', 'domain_labels', 'run_status']
 cursor.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\")
 existing_tables = set(row[0] for row in cursor.fetchall())
 
