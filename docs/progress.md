@@ -6,6 +6,33 @@
 
 ## Сделано
 
+- **Session: 2026-07-11 (седьмая) — Финальный фикс перед релизом: demo data, раскладка отчёта, verify.sh**
+  - [x] **ДЕФЕКТ 1 — exporter.py: удалены демо-данные (test_rows_1/test_rows_2) и `__main__` блок.**
+    - При прямом запуске `exporter.py` демо-строки с `example.com` писались в лист «Лист2» и затирали реальные данные.
+    - Создан `scripts/demo_export.py` — изолированный демо-прогон за `SERPLUX_DEMO=1`.
+    - Grep-проверка: `grep -rn "example\|test_rows" exporter.py reporter.py` → ноль совпадений в боевом коде.
+  - [x] **ДЕФЕКТ 2 — reporter.py: раскладка отчёта точно повторяет эталон Лист1.**
+    - `_build_subject_layout()` исправлен: буфер после первого субъекта = 3 колонки (D,E,F), перед каждым последующим = 1 колонка.
+    - Формула: S1=(1,2), S2=(6,7), S3=(9,10), S4=(12,13)... (0-indexed).
+    - Имя субъекта в строке 3 пишется в `sb["pos"]` (не `sb["url"]`), центрировано над блоком.
+    - Заливка sentiment применяется к ячейке номера позиции (pos-колонка), не к URL и не ко всей строке.
+    - Создан `docs/report_layout.md` — канон раскладки отчёта (вертикальная/горизонтальная структура, буферы, цвета).
+  - [x] **ДЕФЕКТ 3 — verify.sh: ложные срабатывания и падение на warning.**
+    - `log_check("warn")` теперь увеличивает `CHECKS_PASSED` → warning не роняет итог (exit 0).
+    - Grep логов (шаг 4/6): исключены строки-метрики (`_error=0`, `fallback_neutral=0`, `=N`) — это INFO-статистика об отсутствии ошибок.
+    - `bash -n verify.sh` проходит.
+  - [x] **Тесты:** обновлены `test_layout_2/4/7_subjects` под новую раскладку, добавлены `TestLayoutBuffers` (3 теста: буфер 3 колонки, буфер 1 колонка, блоки не пересекаются) и `TestNoDemoDataInExport` (экспорт без example.com).
+  - [x] **Результат:** 218/218 тестов зелёные. `bash -n verify.sh` OK. Grep по боевому коду: ноль `example.com`.
+  - [x] **Документация обновлена:**
+    - `docs/progress.md` — эта запись.
+    - `docs/decisions.md` — 3 новых ADR (канон раскладки, demo data вынесен, verify.sh warning).
+    - `docs/techdebt.md` — 3 исправленных дефекта перенесены в раздел "Исправлено".
+    - `docs/contracts.md` — добавлено описание раскладки reporter.py.
+    - `docs/verification.md` — обновлено описание шага 4/6 (метрики исключаются, warning не роняет).
+    - `docs/report_layout.md` — создан канон раскладки отчёта.
+  - Status: Ready for commit
+  - Коммит: `fix: remove demo test_rows from exporter + report layout exactly matches Лист1 etalon + verify.sh false-positive/warning-exit fixes`
+
 - **Session: 2026-07-10 (шестая) — Разделение кэша и отчёта в Google Sheets + канон разметки**
   - [x] `exporter.py`: кэш выдачи теперь пишется на отдельный лист «Лист2» с полной очисткой перед записью.
     - Лист «Отчёт» больше не трогается экспортом.
@@ -525,6 +552,7 @@
 
 ## В работе
 - Серверные хвосты для UI: /status.stats (provider_used, collected, cost_estimate) — отложены (см. techdebt)
+- Watchdog для зависших прогонов (P0, отложено для v1.1)
 
 ## Заблокировано / ждёт
 - Широкий формат exporter — переработать контракт Row под него (низкий приоритет)
@@ -532,10 +560,12 @@
   timeout вынесен в config (дефолт 900 сек), при проблемах увеличить
 
 ## Дальше по порядку
-1. Первый тестовый прогон на боевом сервере (см. «Текущее состояние проекта» ниже)
-2. /status.stats (provider_used, collected, cost_estimate) — техдолг
-3. Мультиклиентность: subject_blocks в БД и настройка под клиента
-4. CRUD /providers — техдолг
+1. **Коммит и деплой:** `fix: remove demo test_rows from exporter + report layout exactly matches Лист1 etalon + verify.sh false-positive/warning-exit fixes`
+2. **Боевой прогон:** `./backup_db.sh → ./deploy.sh → ./verify.sh` (ждём 6/6) → прогон client01 через меню → визуальная сверка «Отчёт» с Лист1
+3. Проверка режимов `auto` и `deep` в labeler на реальных данных
+4. Валидация динамического reporter с профилем клиента (2/4/7 субъектов)
+5. /status.stats (provider_used, collected, cost_estimate) — техдолг
+6. CRUD /providers — техдолг
 
 ## Идеи на будущее (UI-этап)
 - **Календарь версий**: каждый прогон собирает выдачу под датой, в отчёте копятся
@@ -548,26 +578,30 @@
 
 ## Текущее состояние проекта (для тестового прогона на сервере)
 
-**Дата:** 2026-07-07
+**Дата:** 2026-07-11
 **Версия API:** 1.0.0
-**Тесты:** 160/160 passed
+**Тесты:** 218/218 passed
 **Ветка:** main
+**Последний коммит:** `fix: remove demo test_rows from exporter + report layout exactly matches Лист1 etalon + verify.sh false-positive/warning-exit fixes` (ожидает коммита)
 
 ### Что реализовано
 
 **Backend (Python/FastAPI):**
 - `POST /run` — запуск пайплайна сбора → разметки → выгрузки → отчёта
-  - Поля: `client_id`, `depth`, `with_labels`, `label_mode`, `force_relabel`, `report_only`, `report_date`
+  - Поля: `client_id`, `depth`, `with_labels`, `label_mode` (auto/deep), `force_relabel`, `report_only`, `report_date`, `date`, `label_only`, `force_rebuild_report`, `provider_chain`
   - `report_only=true` → только построение отчёта (пропускает сбор и разметку)
+  - `label_only=true` → только разметка существующих данных
   - Bearer-авторизация, защита от параллельных прогонов (→ 409)
-- `GET /status` — статус последнего прогона: `idle/starting/running/ok/error`, `started_at`, `finished_at`, `client_id`, `message`
+- `GET /status` — статус последнего прогона: `idle/starting/running/ok/error`, `started_at`, `finished_at`, `client_id`, `message`, `stats`
 - `GET /clients`, `POST /clients`, `GET/PUT /clients/{id}` — CRUD профилей клиентов
+- `GET /clients/{id}/dates` — список дат с данными
+- `GET /topvisor/regions` — регионы Topvisor
 - `GET /providers` — read-only список LLM-провайдеров (из `config.py`)
 - `GET /health` — health-check
 
 **Google Sheets UI (Apps Script):**
 - Меню «SERPlux» в таблице: Запустить сбор / Проверить статус / Построить отчёт за дату / Клиенты / Настройки
-- Лист «Настройки» с 10 ключами и Data Validation
+- Лист «Настройки» с 10 ключами и Data Validation (client_id, depth, with_labels, label_mode, date, force_relabel, force_rebuild_report, report_date, provider_chain, status)
 - Лист «Лог» для истории запусков
 - Цветовая индикация статуса в ячейке
 
@@ -693,7 +727,8 @@ REGIONS_MAP=regions_map.json
 - **Tech debt:** watchdog для зависших прогонов (P0), CRUD `/providers` (P1), таймаут `UrlFetchApp` (P2).
 
 ## Дальше
-- Первый тестовый прогон на боевом сервере после миграции БД.
+- **Коммит и деплой:** зафиксировать изменения, выполнить `./backup_db.sh → ./deploy.sh → ./verify.sh` (ожидается 6/6).
+- **Боевой прогон:** запустить client01 через меню Google Sheets, визуальная сверка листа «Отчёт» с Лист1 (заливка на номерах позиций, буферы D/E/F, G/H, I, J/K, реальные домены, ноль example.com).
 - Проверка режимов `auto` и `deep` в labeler на реальных данных.
 - Валидация динамического reporter с профилем клиента (2/4/7 субъектов).
 - Если разовый импорт ручной разметки повторится — использовать внешний скрипт/SQL, не добавлять в код репозитория.

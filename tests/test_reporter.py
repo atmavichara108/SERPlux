@@ -30,15 +30,16 @@ class TestSubjectLayout:
         layout = _build_subject_layout(queries)
         
         assert layout["num_subjects"] == 2
-        # 2 субъекта: col 0(empty) + col 1(pos1) + col 2(url1) + col 3(div) + col 4(pos2) + col 5(url2) = 6 cols
-        assert layout["cols"] == 6
+        # 2 субъекта: S1=(1,2), буфер 3 (3,4,5), S2=(6,7) → cols=8 (0..7)
+        # col_idx: 1 → +2=3 → +3=6 → +2=8
+        assert layout["cols"] == 8
         assert len(layout["subjects"]) == 2
         assert layout["subjects"][0]["key"] == "subject1"
         assert layout["subjects"][0]["pos"] == 1
         assert layout["subjects"][0]["url"] == 2
         assert layout["subjects"][1]["key"] == "subject2"
-        assert layout["subjects"][1]["pos"] == 4
-        assert layout["subjects"][1]["url"] == 5
+        assert layout["subjects"][1]["pos"] == 6
+        assert layout["subjects"][1]["url"] == 7
     
     def test_layout_4_subjects(self):
         """Раскладка для 4 субъектов (как client1)."""
@@ -51,20 +52,18 @@ class TestSubjectLayout:
         layout = _build_subject_layout(queries)
         
         assert layout["num_subjects"] == 4
-        # 4 субъекта: 4*(pos+url) + 3 разделителя = 8 + 3 = 11, но с начальной колонкой 1
-        # расчёт: col_idx=1; subject1 (pos=1,url=2), col_idx=4; div, col_idx=5;
-        # subject2 (pos=5,url=6), col_idx=8; div, col_idx=9; ... в итоге должно быть 12
-        assert layout["cols"] == 12
+        # S1=(1,2), буфер 3 (3,4,5), S2=(6,7), буфер 1 (8), S3=(9,10), буфер 1 (11), S4=(12,13)
+        # col_idx: 1 → +2=3 → +3=6 → +2=8 → +1=9 → +2=11 → +1=12 → +2=14
+        assert layout["cols"] == 14
         
-        # Проверяем позиции каждого субъекта
         assert layout["subjects"][0]["pos"] == 1
         assert layout["subjects"][0]["url"] == 2
-        assert layout["subjects"][1]["pos"] == 4
-        assert layout["subjects"][1]["url"] == 5
-        assert layout["subjects"][2]["pos"] == 7
-        assert layout["subjects"][2]["url"] == 8
-        assert layout["subjects"][3]["pos"] == 10
-        assert layout["subjects"][3]["url"] == 11
+        assert layout["subjects"][1]["pos"] == 6
+        assert layout["subjects"][1]["url"] == 7
+        assert layout["subjects"][2]["pos"] == 9
+        assert layout["subjects"][2]["url"] == 10
+        assert layout["subjects"][3]["pos"] == 12
+        assert layout["subjects"][3]["url"] == 13
     
     def test_layout_7_subjects(self):
         """Раскладка для 7 субъектов."""
@@ -75,10 +74,10 @@ class TestSubjectLayout:
         layout = _build_subject_layout(queries)
         
         assert layout["num_subjects"] == 7
-        # 7 субъектов: 7*(pos+url) + 6 разделителей = 14 + 6 = 20, но считаем со смещением
-        # Начальная col=1, затем (pos, url) + div для каждого, кроме последнего
-        # 1 + 7*(2+1) - 1 = 1 + 20 = 21, но проверим логику в функции
-        assert layout["cols"] > 0
+        # S1=(1,2), буфер 3, S2=(6,7), буфер 1, S3=(9,10), буфер 1, S4=(12,13), буфер 1,
+        # S5=(15,16), буфер 1, S6=(18,19), буфер 1, S7=(21,22)
+        # col_idx: 1 → +2+3=6 → +2+1=9 → +2+1=12 → +2+1=15 → +2+1=18 → +2+1=21 → +2=23
+        assert layout["cols"] == 23
         assert len(layout["subjects"]) == 7
         
         # Проверяем возрастание индексов
@@ -309,6 +308,56 @@ class TestBuildReportWithDynamicProfile:
         
         build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
         # Это не должно упасть, только залогировать предупреждение
+
+
+class TestLayoutBuffers:
+    """Тесты буферных колонок между субъектами."""
+
+    def test_buffer_after_first_subject_is_3_columns(self):
+        """Буфер после первого субъекта = 3 колонки (D, E, F)."""
+        queries = [
+            {"key": "s1", "display": "Subject 1"},
+            {"key": "s2", "display": "Subject 2"},
+        ]
+        layout = _build_subject_layout(queries)
+        
+        assert layout["subjects"][0]["pos"] == 1
+        assert layout["subjects"][0]["url"] == 2
+        assert layout["subjects"][1]["pos"] == 6
+        assert layout["subjects"][1]["url"] == 7
+        
+        buffer_size = layout["subjects"][1]["pos"] - layout["subjects"][0]["url"] - 1
+        assert buffer_size == 3, f"Буфер после первого субъекта должен быть 3 колонки, получено {buffer_size}"
+
+    def test_buffer_between_subsequent_subjects_is_1_column(self):
+        """Буфер между последующими субъектами (≥2) = 1 колонка."""
+        queries = [
+            {"key": "s1", "display": "Subject 1"},
+            {"key": "s2", "display": "Subject 2"},
+            {"key": "s3", "display": "Subject 3"},
+            {"key": "s4", "display": "Subject 4"},
+        ]
+        layout = _build_subject_layout(queries)
+        
+        buffer_23 = layout["subjects"][2]["pos"] - layout["subjects"][1]["url"] - 1
+        assert buffer_23 == 1, f"Буфер между S2 и S3 должен быть 1 колонка, получено {buffer_23}"
+        
+        buffer_34 = layout["subjects"][3]["pos"] - layout["subjects"][2]["url"] - 1
+        assert buffer_34 == 1, f"Буфер между S3 и S4 должен быть 1 колонка, получено {buffer_34}"
+
+    def test_subject_blocks_do_not_overlap(self):
+        """Блоки субъектов не пересекаются."""
+        queries = [
+            {"key": f"s{i}", "display": f"Subject {i}"}
+            for i in range(1, 5)
+        ]
+        layout = _build_subject_layout(queries)
+        
+        for i in range(1, len(layout["subjects"])):
+            prev_url = layout["subjects"][i-1]["url"]
+            curr_pos = layout["subjects"][i]["pos"]
+            assert curr_pos > prev_url, \
+                f"Блок субъекта {i} пересекается с предыдущим: pos={curr_pos} <= prev_url={prev_url}"
 
 
 if __name__ == "__main__":

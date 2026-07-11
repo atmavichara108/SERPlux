@@ -24,6 +24,7 @@ log_check() {
         CHECKS_PASSED=$((CHECKS_PASSED + 1))
     elif [ "$status" = "warn" ]; then
         echo -e "${YELLOW}⚠${NC} $name (warning)"
+        CHECKS_PASSED=$((CHECKS_PASSED + 1))
         WARNINGS=$((WARNINGS + 1))
     else
         echo -e "${RED}✗${NC} $name"
@@ -103,12 +104,15 @@ echo "[4/6] Checking logs for errors..."
 
 # Собираем логи и считаем ошибки. Grep без совпадений возвращает 1 — подавляем,
 # чтобы set -e не убил скрипт.
+# Исключаем строки-метрики (provider_error=0, snippet_fallback_neutral=0 и т.п.) —
+# это INFO-статистика об ОТСУТСТВИИ ошибок, не реальные сбои.
 LOG_SNAPSHOT=$(docker compose logs --tail 100 "$SERVICE" 2>&1)
-ERROR_COUNT=$(echo "$LOG_SNAPSHOT" | { grep -iE "error|traceback|exception|fatal" || true; } | wc -l)
+ERROR_LINES=$(echo "$LOG_SNAPSHOT" | { grep -iE "error|traceback|exception|fatal" || true; } | { grep -vE "_error=[0-9]|fallback_neutral=[0-9]|_count=[0-9]|=[0-9]+[^a-zA-Z_]" || true; })
+ERROR_COUNT=$(echo "$ERROR_LINES" | { grep -c . || true; })
 if [ "$ERROR_COUNT" -gt 0 ]; then
     log_check "Error logs" "warn"
     log_detail "Found $ERROR_COUNT error/exception mentions in logs (not necessarily fatal)"
-    echo "$LOG_SNAPSHOT" | { grep -iE "error|traceback|exception|fatal" || true; } | head -5
+    echo "$ERROR_LINES" | head -5
 else
     log_check "Error logs" "pass"
     log_detail "No obvious errors in recent logs"

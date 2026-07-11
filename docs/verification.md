@@ -59,9 +59,10 @@ cd /root/serp
    - ✗: container is down, crashed → exit 1
 
 4. **Error logs** — `docker compose logs --tail 100 | grep -i error`
-   - `grep` обёрнут в `|| true`, чтобы отсутствие совпадений не считалось ошибкой при `set -e`
-   - ✓: нет ошибок/исключений
-   - ⚠: найдены Error/Traceback (warning, не блокирует)
+    - `grep` обёрнут в `|| true`, чтобы отсутствие совпадений не считалось ошибкой при `set -e`
+    - Исключаются строки-метрики (`_error=0`, `fallback_neutral=0`, `=N`) — это INFO-статистика об отсутствии ошибок
+    - ✓: нет ошибок/исключений
+    - ⚠: найдены Error/Traceback (warning, не блокирует — exit 0)
 
 5. **Database schema** — PRAGMA table_info, проверка таблиц/колонок
    - Выполняется через `docker compose exec -T $SERVICE python3`
@@ -78,6 +79,8 @@ cd /root/serp
    - ✗: найдены осиротевшие или ошибка запроса → exit 1
 
 **Результат:** Итоговая сводка `N/6 passed`, exit 0 или exit 1
+
+**Примечание:** Warning (⚠) не роняет проверку — `log_check("warn")` увеличивает `CHECKS_PASSED`. Exit 1 только при реальном fail.
 
 ---
 

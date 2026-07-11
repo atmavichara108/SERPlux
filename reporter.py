@@ -78,11 +78,16 @@ def _format_date(date_str: str) -> str:
 def _build_subject_layout(queries: list[dict]) -> dict:
     """
     Строит раскладку колонок из списка субъектов (queries).
+
+    Правило буферов (канон Лист1):
+    - Субъект 1: колонки B (pos), C (url) → индексы 1, 2
+    - Буфер после первого субъекта: 3 колонки (D, E, F)
+    - Каждый следующий субъект: 2 колонки (pos, url), перед ним 1 буферная колонка
     
     Возвращает dict:
     {
         "num_subjects": N,
-        "cols": N*2 + (N-1)*1,  # каждый субъект = 2 колонки (pos|url) + разделитель
+        "cols": total column count,
         "subjects": [
             {"key": "...", "display": "...", "pos": idx, "url": idx+1},
             ...
@@ -90,23 +95,25 @@ def _build_subject_layout(queries: list[dict]) -> dict:
     }
     """
     subjects = []
-    col_idx = 1  # начинаем с колонки 1 (колонка 0 — пусто)
-    
+    col_idx = 1  # колонка B (0-indexed; колонка A=0 — пустая)
+
     for i, query in enumerate(queries):
         key = query.get("key", "")
         display = query.get("display", "")
-        
+
         subjects.append({
             "key": key,
             "display": display,
             "pos": col_idx,
             "url": col_idx + 1,
         })
-        
+
         col_idx += 2  # pos + url
-        if i < len(queries) - 1:
-            col_idx += 1  # разделитель между субъектами
-    
+        if i == 0 and i < len(queries) - 1:
+            col_idx += 3  # буфер 3 колонки после первого субъекта (D, E, F)
+        elif i > 0 and i < len(queries) - 1:
+            col_idx += 1  # буфер 1 колонка перед следующим субъектом
+
     total_cols = col_idx
     return {
         "num_subjects": len(queries),
@@ -253,7 +260,7 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
 
         hdr_row = [""] * cols
         for sb in subject_blocks:
-            hdr_row[sb["url"]] = sb["display"]
+            hdr_row[sb["pos"]] = sb["display"]
         report_data.append(hdr_row)
 
         for geo_key in geo_order:
