@@ -2038,7 +2038,245 @@ function _getWebhookUrl() {
   return PropertiesService.getScriptProperties().getProperty("WEBHOOK_URL") || "";
 }
 
-// ─── Разовый импорт эталона (НЕ в меню, запускать вручную через Run) ──────────
+// ─── Разовый парсер Лист1 → «Эталон разметки» (НЕ в меню, запускать вручную через Run) ──────────
+
+var LIST1_SHEET_NAME = "Лист1";
+var ETALON_SHEET_NAME = "Эталон разметки";
+var SPORNYE_SHEET_NAME = "Спорные";
+var DEPTH = 10;
+
+/**
+ * Разовый парсер Лист1 → лист «Эталон разметки».
+ *
+ * Запуск: в редакторе Apps Script выбрать функцию parseList1ToEtalon() → Run.
+ * НЕ добавляется в меню onOpen и не вызывается автоматически.
+ *
+ * Геометрия Лист1 (см. docs/CANON.md):
+ * - Строка 1: заголовок версии
+ * - Строка 3: имя субъекта в правой колонке блока (C, H, K, …)
+ * - Строка 4: гео-подзаголовок в левой колонке блока (B, G, J, …)
+ * - Строки 5–14: номера позиций 1..depth в левой колонке, URL в правой
+ * - Буферы: D,E,F после первого субъекта; по 1 колонке перед остальными
+ *
+ * Контракт эталона:
+ * - query = ИМЯ СУБЪЕКТА (lowercase), НИКОГДА не страна
+ * - geo = реальная страна из подзаголовка, НИКОГДА не константа
+ * - domain = домен из URL напротив номера
+ * - sentiment = цвет заливки ячейки номера (зелёный=positive, красный=negative, жёлтый=neutral)
+ * - source = manual_l1
+ */
+function parseList1ToEtalon() {
+  var ui = SpreadsheetApp.getUi();
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var list1 = ss.getSheetByName(LIST1_SHEET_NAME);
+  if (!list1) {
+    Logger.log("parseList1ToEtalon: лист '" + LIST1_SHEET_NAME + "' не найден");
+    ui.alert("Ошибка", "Лист «" + LIST1_SHEET_NAME + "» не найден.", ui.ButtonSet.OK);
+    return;
+  }
+
+  var etalon = ss.getSheetByName(ETALON_SHEET_NAME);
+  if (!etalon) {
+    Logger.log("parseList1ToEtalon: лист '" + ETALON_SHEET_NAME + "' не найден, создаю");
+    etalon = ss.insertSheet(ETALON_SHEET_NAME);
+  }
+
+  var spornye = ss.getSheetByName(SPORNYE_SHEET_NAME);
+  if (!spornye) {
+    Logger.log("parseList1ToEtalon: лист '" + SPORNYE_SHEET_NAME + "' не найден, создаю");
+    spornye = ss.insertSheet(SPORNYE_SHEET_NAME);
+  }
+
+  // Очищаем листы перед записью
+  etalon.clear();
+  spornye.clear();
+
+  // Заголовки «Эталон разметки»
+  etalon.getRange(1, 1, 1, 5).setValues([["domain", "query", "geo", "sentiment", "source"]]);
+  // Заголовки «Спорные»
+  spornye.getRange(1, 1, 1, 6).setValues([["row", "col", "hex", "url", "geo", "query"]]);
+
+  var values = list1.getDataRange().getValues();
+  var backgrounds = list1.getDataRange().getBackgrounds();
+
+  if (!values || values.length < 5) {
+    Logger.log("parseList1ToEtalon: лист '" + LIST1_SHEET_NAME + "' пуст или слишком мал");
+    ui.alert("Ошибка", "Лист «" + LIST1_SHEET_NAME + "» пуст или слишком мал.", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Определяем субъектов по строке 3 (индекс 2)
+  // Имя субъекта в правой колонке: C(2), H(7), K(10), …
+  // Формула: col_name = 3 + i*4 для i=0,1,2,… (0-indexed)
+  // Но мы ищем непустые ячейки в строке 3
+  var subjects = [];
+  var row3 = values[2]; // строка 3 (0-indexed)
+  for (var c = 0; c < row3.length; c++) {
+    var cell = String(row3[c] || "").trim();
+    if (cell) {
+      subjects.push({
+        name: cell,
+        nameCol: c,        // правая колонка (имя + URL)
+        posCol: c - 1      // левая колонка (гео + номера)
+      });
+    }
+  }
+
+  Logger.log("parseList1ToEtalon: найдено субъектов: " + subjects.length);
+  for (var i = 0; i < subjects.length; i++) {
+    Logger.log("  S" + (i+1) + ": имя='" + subjects[i].name + "', posCol=" + subjects[i].posCol + ", nameCol=" + subjects[i].nameCol);
+  }
+
+  if (subjects.length === 0) {
+    Logger.log("parseList1ToEtalon: не найдено имён субъектов в строке 3");
+    ui.alert("Ошибка", "Не найдено имён субъектов в строке 3 листа «" + LIST1_SHEET_NAME + "».", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Парсим каждый субъект
+  var etalonRows = [];
+  var spornyeRows = [];
+
+  for (var s = 0; s < subjects.length; s++) {
+    var subj = subjects[s];
+    var posCol = subj.posCol;
+    var nameCol = subj.nameCol;
+    var query = subj.name.toLowerCase();
+
+    // Ищем гео-блоки внутри субъекта
+    // Гео-подзаголовок в левой колонке (posCol), под ним depth номеров
+    var r = 3; // начинаем со строки 4 (0-indexed)
+    while (r < values.length) {
+      var geoCell = String(values[r][posCol] || "").trim();
+      if (!geoCell) {
+        r++;
+        continue;
+      }
+
+      // Проверяем, что это гео-подзаголовок (не номер)
+      if (/^\d+$/.test(geoCell)) {
+        r++;
+        continue;
+      }
+
+      var geo = geoCell;
+      Logger.log("parseList1ToEtalon: субъект '" + subj.name + "', гео='" + geo + "', строка=" + (r+1));
+
+      // Читаем depth номеров под гео
+      for (var d = 0; d < DEPTH; d++) {
+        var numRow = r + 1 + d;
+        if (numRow >= values.length) break;
+
+        var numCell = String(values[numRow][posCol] || "").trim();
+        var urlCell = String(values[numRow][nameCol] || "").trim();
+        var bgColor = backgrounds[numRow][posCol] || "";
+
+        // Проверяем, что это номер позиции
+        if (!/^\d+$/.test(numCell)) {
+          continue;
+        }
+
+        var position = parseInt(numCell, 10);
+        if (position < 1 || position > DEPTH) {
+          continue;
+        }
+
+        // Определяем sentiment по цвету заливки
+        var sentiment = _colorToSentiment(bgColor);
+
+        if (!sentiment) {
+          // Нейтральный/белый цвет — в «Спорные»
+          spornyeRows.push([numRow + 1, posCol + 1, bgColor, urlCell, geo, query]);
+          continue;
+        }
+
+        if (!urlCell) {
+          // Нет URL — в «Спорные»
+          spornyeRows.push([numRow + 1, posCol + 1, bgColor, "", geo, query]);
+          continue;
+        }
+
+        // Извлекаем домен из URL
+        var domain = _extractDomain(urlCell);
+        if (!domain) {
+          spornyeRows.push([numRow + 1, posCol + 1, bgColor, urlCell, geo, query]);
+          continue;
+        }
+
+        etalonRows.push([domain, query, geo, sentiment, "manual_l1"]);
+      }
+
+      // Переходим к следующему гео-блоку (пропускаем буферную строку)
+      r = r + 1 + DEPTH + 1;
+    }
+  }
+
+  Logger.log("parseList1ToEtalon: собрано записей для эталона: " + etalonRows.length);
+  Logger.log("parseList1ToEtalon: собрано записей для спорных: " + spornyeRows.length);
+
+  // Записываем в «Эталон разметки»
+  if (etalonRows.length > 0) {
+    etalon.getRange(2, 1, etalonRows.length, 5).setValues(etalonRows);
+  }
+
+  // Записываем в «Спорные»
+  if (spornyeRows.length > 0) {
+    spornye.getRange(2, 1, spornyeRows.length, 6).setValues(spornyeRows);
+  }
+
+  var summary = "Парсинг Лист1 завершён.\n\n" +
+    "Субъектов: " + subjects.length + "\n" +
+    "Записей в «Эталон разметки»: " + etalonRows.length + "\n" +
+    "Записей в «Спорные»: " + spornyeRows.length;
+
+  Logger.log("parseList1ToEtalon: " + summary.replace(/\n/g, " | "));
+  ui.alert("Готово", summary, ui.ButtonSet.OK);
+}
+
+/**
+ * Преобразует цвет заливки в sentiment.
+ * Зелёный → positive, красный → negative, жёлтый → neutral.
+ * Возвращает null для нейтральных/белых цветов.
+ */
+function _colorToSentiment(bgColor) {
+  if (!bgColor || bgColor === "#ffffff" || bgColor === "#fff" || bgColor === "white") {
+    return null;
+  }
+
+  var hex = bgColor.replace("#", "").toLowerCase();
+  if (hex.length !== 6) return null;
+
+  var r = parseInt(hex.substr(0, 2), 16);
+  var g = parseInt(hex.substr(2, 2), 16);
+  var b = parseInt(hex.substr(4, 2), 16);
+
+  // Зелёный: G > R и G > B
+  if (g > r && g > b) return "positive";
+  // Красный: R > G и R > B
+  if (r > g && r > b) return "negative";
+  // Жёлтый: R и G высокие, B низкий
+  if (r > 200 && g > 200 && b < 150) return "neutral";
+
+  return null;
+}
+
+/**
+ * Извлекает домен из URL.
+ * https://example.com/path → example.com
+ */
+function _extractDomain(url) {
+  if (!url) return "";
+  try {
+    var match = url.match(/^https?:\/\/([^\/\?#]+)/i);
+    if (match) return match[1].toLowerCase();
+  } catch (e) {
+    Logger.log("_extractDomain: ошибка парсинга URL '" + url + "': " + e);
+  }
+  return "";
+}
+
+// ─── Разовый импорт эталона (НЕ в меню, запускать вручную через Run) ─────────
 
 var ETALON_SHEET_NAME = "Эталон разметки";
 var IMPORT_BATCH_SIZE = 100;
