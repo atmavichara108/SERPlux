@@ -423,6 +423,21 @@ class TestSentimentFillCoordinates:
                 assert sb["url"] == sb["pos"] + 1, \
                     f"url ({sb['url']}) должен быть pos+1 ({sb['pos']+1})"
 
+    def test_subject_name_in_url_column(self):
+        """Имя субъекта пишется в url-колонку (правая), не в pos-колонку (левая)."""
+        queries = [
+            {"key": "juri sudheimer", "display": "Juri Sudheimer"},
+            {"key": "erik sudheimer", "display": "Erik Sudheimer"},
+        ]
+        layout = _build_subject_layout(queries)
+        
+        # pos-колонка (левая, B/G) — для гео и номеров позиций
+        # url-колонка (правая, C/H) — для имени субъекта и URL
+        assert layout["subjects"][0]["pos"] == 1   # B
+        assert layout["subjects"][0]["url"] == 2   # C — имя "Juri Sudheimer" здесь
+        assert layout["subjects"][1]["pos"] == 6   # G
+        assert layout["subjects"][1]["url"] == 7   # H — имя "Erik Sudheimer" здесь
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

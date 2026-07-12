@@ -80,9 +80,9 @@ def _build_subject_layout(queries: list[dict]) -> dict:
     Строит раскладку колонок из списка субъектов (queries).
 
     Правило буферов (канон Лист1):
-    - Субъект 1: колонки B (pos), C (url) → индексы 1, 2
+    - Субъект 1: колонка B (geo+номера+заливка), колонка C (имя+URL) → индексы 1, 2
     - Буфер после первого субъекта: 3 колонки (D, E, F)
-    - Каждый следующий субъект: 2 колонки (pos, url), перед ним 1 буферная колонка
+    - Каждый следующий субъект: 2 колонки (geo/номера + имя/URL), перед ним 1 буферная колонка
     
     Возвращает dict:
     {
@@ -104,8 +104,8 @@ def _build_subject_layout(queries: list[dict]) -> dict:
         subjects.append({
             "key": key,
             "display": display,
-            "pos": col_idx,
-            "url": col_idx + 1,
+            "pos": col_idx,      # левая колонка: гео + номера позиций + заливка
+            "url": col_idx + 1,  # правая колонка: имя субъекта + URL
         })
 
         col_idx += 2  # pos + url
@@ -260,7 +260,7 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
 
         hdr_row = [""] * cols
         for sb in subject_blocks:
-            hdr_row[sb["pos"]] = sb["display"]
+            hdr_row[sb["url"]] = sb["display"]
         report_data.append(hdr_row)
 
         for geo_key in geo_order:
