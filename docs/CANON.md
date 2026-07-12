@@ -75,7 +75,10 @@
 
 ## Карта граблей (проверено, НЕ трогать без причины)
 
-- ✅ Тесты изолированы (temp_db + моки), боевую БД не портят.
+- ✅ Тесты полностью изолированы (temp_db + моки gspread), боевую БД и таблицу не портят.
+  - `test_reporter.py`: фикстура `mock_gspread` мокает `gspread.service_account` для всех тестов `TestBuildReportWithDynamicProfile`.
+  - `test_exporter.py`: все тесты используют `patch("exporter.gspread.service_account")`.
+  - Ни один тест не читает/пишет боевую БД (`/app/data/serplux.db`) или боевую таблицу.
 - ✅ verify.sh отчёт не пишет, БД не портит — это только термометр.
 - ✅ deploy.sh экспорт не запускает.
 - ✅ `_build_subject_layout` в reporter.py корректен (15+ тестов зелёные, геометрия совпадает с эталоном).

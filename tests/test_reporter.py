@@ -130,7 +130,26 @@ class TestBuildReportWithDynamicProfile:
         # Очищаем после теста
         Path(db_path).unlink(missing_ok=True)
     
-    def test_report_with_4_subjects(self, temp_db):
+    @pytest.fixture
+    def mock_gspread(self):
+        """Мок gspread для изоляции от боевой таблицы."""
+        fake_worksheet = MagicMock()
+        fake_worksheet.id = 999
+        fake_spreadsheet = MagicMock()
+        fake_spreadsheet.worksheet.return_value = fake_worksheet
+        fake_client = MagicMock()
+        fake_client.open_by_key.return_value = fake_spreadsheet
+        
+        with patch("reporter.os.path.exists", return_value=True):
+            with patch("reporter.gspread.service_account", return_value=fake_client) as mock_sa:
+                yield {
+                    "client": fake_client,
+                    "spreadsheet": fake_spreadsheet,
+                    "worksheet": fake_worksheet,
+                    "service_account": mock_sa,
+                }
+    
+    def test_report_with_4_subjects(self, temp_db, mock_gspread):
         """Построение отчёта для профиля с 4 субъектами (как client1)."""
         from reporter import build_report
         
@@ -185,16 +204,13 @@ class TestBuildReportWithDynamicProfile:
         
         storage.save(test_rows, client_id=client_id, db_path=temp_db)
         
-        # Построение отчёта не должно упасть
-        # (не проверяем Google Sheets, так как тест локальный)
-        try:
-            build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
-        except Exception as e:
-            # Ожидаем ошибку только из-за отсутствия Google Sheet ID, а не из самой логики
-            if "GOOGLE_SHEET_ID" not in str(e) and "credentials" not in str(e).lower():
-                raise
+        # Построение отчёта не должно упасть и НЕ должно писать в боевую таблицу
+        build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
+        
+        # Проверяем, что gspread был вызван (тест дошёл до записи)
+        mock_gspread["service_account"].assert_called_once()
     
-    def test_report_with_2_subjects(self, temp_db):
+    def test_report_with_2_subjects(self, temp_db, mock_gspread):
         """Построение отчёта для профиля с 2 субъектами."""
         from reporter import build_report
         
@@ -232,13 +248,10 @@ class TestBuildReportWithDynamicProfile:
         
         storage.save(test_rows, client_id=client_id, db_path=temp_db)
         
-        try:
-            build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
-        except Exception as e:
-            if "GOOGLE_SHEET_ID" not in str(e) and "credentials" not in str(e).lower():
-                raise
+        build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
+        mock_gspread["service_account"].assert_called_once()
     
-    def test_report_with_7_subjects(self, temp_db):
+    def test_report_with_7_subjects(self, temp_db, mock_gspread):
         """Построение отчёта для профиля с 7 субъектами."""
         from reporter import build_report
         
@@ -279,22 +292,20 @@ class TestBuildReportWithDynamicProfile:
         
         storage.save(test_rows, client_id=client_id, db_path=temp_db)
         
-        try:
-            build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
-        except Exception as e:
-            if "GOOGLE_SHEET_ID" not in str(e) and "credentials" not in str(e).lower():
-                raise
+        build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
+        mock_gspread["service_account"].assert_called_once()
     
-    def test_report_missing_client(self, temp_db):
+    def test_report_missing_client(self, temp_db, mock_gspread):
         """Отчёт для несуществующего клиента должен выдать ошибку."""
         from reporter import build_report
         
         # Попытка построить отчёт для клиента, которого нет в БД
         # Функция выведет лог и вернёт None
         build_report(date="2026-07-10", client_id="nonexistent", db_path=temp_db)
-        # Это не должно упасть, только залогировать ошибку
+        # gspread не должен быть вызван — клиент не найден
+        mock_gspread["service_account"].assert_not_called()
     
-    def test_report_empty_queries(self, temp_db):
+    def test_report_empty_queries(self, temp_db, mock_gspread):
         """Отчёт для профиля без субъектов должен выдать ошибку."""
         from reporter import build_report
         
@@ -308,7 +319,8 @@ class TestBuildReportWithDynamicProfile:
         )
         
         build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
-        # Это не должно упасть, только залогировать предупреждение
+        # gspread не должен быть вызван — нет субъектов
+        mock_gspread["service_account"].assert_not_called()
 
 
 class TestLayoutBuffers:
