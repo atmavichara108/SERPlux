@@ -21,6 +21,7 @@ SEARCHER_MAP = {
 }
 
 REPORT_SHEET_NAME = "Отчёт"
+MAX_VERSIONS = 10  # храним последние 10 версий отчёта
 
 LABEL_COLORS = {
     "positive": {"red": 0.85, "green": 0.92, "blue": 0.83},
@@ -155,10 +156,92 @@ def _apply_label_colors(spreadsheet, sheet_id: int,
         log.error("Ошибка при применении цветов: %s", e)
 
 
+def _is_version_header(row: list[str]) -> bool:
+    """
+    Проверяет, является ли строка заголовком версии отчёта.
+    Признак: первая ячейка начинается с "Позиции " и содержит " на ".
+    Пример: "Позиции Google на 11.7.2026"
+    """
+    if not row or not row[0]:
+        return False
+    cell = str(row[0])
+    return cell.startswith("Позиции ") and " на " in cell
+
+
+def _count_versions(worksheet) -> int:
+    """Считает число версий отчёта на листе по заголовкам."""
+    try:
+        values = worksheet.get_all_values()
+        count = 0
+        for row in values:
+            if _is_version_header(row):
+                count += 1
+        return count
+    except Exception as e:
+        log.error("Ошибка при подсчёте версий: %s", e)
+        return 0
+
+
+def _trim_old_versions(spreadsheet, worksheet, max_versions: int = MAX_VERSIONS) -> None:
+    """
+    Удаляет самые старые версии отчёта снизу, если их больше max_versions.
+    Версии считаются по заголовкам "Позиции ... на ...".
+    """
+    try:
+        values = worksheet.get_all_values()
+        if not values:
+            return
+
+        # Находим индексы строк с заголовками версий (0-indexed)
+        version_rows = []
+        for i, row in enumerate(values):
+            if _is_version_header(row):
+                version_rows.append(i)
+
+        if len(version_rows) <= max_versions:
+            return
+
+        # Удаляем самые старые версии (последние в списке)
+        rows_to_delete = version_rows[max_versions:]
+        log.info("Удаляю %s старых версий отчёта (строки %s)", 
+                 len(rows_to_delete), rows_to_delete)
+
+        # Собираем диапазоны для удаления (снизу вверх, чтобы индексы не съехали)
+        # Каждая версия — от заголовка до следующего заголовка (или конца листа)
+        delete_requests = []
+        for idx in reversed(rows_to_delete):
+            # Находим конец версии (следующий заголовок или конец листа)
+            next_version_idx = None
+            for v in version_rows:
+                if v > idx:
+                    next_version_idx = v
+                    break
+            
+            end_idx = next_version_idx if next_version_idx is not None else len(values)
+            
+            delete_requests.append({
+                "deleteDimension": {
+                    "range": {
+                        "sheetId": worksheet.id,
+                        "dimension": "ROWS",
+                        "startIndex": idx,
+                        "endIndex": end_idx,
+                    }
+                }
+            })
+
+        if delete_requests:
+            body = {"requests": delete_requests}
+            spreadsheet.batch_update(body)
+            log.info("Удалено %s старых версий отчёта", len(delete_requests))
+
+    except Exception as e:
+        log.error("Ошибка при обрезке старых версий: %s", e)
+
+
 def build_report(date: str | None = None, force: bool = False, sheet_id: str | None = None,
                  client_id: str = "default", db_path: str = storage.DB_PATH) -> None:
-    # force устарел: лист «Отчёт» всегда полностью очищается перед записью.
-    # Параметр оставлен в сигнатуре для обратной совместимости с вызывающим кодом.
+    # force устарел: параметр оставлен в сигнатуре для обратной совместимости.
     # Загружаем профиль клиента для получения списка субъектов и гео
     client = get_client(client_id, db_path=db_path)
     if not client:
@@ -301,18 +384,45 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
     worksheet = _get_or_create_report_sheet(spreadsheet)
 
     try:
-        # Лист «Отчёт» содержит только отчёт за текущую дату.
-        # Полностью очищаем лист перед записью (кэш пишется на отдельный лист «Лист2»).
-        worksheet.clear()
-        log.info("Лист '%s' очищен перед записью отчёта", REPORT_SHEET_NAME)
+        new_rows_count = len(report_data)
+        log.info("Новый блок отчёта: %s строк", new_rows_count)
 
-        log.info("Вставляю %s строк отчёта на лист '%s'", len(report_data), REPORT_SHEET_NAME)
+        # Проверяем, есть ли уже данные на листе
+        existing_values = worksheet.get_all_values()
+        has_existing_data = bool(existing_values and any(any(cell for cell in row) for row in existing_values))
+
+        if has_existing_data:
+            # Вставляем новый блок сверху через insertDimension
+            log.info("Вставляю %s строк сверху (старые данные сдвинутся вниз)", new_rows_count)
+            
+            insert_request = {
+                "insertDimension": {
+                    "range": {
+                        "sheetId": worksheet.id,
+                        "dimension": "ROWS",
+                        "startIndex": 0,
+                        "endIndex": new_rows_count,
+                    },
+                    "inheritFromBefore": False,
+                }
+            }
+            
+            body = {"requests": [insert_request]}
+            spreadsheet.batch_update(body)
+            log.info("Вставлено %s строк сверху, старые данные сдвинуты вниз", new_rows_count)
+
+        # Записываем новый блок в A1
+        log.info("Записываю новый блок отчёта в A1:%s", new_rows_count)
         worksheet.update(report_data, "A1")
 
+        # Применяем заливку к новому блоку (строки 0..new_rows_count-1)
         worksheet_id = worksheet.id
         _apply_label_colors(spreadsheet, worksheet_id, format_cells)
 
-        log.info("Отчёт успешно построен")
+        # Обрезаем старые версии, если их больше MAX_VERSIONS
+        _trim_old_versions(spreadsheet, worksheet, MAX_VERSIONS)
+
+        log.info("Отчёт успешно построен (накопительный режим, макс. %s версий)", MAX_VERSIONS)
     except APIError as e:
         log.error("Ошибка Google API при записи отчёта: %s", e)
     except Exception as e:

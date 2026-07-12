@@ -13,6 +13,7 @@ import tempfile
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import storage
 from reporter import _build_subject_layout
@@ -437,6 +438,92 @@ class TestSentimentFillCoordinates:
         assert layout["subjects"][0]["url"] == 2   # C — имя "Juri Sudheimer" здесь
         assert layout["subjects"][1]["pos"] == 6   # G
         assert layout["subjects"][1]["url"] == 7   # H — имя "Erik Sudheimer" здесь
+
+
+class TestAccumulativeReport:
+    """Тесты накопительного режима отчёта (версии сверху, старые снизу)."""
+
+    def test_is_version_header(self):
+        """_is_version_header распознаёт заголовки версий."""
+        from reporter import _is_version_header
+        
+        assert _is_version_header(["Позиции Google на 11.7.2026", "", ""])
+        assert _is_version_header(["Позиции Яндекс на 10.7.2026", "", ""])
+        assert not _is_version_header(["", "", ""])
+        assert not _is_version_header(["Juri Sudheimer", "", ""])
+        assert not _is_version_header(["Lithuania", "", ""])
+        assert not _is_version_header(["1", "", ""])
+
+    def test_build_report_accumulates_versions(self, monkeypatch):
+        """Второй вызов build_report вставляет новый блок сверху, не вызывая clear()."""
+        from reporter import build_report
+        
+        monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+        monkeypatch.setenv("GOOGLE_SHEET_ID", "test-sheet-id")
+        
+        fake_worksheet = MagicMock()
+        fake_worksheet.id = 123
+        fake_worksheet.get_all_values.return_value = [
+            ["Позиции Google на 10.7.2026", "", ""],
+            ["", "", ""],
+            ["", "Juri", ""],
+        ]
+        fake_spreadsheet = MagicMock()
+        fake_spreadsheet.worksheet.return_value = fake_worksheet
+        fake_client = MagicMock()
+        fake_client.open_by_key.return_value = fake_spreadsheet
+        
+        # Создаём временную БД
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        
+        try:
+            storage._init_db(db_path=db_path)
+            
+            # Создаём профиль клиента
+            storage.create_client(
+                client_id="test",
+                client_name="Test Client",
+                queries=[{"key": "juri sudheimer", "display": "Juri"}],
+                regions_map=[{"geo_name": "Литва", "searcher": "google"}],
+                db_path=db_path,
+            )
+            
+            # Добавляем тестовые данные
+            test_rows = [
+                {
+                    "date": "2026-07-11",
+                    "searcher": "google",
+                    "query": "juri sudheimer",
+                    "geo": "Литва",
+                    "region_index": 1300,
+                    "position": 1,
+                    "url": "https://example.com",
+                    "domain": "example.com",
+                    "snippet": "test",
+                    "label": "positive",
+                }
+            ]
+            storage.save(test_rows, client_id="test", db_path=db_path)
+            
+            with patch("reporter.os.path.exists", return_value=True):
+                with patch("reporter.gspread.service_account", return_value=fake_client):
+                    build_report(date="2026-07-11", client_id="test", db_path=db_path)
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+        
+        # Проверяем, что clear() НЕ вызывался
+        fake_worksheet.clear.assert_not_called()
+        
+        # Проверяем, что batch_update вызывался для insertDimension
+        batch_update_calls = fake_spreadsheet.batch_update.call_args_list
+        assert len(batch_update_calls) >= 1, "batch_update должен вызываться для insertDimension"
+        
+        # Первый вызов — insertDimension
+        first_call = batch_update_calls[0]
+        requests = first_call[0][0]["requests"]
+        assert any("insertDimension" in req for req in requests), \
+            "Должен быть insertDimension для вставки строк сверху"
 
 
 if __name__ == "__main__":
