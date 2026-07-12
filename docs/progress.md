@@ -14,7 +14,8 @@
   - [x] **ДЕФЕКТ 2 — reporter.py: раскладка отчёта точно повторяет эталон Лист1.**
     - `_build_subject_layout()` исправлен: буфер после первого субъекта = 3 колонки (D,E,F), перед каждым последующим = 1 колонка.
     - Формула: S1=(1,2), S2=(6,7), S3=(9,10), S4=(12,13)... (0-indexed).
-    - Имя субъекта в строке 3 пишется в `sb["url"]` (правая колонка), гео в `sb["pos"]` (левая колонка).
+    - **Имя субъекта** в строке 3 пишется в `sb["url"]` (правая колонка, крупным шрифтом).
+    - **Гео** в строке 4 пишется в `sb["pos"]` (левая колонка).
     - Заливка sentiment применяется к ячейке номера позиции (pos-колонка), не к URL и не ко всей строке.
     - Создан `docs/report_layout.md` — канон раскладки отчёта (вертикальная/горизонтальная структура, буферы, цвета).
   - [x] **ДЕФЕКТ 3 — verify.sh: ложные срабатывания и падение на warning.**
@@ -22,7 +23,7 @@
     - Grep логов (шаг 4/6): исключены строки-метрики (`_error=0`, `fallback_neutral=0`, `=N`) — это INFO-статистика об отсутствии ошибок.
     - `bash -n verify.sh` проходит.
   - [x] **Тесты:** обновлены `test_layout_2/4/7_subjects` под новую раскладку, добавлены `TestLayoutBuffers` (3 теста: буфер 3 колонки, буфер 1 колонка, блоки не пересекаются) и `TestNoDemoDataInExport` (экспорт без example.com).
-  - [x] **Результат:** 218/218 тестов зелёные. `bash -n verify.sh` OK. Grep по боевому коду: ноль `example.com`.
+  - [x] **Результат:** 222/222 тестов зелёные. `bash -n verify.sh` OK. Grep по боевому коду: ноль `example.com`.
   - [x] **Документация обновлена:**
     - `docs/progress.md` — эта запись.
     - `docs/decisions.md` — 3 новых ADR (канон раскладки, demo data вынесен, verify.sh warning).
@@ -30,8 +31,13 @@
     - `docs/contracts.md` — добавлено описание раскладки reporter.py.
     - `docs/verification.md` — обновлено описание шага 4/6 (метрики исключаются, warning не роняет).
     - `docs/report_layout.md` — создан канон раскладки отчёта.
+  - [x] **Фикс раскладки (после сверки с Лист1):** имя субъекта перенесено из pos-колонки в url-колонку (правая), гео осталось в pos-колонке (левая). Добавлен тест `test_subject_name_in_url_column`.
   - Status: Ready for commit
-  - Коммит: `fix: remove demo test_rows from exporter + report layout exactly matches Лист1 etalon + verify.sh false-positive/warning-exit fixes`
+  - Коммиты:
+    - `fix: remove demo test_rows from exporter + report layout exactly matches Лист1 etalon + verify.sh false-positive/warning-exit fixes`
+    - `fix(verify.sh): remove stray indent in schema-check heredoc (fix IndentationError)`
+    - `fix(reporter): sentiment fill strictly on position-number cell per subject, empty buffers (fix column offset for subjects >=1)`
+    - `fix(reporter): subject name in url-column (right), geo in pos-column (left) — matches Лист1 etalon`
 
 - **Session: 2026-07-10 (шестая) — Разделение кэша и отчёта в Google Sheets + канон разметки**
   - [x] `exporter.py`: кэш выдачи теперь пишется на отдельный лист «Лист2» с полной очисткой перед записью.
@@ -728,7 +734,7 @@ REGIONS_MAP=regions_map.json
 
 ## Дальше
 - **Коммит и деплой:** зафиксировать изменения, выполнить `./backup_db.sh → ./deploy.sh → ./verify.sh` (ожидается 6/6).
-- **Боевой прогон:** запустить client01 через меню Google Sheets, визуальная сверка листа «Отчёт» с Лист1 (заливка на номерах позиций, буферы D/E/F, G/H, I, J/K, реальные домены, ноль example.com).
+- **Боевой прогон:** запустить client01 через меню Google Sheets, визуальная сверка листа «Отчёт» с Лист1 (имя субъекта в url-колонке, гео в pos-колонке, заливка на номерах позиций, буферы D/E/F, G/H, I, J/K, реальные домены, ноль example.com).
 - Проверка режимов `auto` и `deep` в labeler на реальных данных.
 - Валидация динамического reporter с профилем клиента (2/4/7 субъектов).
 - Если разовый импорт ручной разметки повторится — использовать внешний скрипт/SQL, не добавлять в код репозитория.
