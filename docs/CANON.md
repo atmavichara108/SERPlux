@@ -129,10 +129,11 @@
 
 ## Карта граблей (проверено, НЕ трогать без причины)
 
-- ✅ Тесты полностью изолированы (temp_db + моки gspread), боевую БД и таблицу не портят.
-  - `test_reporter.py`: фикстура `mock_gspread` мокает `gspread.service_account` для всех тестов `TestBuildReportWithDynamicProfile`.
-    - **КРИТИЧНО:** фикстура устанавливает `GOOGLE_SHEET_ID` и `GOOGLE_CREDENTIALS_PATH` через `monkeypatch.setenv()` до входа в mock-блок. Иначе тесты падают в CI (отсутствие переменных окружения) и проходят локально/в контейнере (переменная задана).
-    - **Проверка:** оба прогона обязательны: `unset GOOGLE_SHEET_ID && pytest` (CI) и `GOOGLE_SHEET_ID=fake pytest` (контейнер).
+- ✅ Тесты полностью изолированы (temp_db + моки), боевую БД и таблицу не портят.
+  - `test_reporter.py`: фикстура `mock_gspread` патчит `reporter._get_spreadsheet` напрямую для всех тестов `TestBuildReportWithDynamicProfile`.
+    - **Стратегия:** патчируем функцию `_get_spreadsheet` (а не gspread.service_account), полностью изолируя от проверок окружения (GOOGLE_SHEET_ID, credentials.json).
+    - **Почему это надежно:** тесты не зависят от env-переменных вообще, работают в CI без переменных, на локали и в контейнере.
+    - **Проверка:** `unset GOOGLE_SHEET_ID && unset GOOGLE_CREDENTIALS_PATH && pytest tests/test_reporter.py` → должно быть зелёно.
   - `test_exporter.py`: все тесты используют `patch("exporter.gspread.service_account")`.
   - Ни один тест не читает/пишет боевую БД (`/app/data/serplux.db`) или боевую таблицу.
 - ✅ verify.sh отчёт не пишет, БД не портит — это только термометр.
@@ -157,13 +158,17 @@
 
 Все тесты должны проходить **независимо от реальных переменных окружения** (GOOGLE_SHEET_ID, GOOGLE_CREDENTIALS_PATH и т.п.). 
 
-**Процесс проверки:**
+**Правило:** Если тесты проходят локально, но падают в CI — это скрытая зависимость от среды.
 
-1. **В CI:** переменные не установлены → тесты должны быть зелёные (благодаря `monkeypatch.setenv()` в фикстурах).
-2. **Локально:** `unset GOOGLE_SHEET_ID && unset GOOGLE_CREDENTIALS_PATH && pytest` → должно быть зелёно.
-3. **В контейнере:** переменные установлены → `GOOGLE_SHEET_ID=fake pytest` → должно быть зелёно.
+**Решение:** патчируем функции напрямую, не полагаясь на env-переменные.
 
-Если тесты проходят только с реальными переменными и падают в CI — это скрытая зависимость от среды. Добавить `monkeypatch.setenv()` в фикстуру. Происшедший с reporter.py случай: `mock_gspread` не задавал `GOOGLE_SHEET_ID` → `reporter._get_spreadsheet()` выходил раньше вызова gspread → `assert_called_once()` падал в CI.
+**Пример:** в `test_reporter.py` раньше тесты падали в CI, потому что `reporter._get_spreadsheet()` проверяет наличие `GOOGLE_SHEET_ID` ДО вызова gspread. Решение: патчим `reporter._get_spreadsheet` полностью, обходя все проверки окружения.
+
+**Проверка тестов (в чистом окружении):**
+```bash
+unset GOOGLE_SHEET_ID && unset GOOGLE_CREDENTIALS_PATH && python -m pytest tests/ -q
+```
+Должно быть зелёно (224 passed).
 
 ## Поведение reporter (накопительный режим)
 
