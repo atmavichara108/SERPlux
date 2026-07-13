@@ -30,10 +30,10 @@ class TestExportTimeout:
 
 
 class TestExportCacheSheet:
-    """Проверяем, что export пишет кэш только на лист 'Лист2'."""
+    """Проверяем, что export пишет кэш только на лист 'Данные'."""
 
     def test_export_uses_cache_sheet_and_clears_it(self, monkeypatch):
-        """export очищает лист 'Лист2' и записывает туда заголовок + данные."""
+        """export очищает лист 'Данные' и записывает туда заголовок + данные."""
         monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
         monkeypatch.setenv("GOOGLE_SHEET_ID", "test-sheet-id")
 
@@ -62,7 +62,7 @@ class TestExportCacheSheet:
             with patch("exporter.gspread.service_account", return_value=fake_client):
                 exporter.export(test_rows)
 
-        fake_spreadsheet.worksheet.assert_called_once_with("Лист2")
+        fake_spreadsheet.worksheet.assert_called_once_with("Данные")
         fake_worksheet.clear.assert_called_once()
         fake_worksheet.update.assert_called_once()
         args, kwargs = fake_worksheet.update.call_args

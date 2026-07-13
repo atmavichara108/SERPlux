@@ -31,6 +31,10 @@
 
 var SETTINGS_SHEET_NAME = "Настройки";
 var LOG_SHEET_NAME = "Лог";
+var CACHE_SHEET_NAME = "Данные";
+var REPORT_SHEET_NAME = "Отчёт";
+var ETALON_SHEET_NAME = "Эталон разметки";
+var DISPUTED_SHEET_NAME = "Спорные";
 var DEFAULT_DEPTH = 10;
 var DEFAULT_LABEL_MODE = "auto";
 var DEFAULT_DATE = "today";
@@ -2425,6 +2429,181 @@ function importEtalonToDb() {
     "Пропущено: " + totalSkipped + "\n" +
     "Ошибок: " + totalErrors;
 
-  Logger.log("importEtalonToDb: " + summary.replace(/\n/g, " | "));
-  ui.alert("Готово", summary, ui.ButtonSet.OK);
+   Logger.log("importEtalonToDb: " + summary.replace(/\n/g, " | "));
+   ui.alert("Готово", summary, ui.ButtonSet.OK);
+}
+
+// ─── Модуль 7: Инициализация шаблона листов (§5) ────────────────────────────────
+
+/**
+ * initTemplateSheets() — инициализация шаблонных листов для клиента.
+ * 
+ * Создаёт 6 листов (если их нет):
+ *   1. «Настройки» — параметры сбора
+ *   2. «Данные» — кэш выдачи
+ *   3. «Отчёт» — накопительная матрица позиций
+ *   4. «Эталон разметки» — кэш разметки по доменам
+ *   5. «Спорные» — накопитель для deep-режима (v2)
+ *   6. «Лог» — запись о запусках
+ * 
+ * Идемпотентна: если лист уже есть, не дублирует.
+ * Запускается вручную один раз через Run в редакторе Apps Script.
+ * 
+ * НЕ создаёт Лист1 — он исключён из структуры (CANON.md).
+ */
+function initTemplateSheets() {
+  var ui = SpreadsheetApp.getUi();
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  
+  try {
+    // 1. Инициализируем лист «Настройки»
+    _ensureAndInitSettingsSheet(spreadsheet);
+    
+    // 2. Инициализируем лист «Данные» (кэш выдачи)
+    _ensureDataSheet(spreadsheet);
+    
+    // 3. Инициализируем лист «Отчёт» (пустой, заполняется прогоном)
+    _ensureReportSheet(spreadsheet);
+    
+    // 4. Инициализируем лист «Эталон разметки»
+    _ensureEtalonSheet(spreadsheet);
+    
+    // 5. Инициализируем лист «Спорные»
+    _ensureDisputedSheet(spreadsheet);
+    
+    // 6. Инициализируем лист «Лог»
+    _ensureLogSheet(spreadsheet);
+    
+    ui.alert(
+      "Готово",
+      "Шаблон листов инициализирован успешно:\n" +
+      "✓ Настройки\n" +
+      "✓ Данные\n" +
+      "✓ Отчёт\n" +
+      "✓ Эталон разметки\n" +
+      "✓ Спорные\n" +
+      "✓ Лог\n\n" +
+      "Структура Лист1 исключена (см. CANON.md).",
+      ui.ButtonSet.OK
+    );
+  } catch (e) {
+    Logger.log("initTemplateSheets ERROR: " + e.message);
+    ui.alert("Ошибка", "initTemplateSheets: " + e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * _ensureAndInitSettingsSheet — создаёт и инициализирует лист «Настройки».
+ * Идемпотентна: если лист существует, вызывает initSettingsSheetSafe().
+ */
+function _ensureAndInitSettingsSheet(spreadsheet) {
+  try {
+    var sheet = spreadsheet.getSheetByName(SETTINGS_SHEET_NAME);
+    if (sheet === null) {
+      sheet = spreadsheet.insertSheet(SETTINGS_SHEET_NAME);
+      Logger.log("_ensureAndInitSettingsSheet: создан новый лист '" + SETTINGS_SHEET_NAME + "'");
+    } else {
+      Logger.log("_ensureAndInitSettingsSheet: лист '" + SETTINGS_SHEET_NAME + "' уже существует");
+    }
+    // Инициализируем содержимое
+    initSettingsSheetSafe();
+  } catch (e) {
+    throw new Error("_ensureAndInitSettingsSheet: " + e.message);
+  }
+}
+
+/**
+ * _ensureDataSheet — создаёт лист «Данные» с заголовками.
+ * Заголовки: Дата | Поисковая система | Субъект/Запрос | Гео | Позиция | URL | Домен | Сниппет | Метка
+ */
+function _ensureDataSheet(spreadsheet) {
+  try {
+    var sheet = spreadsheet.getSheetByName(CACHE_SHEET_NAME);
+    if (sheet === null) {
+      sheet = spreadsheet.insertSheet(CACHE_SHEET_NAME);
+      var headers = ["Дата", "Поисковая система", "Субъект/Запрос", "Гео", "Позиция", "URL", "Домен", "Сниппет", "Метка"];
+      sheet.appendRow(headers);
+      Logger.log("_ensureDataSheet: создан лист '" + CACHE_SHEET_NAME + "' с заголовками");
+    } else {
+      Logger.log("_ensureDataSheet: лист '" + CACHE_SHEET_NAME + "' уже существует");
+    }
+  } catch (e) {
+    throw new Error("_ensureDataSheet: " + e.message);
+  }
+}
+
+/**
+ * _ensureReportSheet — создаёт лист «Отчёт» (пустой, заполняется прогоном).
+ */
+function _ensureReportSheet(spreadsheet) {
+  try {
+    var sheet = spreadsheet.getSheetByName(REPORT_SHEET_NAME);
+    if (sheet === null) {
+      sheet = spreadsheet.insertSheet(REPORT_SHEET_NAME);
+      Logger.log("_ensureReportSheet: создан пустой лист '" + REPORT_SHEET_NAME + "'");
+    } else {
+      Logger.log("_ensureReportSheet: лист '" + REPORT_SHEET_NAME + "' уже существует");
+    }
+  } catch (e) {
+    throw new Error("_ensureReportSheet: " + e.message);
+  }
+}
+
+/**
+ * _ensureEtalonSheet — создаёт лист «Эталон разметки» с заголовками.
+ * Заголовки: domain | query | geo | sentiment | source
+ * Пополняется нейронкой при прогонах, кэш разметки по (domain, query, geo).
+ */
+function _ensureEtalonSheet(spreadsheet) {
+  try {
+    var sheet = spreadsheet.getSheetByName(ETALON_SHEET_NAME);
+    if (sheet === null) {
+      sheet = spreadsheet.insertSheet(ETALON_SHEET_NAME);
+      var headers = ["domain", "query", "geo", "sentiment", "source"];
+      sheet.appendRow(headers);
+      Logger.log("_ensureEtalonSheet: создан лист '" + ETALON_SHEET_NAME + "' с заголовками");
+    } else {
+      Logger.log("_ensureEtalonSheet: лист '" + ETALON_SHEET_NAME + "' уже существует");
+    }
+  } catch (e) {
+    throw new Error("_ensureEtalonSheet: " + e.message);
+  }
+}
+
+/**
+ * _ensureDisputedSheet — создаёт лист «Спорные» с заголовками.
+ * Заголовки: domain | query | geo | url | причина
+ * Задел под deep-режим (v2): читается в future версии для доразметки по контенту страницы.
+ */
+function _ensureDisputedSheet(spreadsheet) {
+  try {
+    var sheet = spreadsheet.getSheetByName(DISPUTED_SHEET_NAME);
+    if (sheet === null) {
+      sheet = spreadsheet.insertSheet(DISPUTED_SHEET_NAME);
+      var headers = ["domain", "query", "geo", "url", "причина"];
+      sheet.appendRow(headers);
+      Logger.log("_ensureDisputedSheet: создан лист '" + DISPUTED_SHEET_NAME + "' с заголовками");
+    } else {
+      Logger.log("_ensureDisputedSheet: лист '" + DISPUTED_SHEET_NAME + "' уже существует");
+    }
+  } catch (e) {
+    throw new Error("_ensureDisputedSheet: " + e.message);
+  }
+}
+
+/**
+ * _ensureLogSheet — создаёт лист «Лог» (пустой, используется для логирования).
+ */
+function _ensureLogSheet(spreadsheet) {
+  try {
+    var sheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
+    if (sheet === null) {
+      sheet = spreadsheet.insertSheet(LOG_SHEET_NAME);
+      Logger.log("_ensureLogSheet: создан пустой лист '" + LOG_SHEET_NAME + "'");
+    } else {
+      Logger.log("_ensureLogSheet: лист '" + LOG_SHEET_NAME + "' уже существует");
+    }
+  } catch (e) {
+    throw new Error("_ensureLogSheet: " + e.message);
+  }
 }

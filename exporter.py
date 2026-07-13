@@ -13,7 +13,7 @@ log = config.setup_logging(__name__)
 
 Row = dict[str, Any]
 
-CACHE_SHEET_NAME = "Лист2"
+CACHE_SHEET_NAME = "Данные"
 
 SEARCHER_MAP = {
     "google": "Google",
@@ -55,7 +55,7 @@ def _get_spreadsheet(sheet_id: str | None = None):
 
 
 def _get_or_create_cache_sheet(spreadsheet):
-    """Возвращает лист 'Лист2' для кэша выдачи, создаёт при необходимости."""
+    """Возвращает лист 'Данные' для кэша выдачи, создаёт при необходимости."""
     try:
         worksheet = spreadsheet.worksheet(CACHE_SHEET_NAME)
         log.info("Лист '%s' найден", CACHE_SHEET_NAME)
@@ -87,7 +87,7 @@ def _row_to_list(row: Row) -> list[str]:
 
 def export(rows: list[Row], sheet_id: str | None = None) -> None:
     """
-    Выгружает кэш выдачи (positions + метки) на лист 'Лист2'.
+    Выгружает кэш выдачи (positions + метки) на лист 'Данные'.
 
     Лист полностью очищается перед записью (перезапись, не append).
     Лист 'Отчёт' не трогается — туда пишет reporter.build_report().

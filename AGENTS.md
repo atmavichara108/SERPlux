@@ -37,19 +37,39 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 - .env в .gitignore. Никогда не коммить ключи. Никогда не печатай ключи в логи.
 - В репо лежит .env.example с пустыми плейсхолдерами.
 
-## Принципы
+## Принципы и operationalные требования
 - Сначала вертикальный срез (1 запрос, 1 гео, Google, без LLM), потом расширение.
 - Идемпотентность: повторный запуск не должен ломать данные или дублировать.
 - Частичный сбой = логируем и продолжаем, не падаем целиком.
 - Логирование через стандартный logging, не print, в финальном коде.
-- Каждый модуль с примером запуска в __main__ для изоляции отладки.
-- После значимого изменения: обнови docs/progress.md (статус) и
-  docs/decisions.md (если принято архитектурное решение). Кратко, без воды.
+- Каждый модуль с примером запуска в `__main__` для изоляции отладки.
+- После значимого изменения: обнови `docs/progress.md` (статус) и
+  `docs/decisions.md` (если принято архитектурное решение). Кратко, без воды.
 - **Flush-протокол (память):** перед компакцией сессии ключевые решения и
-  выводы дописывай в docs/decisions.md. Плагин `compaction.js` автофлашит
-  compaction-summary в раздел «Compaction flush»; курируемые ADR — вручную
-  выше. Так контекст переживает сжатие. Финальный дамп по концу сессии — `/dream`.
+  выводы дописывай в `docs/decisions.md`.
 - Устойчивое развитие.
+
+## Команды разработки
+
+| Команда | Описание |
+|---------|----------|
+| `python -m pytest -v` | Запустить все 224 теста локально (требует `pip install -r requirements-dev.txt`) |
+| `python -m pytest -k <pattern> -v` | Запустить тесты по паттерну (e.g., `test_collect` или `test_labeler`) |
+| `python <module>.py` | Запустить модуль с примером в `__main__` для отладки |
+| `docker compose up -d` | Поднять контейнер webhook (требует `.env` и `credentials.json`) |
+| `./verify.sh` | Проверка после deploy: тесты, health, логи, БД, целостность данных (в контейнере) |
+| `./backup_db.sh` | Бэкап SQLite БД (создаёт `serplux.db.bak.<timestamp>`) |
+| `bash -n <script>.sh` | Синтаксис-проверка bash-скрипта |
+
+## Gotchas и инварианты
+
+- **pytest в контейнере:** требует requirements-dev.txt, иначе "pytest not found". Dockerfile копирует оба файла.
+- **DB инициализация:** storage.py::_ensure_db() должна вызваться ДО первой записи. main.py делает это явно.
+- **Google Sheets webhook:** требует `WEBHOOK_SECRET` в .env, иначе 401 на `/run`. Скрипт Apps Script сохраняет secret в Script Properties при `/install`.
+- **Ключи в .env:** ВСЕ (Topvisor, Google service account, OPENCODE_API_KEY, WEBHOOK_SECRET) только через .env, никогда не хардкодь. .env в .gitignore.
+- **Топвизор лимиты:** асинхронная сборка может быть медленной (поллинг) или упасть по лимиту тарифа. Смотри docs/topvisor-api.md.
+- **Аккумулятивный отчёт:** reporter.py вставляет новые версии СВЕРХУ, старые сдвигаются вниз. Максимум 10 версий, старейшие обрезаются. Лист "Отчёт" никогда не очищается.
+- **Кэш разметки:** labeler.py кэширует по (domain, query, geo). Одна пара может быть видна в разных searcher'ах/гео — кэш переиспользуется.
 
 ## Агенты и команды
 
@@ -102,10 +122,10 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 
 ### Правила для subagent'ов
 
-- **collector-dev**: ТОЛЬКО topvisor.py и collector.py. docs/contracts.md, docs/topvisor-api.md.
+- **collector-dev**: ТОЛЬКО topvisor.py и collector.py. Обязательно: docs/contracts.md, docs/topvisor-api.md.
 - **reviewer**: edit: deny. Проверяет контракты, утечки ключей, идемпотентность.
-- **ui-dev**: НЕ трогать core-модули (.py кроме webhook.py). docs/ui-spec.md.
-- **infra-dev**: НЕ трогать код приложения (.py). Dockerfile, docker-compose, сервер.
+- **ui-dev**: НЕ трогать core-модули (.py кроме webhook.py). docs/ui-spec.md, apps_script.gs.
+- **infra-dev**: НЕ трогать код приложения (.py). Dockerfile, docker-compose, deploy.sh, verify.sh, сервер.
 
 ## Язык
 
