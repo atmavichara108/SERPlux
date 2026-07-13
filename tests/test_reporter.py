@@ -131,28 +131,20 @@ class TestBuildReportWithDynamicProfile:
         Path(db_path).unlink(missing_ok=True)
     
     @pytest.fixture
-    def mock_gspread(self, monkeypatch):
-        """Мок gspread для изоляции от боевой таблицы."""
-        # Устанавливаем переменные окружения до входа в mock
-        # Это делает тесты детерминированными независимо от окружения (CI/локаль/контейнер)
-        monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
-        monkeypatch.setenv("GOOGLE_SHEET_ID", "test-sheet-id")
-        
+    def mock_gspread(self):
+        """Мок _get_spreadsheet — полная изоляция от боевой таблицы и окружения."""
         fake_worksheet = MagicMock()
         fake_worksheet.id = 999
+        fake_worksheet.get_all_values.return_value = []
         fake_spreadsheet = MagicMock()
         fake_spreadsheet.worksheet.return_value = fake_worksheet
-        fake_client = MagicMock()
-        fake_client.open_by_key.return_value = fake_spreadsheet
-        
-        with patch("reporter.os.path.exists", return_value=True):
-            with patch("reporter.gspread.service_account", return_value=fake_client) as mock_sa:
-                yield {
-                    "client": fake_client,
-                    "spreadsheet": fake_spreadsheet,
-                    "worksheet": fake_worksheet,
-                    "service_account": mock_sa,
-                }
+
+        with patch("reporter._get_spreadsheet", return_value=fake_spreadsheet) as mock_gs:
+            yield {
+                "spreadsheet": fake_spreadsheet,
+                "worksheet": fake_worksheet,
+                "service_account": mock_gs,   # тесты проверяют этот мок как факт вызова
+            }
     
     def test_report_with_4_subjects(self, temp_db, mock_gspread):
         """Построение отчёта для профиля с 4 субъектами (как client1)."""
