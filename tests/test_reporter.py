@@ -131,8 +131,13 @@ class TestBuildReportWithDynamicProfile:
         Path(db_path).unlink(missing_ok=True)
     
     @pytest.fixture
-    def mock_gspread(self):
+    def mock_gspread(self, monkeypatch):
         """Мок gspread для изоляции от боевой таблицы."""
+        # Устанавливаем переменные окружения до входа в mock
+        # Это делает тесты детерминированными независимо от окружения (CI/локаль/контейнер)
+        monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+        monkeypatch.setenv("GOOGLE_SHEET_ID", "test-sheet-id")
+        
         fake_worksheet = MagicMock()
         fake_worksheet.id = 999
         fake_spreadsheet = MagicMock()
