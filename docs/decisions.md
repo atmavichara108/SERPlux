@@ -748,7 +748,7 @@ total_cost_usd, avg_latency_ms, last_used. Доступ через GET /provider
 с админ-токеном (отдельный WEBHOOK_ADMIN_SECRET или проверка роли).
 
 Текущий Zen мигрирует в профиль: provider_id=zen, priority=1, enabled=true,
-endpoint=https://opencode.ai/zen/v1/chat/completions, model=deepseek-v4-flash-free,
+endpoint=https://opencode.ai/zen/v1/chat/completions, model=qwen3.6-plus,
 api_key_env_var=OPENCODE_API_KEY.
 
 Альтернатива отвергнута: хардкод провайдеров в labeler.py — не масштабируется,

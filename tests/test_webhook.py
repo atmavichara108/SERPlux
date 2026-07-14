@@ -453,8 +453,8 @@ class TestProvidersEndpoint:
         assert zen is not None
         assert zen["enabled"] is True
         assert zen["priority"] == 1
-        assert zen["default_model"] == "deepseek-v4-flash-free"
-        assert "deepseek-v4-flash-free" in zen["models"]
+        assert zen["default_model"] == "qwen3.6-plus"
+        assert "qwen3.6-plus" in zen["models"]
 
     def test_list_providers_missing_auth_returns_401(self, client):
         """GET /providers без Bearer возвращает 401."""

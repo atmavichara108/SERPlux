@@ -96,8 +96,8 @@ PROVIDERS: dict[str, dict] = {
     "opencode-zen": {
         "enabled": True,
         "priority": 1,
-        "default_model": "deepseek-v4-flash-free",
-        "models": ["deepseek-v4-flash-free"],
+        "default_model": os.environ.get("OPENCODE_MODEL", "qwen3.6-plus"),
+        "models": [os.environ.get("OPENCODE_MODEL", "qwen3.6-plus")],
         "endpoint": "https://opencode.ai/zen/v1/chat/completions",
         "api_key_env_var": "OPENCODE_API_KEY",
     },

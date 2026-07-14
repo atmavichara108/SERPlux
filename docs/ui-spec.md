@@ -466,7 +466,7 @@ SERPlux
     "provider_id": "zen",
     "provider_name": "DeepSeek via Zen",
     "endpoint": "https://opencode.ai/zen/v1/chat/completions",
-    "model": "deepseek-v4-flash-free",
+    "model": "qwen3.6-plus",
     "api_key_env_var": "OPENCODE_API_KEY",
     "enabled": true,
     "priority": 1,

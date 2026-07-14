@@ -446,7 +446,7 @@ SERPlux использует LLM-провайдеров для разметки 
 ### Текущий провайдер
 
 **opencode-zen** (DeepSeek v4 Flash Free через opencode.ai/zen)
-- Модель: `deepseek-v4-flash-free`
+- Модель: `qwen3.6-plus`
 - Endpoint: `https://opencode.ai/zen/v1/chat/completions`
 - Стоимость: ~0.4 цента/запрос
 - Приоритет: 1 (основной)
