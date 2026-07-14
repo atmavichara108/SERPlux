@@ -2049,26 +2049,26 @@ var ETALON_SHEET_NAME = "Эталон разметки";
 var SPORNYE_SHEET_NAME = "Спорные";
 var DEPTH = 10;
 
-/**
- * Разовый парсер Лист1 → лист «Эталон разметки».
- *
- * Запуск: в редакторе Apps Script выбрать функцию parseList1ToEtalon() → Run.
- * НЕ добавляется в меню onOpen и не вызывается автоматически.
- *
- * Геометрия Лист1 (см. docs/CANON.md):
- * - Строка 1: заголовок версии
- * - Строка 3: имя субъекта в правой колонке блока (C, H, K, …)
- * - Строка 4: гео-подзаголовок в левой колонке блока (B, G, J, …)
- * - Строки 5–14: номера позиций 1..depth в левой колонке, URL в правой
- * - Буферы: D,E,F после первого субъекта; по 1 колонке перед остальными
- *
- * Контракт эталона:
- * - query = ИМЯ СУБЪЕКТА (lowercase), НИКОГДА не страна
- * - geo = реальная страна из подзаголовка, НИКОГДА не константа
- * - domain = домен из URL напротив номера
- * - sentiment = цвет заливки ячейки номера (зелёный=positive, красный=negative, жёлтый=neutral)
- * - source = manual_l1
- */
+  /**
+   * Разовый парсер Лист1 → лист «Эталон разметки».
+   *
+   * Запуск: в редакторе Apps Script выбрать функцию parseList1ToEtalon() → Run.
+   * НЕ добавляется в меню onOpen и не вызывается автоматически.
+   *
+   * Геометрия Лист1 (см. docs/CANON.md):
+   * - Строка 1: заголовок версии
+   * - Строка 3: имя субъекта в правой колонке блока (C, H, K, …)
+   * - Строка 4: гео-подзаголовок в левой колонке блока (B, G, J, …)
+   * - Строки 5–14: номера позиций 1..depth в левой колонке, URL в правой
+   * - Буферы: D,E,F после первого субъекта; по 1 колонке перед остальными
+   *
+   * Контракт эталона:
+   * - query = ИМЯ СУБЪЕКТА (lowercase), НИКОГДА не страна
+   * - geo = реальная страна из подзаголовка, НИКОГДА не константа
+   * - url = полный URL из ячейки (без обрезки до домена)
+   * - sentiment = цвет заливки ячейки номера (зелёный=positive, красный=negative, жёлтый=neutral)
+   * - source = manual_l1
+   */
 function parseList1ToEtalon() {
   var ui = SpreadsheetApp.getUi();
 
@@ -2097,7 +2097,7 @@ function parseList1ToEtalon() {
   spornye.clear();
 
   // Заголовки «Эталон разметки»
-  etalon.getRange(1, 1, 1, 5).setValues([["domain", "query", "geo", "sentiment", "source"]]);
+  etalon.getRange(1, 1, 1, 5).setValues([["url", "query", "geo", "sentiment", "source"]]);
   // Заголовки «Спорные»
   spornye.getRange(1, 1, 1, 6).setValues([["row", "col", "hex", "url", "geo", "query"]]);
 
@@ -2186,29 +2186,29 @@ function parseList1ToEtalon() {
           continue;
         }
 
-        // Определяем sentiment по цвету заливки
-        var sentiment = _colorToSentiment(bgColor);
+         // Определяем sentiment по цвету заливки
+         var sentiment = _colorToSentiment(bgColor);
 
-        if (!sentiment) {
-          // Нейтральный/белый цвет — в «Спорные»
-          spornyeRows.push([numRow + 1, posCol + 1, bgColor, urlCell, geo, query]);
-          continue;
-        }
+         if (!sentiment) {
+           // Нейтральный/белый цвет — в «Спорные»
+           spornyeRows.push([numRow + 1, posCol + 1, bgColor, urlCell, geo, query]);
+           continue;
+         }
 
-        if (!urlCell) {
-          // Нет URL — в «Спорные»
-          spornyeRows.push([numRow + 1, posCol + 1, bgColor, "", geo, query]);
-          continue;
-        }
+         if (!urlCell) {
+           // Нет URL — в «Спорные»
+           spornyeRows.push([numRow + 1, posCol + 1, bgColor, "", geo, query]);
+           continue;
+         }
 
-        // Извлекаем домен из URL
-        var domain = _extractDomain(urlCell);
-        if (!domain) {
-          spornyeRows.push([numRow + 1, posCol + 1, bgColor, urlCell, geo, query]);
-          continue;
-        }
+         // Валидируем URL (должен содержать схему http/https)
+         if (!/^https?:\/\//i.test(urlCell)) {
+           spornyeRows.push([numRow + 1, posCol + 1, bgColor, urlCell, geo, query]);
+           continue;
+         }
 
-        etalonRows.push([domain, query, geo, sentiment, "manual_l1"]);
+         // Сохраняем полный URL как есть, без обрезки до домена
+         etalonRows.push([urlCell, query, geo, sentiment, "manual_l1"]);
       }
 
       // Переходим к следующему гео-блоку (пропускаем буферную строку)

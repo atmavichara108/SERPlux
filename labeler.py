@@ -158,18 +158,18 @@ def _label_group_auto(
         # uncertain для пустого сниппета / ошибки провайдера
         row["confidence"] = "high"
 
-        domain = row.get("domain")
+        url = row.get("url")
         query = row.get("query") or ""
         snippet = row.get("snippet", "")
 
-        # Шаг 1: Проверяем кэш domain_labels (domain, query, geo)
-        if domain and not force_relabel:
-            cached_sentiment = storage.get_domain_label(domain, query, geo, db_path)
+        # Шаг 1: Проверяем кэш domain_labels (url, query, geo)
+        if url and not force_relabel:
+            cached_sentiment = storage.get_domain_label(url, query, geo, db_path)
             if cached_sentiment is not None:
                 row["sentiment"] = cached_sentiment
                 row["label"] = cached_sentiment
                 stats["cache_hit"] += 1
-                log.debug("AUTO кэш-хит: %s/%s/%s -> %s", domain, query, geo, cached_sentiment)
+                log.debug("AUTO кэш-хит: %s/%s/%s -> %s", url, query, geo, cached_sentiment)
                 result.append(row)
                 continue
 
@@ -182,8 +182,8 @@ def _label_group_auto(
             row["confidence"] = "uncertain"
             stats["snippet_fallback_neutral"] += 1
             # Сохраняем в кэш (источник snippet — нейтральный фоллбэк)
-            if domain:
-                storage.upsert_domain_label(domain, query, geo, "neutral", "snippet", db_path)
+            if url:
+                storage.upsert_domain_label(url, query, geo, "neutral", "snippet", db_path)
             result.append(row)
             continue
 
@@ -214,8 +214,8 @@ def _label_group_auto(
         last_real_call_ref[0] = time.time()
         
         # Сохраняем в кэш domain_labels
-        if domain:
-            storage.upsert_domain_label(domain, query, geo, sentiment, "snippet", db_path)
+        if url:
+            storage.upsert_domain_label(url, query, geo, sentiment, "snippet", db_path)
         
         result.append(row)
 

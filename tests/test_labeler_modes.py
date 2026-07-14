@@ -46,7 +46,7 @@ def sample_row():
 def test_auto_mode_cache_hit_from_domain_labels(init_db, sample_row, monkeypatch):
     """AUTO режим: находит метку в domain_labels и не вызывает LLM."""
     storage.upsert_domain_label(
-        domain="example.com",
+        url="https://example.com/page1",
         query="subject a",  # Note: query может быть в разных случаях
         geo="Литва",
         sentiment="positive",
@@ -117,7 +117,7 @@ def test_auto_mode_snippet_success_and_saves_to_domain_labels(init_db, sample_ro
     assert labeled["label"] == "negative"
 
     # Проверяем, что результат сохранён в domain_labels
-    cached = storage.get_domain_label("example.com", "subject A", "Литва", init_db)
+    cached = storage.get_domain_label("https://example.com/page1", "subject A", "Литва", init_db)
     assert cached == "negative"
 
 
@@ -125,7 +125,7 @@ def test_auto_mode_respects_manual_l1_priority(init_db, sample_row, monkeypatch)
     """AUTO режим: manual_l1 в domain_labels не перезаписывается."""
     # Вставляем manual_l1 запись
     storage.upsert_domain_label(
-        domain="example.com",
+        url="https://example.com/page1",
         query="subject a",
         geo="Литва",
         sentiment="positive",
@@ -145,14 +145,14 @@ def test_auto_mode_respects_manual_l1_priority(init_db, sample_row, monkeypatch)
     assert labeled["sentiment"] == "positive"
 
     # В domain_labels осталось positive (manual_l1 не изменилась)
-    cached = storage.get_domain_label("example.com", "subject a", "Литва", init_db)
+    cached = storage.get_domain_label("https://example.com/page1", "subject a", "Литва", init_db)
     assert cached == "positive"
 
 
 def test_auto_mode_force_relabel_ignores_cache(init_db, sample_row, monkeypatch):
     """AUTO режим: force_relabel=True игнорирует кэш domain_labels."""
     storage.upsert_domain_label(
-        domain="example.com",
+        url="https://example.com/page1",
         query="subject a",
         geo="Литва",
         sentiment="positive",
@@ -245,7 +245,7 @@ def test_auto_mode_logs_stats_per_searcher_geo(init_db, caplog, monkeypatch):
 
     # Вставляем метку в кэш для одной строки
     storage.upsert_domain_label(
-        domain="example.com",
+        url="https://example.com/page1",
         query="subject a",
         geo="Литва",
         sentiment="positive",

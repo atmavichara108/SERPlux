@@ -31,29 +31,31 @@ def _get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 def _ensure_domain_labels_schema(conn: sqlite3.Connection) -> None:
     """
-    Создаёт таблицу domain_labels с актуальной схемой (domain, query, geo).
-    Если существует старая схема (с id/client_id), дропает и пересоздаёт.
+    Создаёт таблицу domain_labels с актуальной схемой (url, query, geo).
+    Если существует старая схема (с id/client_id или с domain), дропает и пересоздаёт.
+    Это миграция: старый snippet-кэш затрётся, это ОК.
     """
     # Проверяем, существует ли старая схема
     old_cols = {
         row[1]
         for row in conn.execute("PRAGMA table_info(domain_labels)").fetchall()
     }
-    if old_cols and ("client_id" in old_cols or "id" in old_cols):
-        log.warning("domain_labels: обнаружена старая схема (id/client_id), пересоздаю")
+    if old_cols and ("client_id" in old_cols or "id" in old_cols or "domain" in old_cols):
+        log.warning("domain_labels: обнаружена старая схема, пересоздаю (domain→url миграция)")
         conn.execute("DROP TABLE IF EXISTS domain_labels")
-        # Удаляем устаревший индекс, если остался
+        # Удаляем устаревшие индексы
         conn.execute("DROP INDEX IF EXISTS idx_domlbl_client_domain")
+        conn.execute("DROP INDEX IF EXISTS idx_domlbl_domain_query")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS domain_labels (
-            domain      TEXT NOT NULL,
+            url         TEXT NOT NULL,
             query       TEXT NOT NULL,           -- нормализованный key субъекта, lowercase
             geo         TEXT NOT NULL,           -- geo_name как в regions_map
             sentiment   TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral')),
             source      TEXT NOT NULL CHECK(source IN ('manual_l1','snippet','page')),
             updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (domain, query, geo)
+            PRIMARY KEY (url, query, geo)
         )
     """)
 
@@ -156,7 +158,7 @@ def _init_db(db_path: str = DB_PATH) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_position    ON labels(position_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_client_mode ON labels(client_id, label_mode)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lbl_latest      ON labels(position_id, label_mode, label_version DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_domain_query ON domain_labels(domain, query)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_url_query ON domain_labels(url, query)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_geo ON domain_labels(geo)")
 
         # Авто-клиент по умолчанию
@@ -539,13 +541,13 @@ def get_label_history(position_id: int, db_path: str = DB_PATH) -> list[dict]:
 
 
 def get_domain_label(
-    domain: str,
+    url: str,
     query: str,
     geo: str,
     db_path: str = DB_PATH,
 ) -> str | None:
     """
-    Возвращает sentiment из справочника domain_labels по (domain, query, geo),
+    Возвращает sentiment из справочника domain_labels по (url, query, geo),
     или None если запись не найдена.
     """
     _ensure_db(db_path)
@@ -554,8 +556,8 @@ def get_domain_label(
         row = conn.execute(
             """SELECT sentiment
                FROM domain_labels
-               WHERE domain = ? AND query = ? AND geo = ?""",
-            (domain, query.lower(), geo),
+               WHERE url = ? AND query = ? AND geo = ?""",
+            (url, query.lower(), geo),
         ).fetchone()
         return row["sentiment"] if row else None
     finally:
@@ -563,7 +565,7 @@ def get_domain_label(
 
 
 def upsert_domain_label(
-    domain: str,
+    url: str,
     query: str,
     geo: str,
     sentiment: str,
@@ -571,7 +573,7 @@ def upsert_domain_label(
     db_path: str = DB_PATH,
 ) -> None:
     """
-    INSERT или UPDATE записи в domain_labels по PRIMARY KEY (domain, query, geo).
+    INSERT или UPDATE записи в domain_labels по PRIMARY KEY (url, query, geo).
 
     Приоритет source:
       - 'manual_l1' — не перезаписывается источниками 'snippet' или 'page'.
@@ -587,27 +589,27 @@ def upsert_domain_label(
         # Проверяем существующую запись и её source
         existing = conn.execute(
             """SELECT source FROM domain_labels
-               WHERE domain = ? AND query = ? AND geo = ?""",
-            (domain, query.lower(), geo),
+               WHERE url = ? AND query = ? AND geo = ?""",
+            (url, query.lower(), geo),
         ).fetchone()
 
         if existing is not None and existing["source"] == "manual_l1" and source != "manual_l1":
             # Существующая manual_l1 не перезаписывается автоматическими источниками
             log.debug(
                 "domain_labels: пропускаю обновление %s/%s/%s (manual_l1 -> %s)",
-                domain, query, geo, source
+                url, query, geo, source
             )
             return
 
         conn.execute(
             """INSERT INTO domain_labels
-                   (domain, query, geo, sentiment, source, updated_at)
-               VALUES (?, ?, ?, ?, ?, datetime('now'))
-               ON CONFLICT(domain, query, geo) DO UPDATE SET
-                   sentiment = excluded.sentiment,
-                   source = excluded.source,
-                   updated_at = datetime('now')""",
-            (domain, query.lower(), geo, sentiment, source),
+                   (url, query, geo, sentiment, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(url, query, geo) DO UPDATE SET
+                    sentiment = excluded.sentiment,
+                    source = excluded.source,
+                    updated_at = datetime('now')""",
+            (url, query.lower(), geo, sentiment, source),
         )
         conn.commit()
     finally:
@@ -621,7 +623,7 @@ def bulk_upsert_domain_labels(
     """
     Массовый upsert записей в domain_labels.
 
-    Каждый элемент items — dict с ключами: domain, query, geo, sentiment, source.
+    Каждый элемент items — dict с ключами: url, query, geo, sentiment, source.
     Применяются те же правила приоритета source, что и в upsert_domain_label.
     """
     valid_sources = {"manual_l1", "snippet", "page"}
@@ -635,15 +637,15 @@ def bulk_upsert_domain_labels(
     conn = _get_conn(db_path)
     try:
         # Сначала находим все существующие manual_l1, которые нельзя перезаписывать
-        keys = [(item["domain"], item["query"].lower(), item["geo"]) for item in items]
+        keys = [(item["url"], item["query"].lower(), item["geo"]) for item in items]
         placeholders = ",".join("(?, ?, ?)" for _ in keys)
         if placeholders:
             flat_keys = [v for tup in keys for v in tup]
             existing_manual = {
-                (row["domain"], row["query"], row["geo"])
+                (row["url"], row["query"], row["geo"])
                 for row in conn.execute(
-                    f"""SELECT domain, query, geo FROM domain_labels
-                        WHERE (domain, query, geo) IN ({placeholders})
+                    f"""SELECT url, query, geo FROM domain_labels
+                        WHERE (url, query, geo) IN ({placeholders})
                           AND source = 'manual_l1'""",
                     flat_keys,
                 ).fetchall()
@@ -652,24 +654,24 @@ def bulk_upsert_domain_labels(
             existing_manual = set()
 
         for item in items:
-            domain = item["domain"]
+            url = item["url"]
             query = item["query"].lower()
             geo = item["geo"]
             sentiment = item["sentiment"]
             source = item["source"]
 
-            if (domain, query, geo) in existing_manual and source != "manual_l1":
+            if (url, query, geo) in existing_manual and source != "manual_l1":
                 continue
 
             conn.execute(
                 """INSERT INTO domain_labels
-                       (domain, query, geo, sentiment, source, updated_at)
+                       (url, query, geo, sentiment, source, updated_at)
                    VALUES (?, ?, ?, ?, ?, datetime('now'))
-                   ON CONFLICT(domain, query, geo) DO UPDATE SET
+                   ON CONFLICT(url, query, geo) DO UPDATE SET
                        sentiment = excluded.sentiment,
                        source = excluded.source,
                        updated_at = datetime('now')""",
-                (domain, query, geo, sentiment, source),
+                (url, query, geo, sentiment, source),
             )
         conn.commit()
     finally:

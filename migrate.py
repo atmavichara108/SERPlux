@@ -169,28 +169,29 @@ def _apply_schema_patches(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE clients ADD COLUMN {col} {dtype}")
             log.info("Колонка clients.%s добавлена (ALTER TABLE)", col)
 
-    # Справочник domain_labels с актуальной схемой (domain, query, geo)
+    # Справочник domain_labels с актуальной схемой (url, query, geo)
     old_cols = {
         row[1]
         for row in conn.execute("PRAGMA table_info(domain_labels)").fetchall()
     }
-    if old_cols and ("client_id" in old_cols or "id" in old_cols):
-        log.warning("domain_labels: обнаружена старая схема (id/client_id), пересоздаю")
+    if old_cols and ("client_id" in old_cols or "id" in old_cols or "domain" in old_cols):
+        log.warning("domain_labels: обнаружена старая схема (id/client_id/domain), пересоздаю")
         conn.execute("DROP TABLE IF EXISTS domain_labels")
         conn.execute("DROP INDEX IF EXISTS idx_domlbl_client_domain")
+        conn.execute("DROP INDEX IF EXISTS idx_domlbl_domain_query")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS domain_labels (
-            domain      TEXT NOT NULL,
+            url         TEXT NOT NULL,
             query       TEXT NOT NULL,
             geo         TEXT NOT NULL,
             sentiment   TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral')),
             source      TEXT NOT NULL CHECK(source IN ('manual_l1','snippet','page')),
             updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (domain, query, geo)
+            PRIMARY KEY (url, query, geo)
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_domain_query ON domain_labels(domain, query)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_url_query ON domain_labels(url, query)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_domlbl_geo ON domain_labels(geo)")
 
     # Персистентный статус прогона (singleton, id=1)

@@ -568,15 +568,15 @@ def import_domain_labels(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     """
-    Батчевый импорт разметки доменов в domain_labels.
+    Батчевый импорт разметки в domain_labels.
 
     Принимает тело в двух формах:
-      - массив объектов [{domain, query, geo, sentiment, source}, ...]
+      - массив объектов [{url, query, geo, sentiment, source}, ...]
       - объект {"labels": [...]}
 
     Для каждой записи вызывает storage.upsert_domain_label, поэтому
     срабатывают правила приоритета source (manual_l1 не перезаписывается
-    snippet/page) и идемпотентность по PK (domain, query, geo).
+    snippet/page) и идемпотентность по PK (url, query, geo).
 
     Битая запись не прерывает батч. Возвращает сводку imported/skipped/errors
     и первые ~5 примеров ошибок.
@@ -621,14 +621,14 @@ def import_domain_labels(
             continue
 
         # Нормализация полей
-        domain = _extract_str(raw.get("domain"))
+        url = _extract_str(raw.get("url"))
         query = _extract_str(raw.get("query"))
         geo = _extract_str(raw.get("geo"))
         sentiment = _extract_str(raw.get("sentiment")).lower()
         source = _extract_str(raw.get("source")).lower() or DEFAULT_IMPORT_SOURCE
 
         # Валидация
-        if not domain or not query or not geo or not sentiment:
+        if not url or not query or not geo or not sentiment:
             skipped += 1
             _add_sample(f"row {idx}: missing required fields")
             log.warning("labels_import: row %s missing required fields", idx)
@@ -648,7 +648,7 @@ def import_domain_labels(
 
         try:
             storage.upsert_domain_label(
-                domain=domain,
+                url=url,
                 query=query,
                 geo=geo,
                 sentiment=sentiment,
@@ -658,10 +658,10 @@ def import_domain_labels(
             imported += 1
         except Exception as exc:
             errors += 1
-            _add_sample(f"row {idx}: db error for {domain}/{query}/{geo}: {exc}")
+            _add_sample(f"row {idx}: db error for {url}/{query}/{geo}: {exc}")
             log.error(
                 "labels_import: db error row %s %s/%s/%s: %s",
-                idx, domain, query, geo, exc,
+                idx, url, query, geo, exc,
             )
 
     log.info(
