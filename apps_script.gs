@@ -2292,7 +2292,7 @@ var VALID_ETALON_SENTIMENTS = ["positive", "negative", "neutral"];
  * Запуск: в редакторе Apps Script выбрать функцию importEtalonToDb() → Run.
  * НЕ добавляется в меню onOpen и не вызывается автоматически.
  *
- * Ожидаемые колонки (первая строка): domain, query, geo, sentiment.
+ * Ожидаемые колонки (первая строка): url, query, geo, sentiment.
  * Если колонки не распознаны — логирует заголовки и останавливается.
  * Отправляет батчами по 100 строк на POST /labels/import.
  * Битые записи и ошибки батча не прерывают импорт остальных записей.
@@ -2340,7 +2340,7 @@ function importEtalonToDb() {
     colMap[headers[i]] = i;
   }
 
-  var required = ["domain", "query", "geo", "sentiment"];
+  var required = ["url", "query", "geo", "sentiment"];
   var missing = required.filter(function (k) { return !(k in colMap); });
   if (missing.length > 0) {
     var err = "Не удалось определить обязательные колонки: " + missing.join(", ") +
@@ -2355,12 +2355,12 @@ function importEtalonToDb() {
   var localSkipped = 0;
   for (var r = 1; r < values.length; r++) {
     var row = values[r];
-    var domain = String(row[colMap["domain"]] || "").trim().toLowerCase();
+    var url = String(row[colMap["url"]] || "").trim();
     var query = String(row[colMap["query"]] || "").trim().toLowerCase();
     var geo = String(row[colMap["geo"]] || "").trim();
     var sentiment = String(row[colMap["sentiment"]] || "").trim().toLowerCase();
 
-    if (!domain || !query || !geo || !sentiment) {
+    if (!url || !query || !geo || !sentiment) {
       localSkipped++;
       continue;
     }
@@ -2372,7 +2372,7 @@ function importEtalonToDb() {
     }
 
     labels.push({
-      domain: domain,
+      url: url,
       query: query,
       geo: geo,
       sentiment: sentiment,
