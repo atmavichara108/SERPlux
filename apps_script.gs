@@ -314,6 +314,14 @@ function initSettingsSheetSafe() {
   } catch (e) {
     Logger.log("initSettingsSheetSafe: ошибка toast: %s", e.message);
   }
+
+  // Обновляем dropdown'ы провайдеров и моделей
+  try {
+    refreshProviderChain();
+    refreshModelDropdown();
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка обновления dropdown'ов: %s", e.message);
+  }
 }
 
 /**
@@ -1264,15 +1272,11 @@ function manageProviders() {
   }
 
   text += "─────────────────────────────\n" +
-    "Выберите действие:";
+    "Введите номер действия (1-5):";
 
-  var response = ui.alert("Управление провайдерами", text, ui.ButtonSet.OK_CANCEL);
-  if (response !== ui.Button.OK) return;
-
-  // Диалог выбора действия
   var action = ui.prompt(
-    "Действие с провайдером",
-    "Введите номер действия:\n" +
+    "Управление провайдерами",
+    text + "\n\n" +
     "1 — Добавить нового провайдера\n" +
     "2 — Включить/выключить провайдера\n" +
     "3 — Изменить приоритет\n" +
@@ -1281,9 +1285,9 @@ function manageProviders() {
     ui.ButtonSet.OK_CANCEL
   );
 
-  if (response !== ui.Button.OK) return;
+  if (action.getSelectedButton() !== ui.Button.OK) return;
 
-  var actionNum = String(response.getResponseText()).trim();
+  var actionNum = String(action.getResponseText()).trim();
 
   if (actionNum === "1") {
     _addProviderDialog(ui, secret);
