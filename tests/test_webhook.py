@@ -58,7 +58,7 @@ class TestRunEndpoint:
         assert resp.status_code == 202
         assert pipeline_spy["args"] == (
             "map.json", True, 10, "default", "auto", False, False, "latest",
-            "today", False, None, False,
+            "today", False, None, None, False,
         )
 
     def test_run_new_fields_passed(self, client, pipeline_spy):
@@ -80,7 +80,7 @@ class TestRunEndpoint:
         assert resp.status_code == 202
         assert pipeline_spy["args"] == (
             "map.json", True, 10, "acme", "deep", True, False, "latest",
-            "2026-07-01", True, "zen", True,
+            "2026-07-01", True, "zen", None, True,
         )
 
     def test_run_default_label_mode_is_auto(self, client, pipeline_spy):
@@ -986,4 +986,153 @@ class TestLabelsImportEndpoint:
             headers={"Authorization": "Bearer wrong-secret"},
         )
         assert resp.status_code == 403
+
+
+class TestModelOverride:
+    """Тесты параметра model в POST /run."""
+
+    def test_run_with_model_override(self, client, pipeline_spy):
+        """model пробрасывается в пайплайн."""
+        resp = client.post(
+            "/run",
+            json={"model": "custom-model-v2"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 202
+        # model на позиции 11 (после provider_chain)
+        assert pipeline_spy["args"][11] == "custom-model-v2"
+
+    def test_run_without_model_is_none(self, client, pipeline_spy):
+        """Без model — None."""
+        resp = client.post(
+            "/run",
+            json={},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 202
+        assert pipeline_spy["args"][11] is None
+
+
+class TestProviderRegistration:
+    """Тесты POST /providers/register."""
+
+    def test_register_new_provider(self, client, monkeypatch):
+        """POST /providers/register регистрирует нового провайдера."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {"opencode-zen": cfg_mod.PROVIDERS.get("opencode-zen", {})})
+
+        resp = client.post(
+            "/providers/register",
+            json={
+                "provider_id": "openrouter",
+                "enabled": True,
+                "priority": 2,
+                "default_model": "anthropic/claude-sonnet-4-20250514",
+                "models": ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"],
+                "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+                "api_key_env_var": "OPENROUTER_API_KEY",
+            },
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["registered"] is True
+        assert body["provider_id"] == "openrouter"
+        assert "openrouter" in cfg_mod.PROVIDERS
+
+    def test_register_duplicate_provider_returns_409(self, client):
+        """Повторная регистрация того же provider_id возвращает 409."""
+        resp = client.post(
+            "/providers/register",
+            json={
+                "provider_id": "opencode-zen",
+                "enabled": True,
+                "priority": 1,
+                "default_model": "qwen3.6-plus",
+                "models": ["qwen3.6-plus"],
+                "endpoint": "https://opencode.ai/zen/v1/chat/completions",
+                "api_key_env_var": "OPENCODE_API_KEY",
+            },
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 409
+
+    def test_register_provider_missing_auth_returns_401(self, client):
+        resp = client.post("/providers/register", json={
+            "provider_id": "test",
+            "default_model": "test",
+            "models": ["test"],
+            "endpoint": "https://test.com",
+            "api_key_env_var": "TEST_KEY",
+        })
+        assert resp.status_code == 401
+
+    def test_register_provider_invalid_auth_returns_403(self, client):
+        resp = client.post(
+            "/providers/register",
+            json={
+                "provider_id": "test",
+                "default_model": "test",
+                "models": ["test"],
+                "endpoint": "https://test.com",
+                "api_key_env_var": "TEST_KEY",
+            },
+            headers={"Authorization": "Bearer wrong-secret"},
+        )
+        assert resp.status_code == 403
+
+
+class TestConfigRegisterProvider:
+    """Тесты config.register_provider."""
+
+    def test_register_provider_success(self, monkeypatch):
+        """register_provider добавляет нового провайдера."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {"existing": {"enabled": True}})
+
+        result = cfg_mod.register_provider("new-provider", {
+            "enabled": True,
+            "priority": 2,
+            "default_model": "model-v1",
+            "models": ["model-v1"],
+            "endpoint": "https://api.example.com",
+            "api_key_env_var": "NEW_API_KEY",
+        })
+
+        assert result is True
+        assert "new-provider" in cfg_mod.PROVIDERS
+        assert cfg_mod.PROVIDERS["new-provider"]["default_model"] == "model-v1"
+
+    def test_register_provider_duplicate_returns_false(self, monkeypatch):
+        """register_provider возвращает False для существующего провайдера."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {"existing": {"enabled": True}})
+
+        result = cfg_mod.register_provider("existing", {
+            "enabled": True,
+            "priority": 1,
+            "default_model": "model-v1",
+            "models": ["model-v1"],
+            "endpoint": "https://api.example.com",
+            "api_key_env_var": "EXISTING_KEY",
+        })
+
+        assert result is False
+
+    def test_register_provider_missing_keys_returns_false(self, monkeypatch):
+        """register_provider возвращает False при отсутствии обязательных ключей."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {})
+
+        result = cfg_mod.register_provider("incomplete", {
+            "enabled": True,
+            "priority": 1,
+        })
+
+        assert result is False
+        assert "incomplete" not in cfg_mod.PROVIDERS
 

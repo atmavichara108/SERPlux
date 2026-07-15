@@ -54,6 +54,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     sheet_id = config.get("sheet_id")
     force_rebuild_report = config.get("force_rebuild_report", False)
     provider_chain = config.get("provider_chain")
+    model = config.get("model")
 
     # Наполняем config значениями из профиля клиента / fallback DEFAULT_CONFIG
     runtime_config = {
@@ -112,6 +113,8 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
             }
             if provider_chain is not None:
                 label_kwargs["provider_chain"] = provider_chain
+            if model is not None:
+                label_kwargs["model"] = model
             labeled_rows = label(rows, **label_kwargs)
             labeled_count = insert_labels(labeled_rows, db_path=storage.DB_PATH)
             log.info("Размечено и сохранено меток: %s", labeled_count)

@@ -72,7 +72,7 @@ def _get_provider_chain(provider_chain: str | list[str] | None = None) -> list[t
     return chain
 
 
-def _call_provider(provider_id: str, provider_cfg: dict, prompt: str) -> str | None:
+def _call_provider(provider_id: str, provider_cfg: dict, prompt: str, model: str | None = None) -> str | None:
     """Вызывает LLM-провайдера по его конфигу. Возвращает сырой ответ или None."""
     api_key = os.environ.get(provider_cfg["api_key_env_var"])
     if not api_key:
@@ -86,7 +86,7 @@ def _call_provider(provider_id: str, provider_cfg: dict, prompt: str) -> str | N
                 "Content-Type": "application/json",
             },
             json={
-                "model": provider_cfg["default_model"],
+                "model": model or provider_cfg["default_model"],
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
             },
@@ -100,13 +100,13 @@ def _call_provider(provider_id: str, provider_cfg: dict, prompt: str) -> str | N
         return None
 
 
-def _label_one_llm(row: dict, provider_chain: str | list[str] | None = None) -> str | None:
+def _label_one_llm(row: dict, provider_chain: str | list[str] | None = None, model: str | None = None) -> str | None:
     """Вызывает LLM для разметки по цепочке провайдеров
     (без проверки кэша — кэш проверяет label())."""
     prompt = _build_prompt(row["query"], row["url"], row.get("snippet", ""))
     chain = _get_provider_chain(provider_chain)
     for provider_id, provider_cfg in chain:
-        raw = _call_provider(provider_id, provider_cfg, prompt)
+        raw = _call_provider(provider_id, provider_cfg, prompt, model=model)
         if raw is not None:
             lbl = _parse_label(raw)
             log.info("%s: %s + '%s' -> %s", provider_id, row["url"], row["query"], lbl)
@@ -126,6 +126,7 @@ def _label_group_auto(
     db_path: str,
     provider_chain: str | list[str] | None,
     last_real_call_ref: list[float],
+    model: str | None = None,
 ) -> list[dict]:
     """
     Режим AUTO: кэш domain_labels → сниппет → neutral при ошибке.
@@ -197,7 +198,7 @@ def _label_group_auto(
             log.debug("AUTO: пауза %.1fс между вызовами LLM", wait)
             time.sleep(wait)
 
-        sentiment = _label_one_llm(row, provider_chain=provider_chain)
+        sentiment = _label_one_llm(row, provider_chain=provider_chain, model=model)
         
         # Если LLM не ответила или ошибка провайдера
         if sentiment is None:
@@ -234,6 +235,7 @@ def _label_group_deep(
     db_path: str,
     provider_chain: str | list[str] | None,
     last_real_call_ref: list[float],
+    model: str | None = None,
 ) -> list[dict]:
     """
     Режим DEEP: разметка по контенту страницы, только для neutral.
@@ -306,6 +308,7 @@ def label(
     force_relabel: bool = False,
     client_id: str = "default",
     provider_chain: str | list[str] | None = None,
+    model: str | None = None,
 ) -> list[dict]:
     """
     Проставляет sentiment (и алиас label) каждой строке.
@@ -315,6 +318,7 @@ def label(
       - force_relabel: если True — игнорировать кэш, размечать заново
       - client_id: идентификатор клиента для domain_labels
       - provider_chain: переопределение цепочки провайдеров (id через запятую или list)
+      - model: конкретная модель LLM (override default_model провайдера)
 
     Режимы:
       - auto: get_domain_label (cache) → LLM (snippet) → neutral (fallback on error).
@@ -347,6 +351,7 @@ def label(
                 db_path=db_path,
                 provider_chain=provider_chain,
                 last_real_call_ref=last_real_call_ref,
+                model=model,
             ))
         elif label_mode == "deep":
             result.extend(_label_group_deep(
@@ -355,6 +360,7 @@ def label(
                 db_path=db_path,
                 provider_chain=provider_chain,
                 last_real_call_ref=last_real_call_ref,
+                model=model,
             ))
 
     total_success = sum(1 for r in result if r.get("sentiment") is not None)

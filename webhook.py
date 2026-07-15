@@ -53,6 +53,7 @@ class RunRequest(BaseModel):
     date: str = "today"  # дата сбора (today или YYYY-MM-DD)
     force_rebuild_report: bool = False  # принудительная перестройка отчёта
     provider_chain: str | None = None  # цепочка провайдеров (через запятую)
+    model: str | None = None  # конкретная модель LLM (override default_model)
     label_only: bool = False  # только разметка существующих данных
 
     @field_validator("label_mode")
@@ -184,6 +185,7 @@ def _run_pipeline(
     date: str = "today",
     force_rebuild_report: bool = False,
     provider_chain: str | None = None,
+    model: str | None = None,
     label_only: bool = False,
 ) -> None:
     """Запускает полный пайплайн или только построение/разметку/сбор в фоновом потоке."""
@@ -261,6 +263,7 @@ def _run_pipeline(
                 force_relabel=force_relabel,
                 client_id=client_id,
                 provider_chain=provider_chain,
+                model=model,
                 db_path=storage.DB_PATH,
             )
             storage.insert_labels(labeled_rows, db_path=storage.DB_PATH)
@@ -289,6 +292,8 @@ def _run_pipeline(
             request_params["date"] = date
         if provider_chain:
             request_params["provider_chain"] = provider_chain
+        if model:
+            request_params["model"] = model
         # regions_map из тела запроса пока сохраняем для обратной совместимости,
         # но профиль клиента может его перекрыть
         if regions_map:
@@ -382,6 +387,7 @@ def trigger_run(
             body.date,
             body.force_rebuild_report,
             body.provider_chain,
+            body.model,
             body.label_only,
         ),
         daemon=True,
@@ -552,8 +558,59 @@ def list_providers(authorization: str | None = Header(default=None)) -> JSONResp
             "priority": cfg.get("priority", 999),
             "default_model": cfg.get("default_model", ""),
             "models": cfg.get("models", []),
+            "endpoint": cfg.get("endpoint", ""),
+            "api_key_env_var": cfg.get("api_key_env_var", ""),
         })
     return JSONResponse(result)
+
+
+class ProviderRegisterRequest(BaseModel):
+    """Тело запроса на регистрацию нового провайдера."""
+    provider_id: str
+    enabled: bool = True
+    priority: int = 999
+    default_model: str
+    models: list[str]
+    endpoint: str
+    api_key_env_var: str
+
+
+@app.post("/providers/register", status_code=status.HTTP_201_CREATED)
+def register_provider(
+    body: ProviderRegisterRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Регистрирует нового LLM-провайдера в runtime.
+    
+    Провайдер добавляется в память (config.PROVIDERS) и доступен для разметки.
+    При перезапуске контейнера нужно добавить провайдер в config.py или .env.
+    Возвращает 409, если provider_id уже существует.
+    """
+    _verify_token(authorization)
+    
+    if not body.api_key_env_var.startswith(("OPENCODE_", "OPENAI_", "ANTHROPIC_", "GOOGLE_", "AZURE_")):
+        log.warning("register_provider: подозрительное имя переменной %s", body.api_key_env_var)
+    
+    success = config.register_provider(body.provider_id, {
+        "enabled": body.enabled,
+        "priority": body.priority,
+        "default_model": body.default_model,
+        "models": body.models,
+        "endpoint": body.endpoint,
+        "api_key_env_var": body.api_key_env_var,
+    })
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Провайдер '{body.provider_id}' уже существует или невалидный конфиг",
+        )
+    
+    return JSONResponse({
+        "registered": True,
+        "provider_id": body.provider_id,
+        "message": f"Провайдер '{body.provider_id}' зарегистрирован",
+    }, status_code=status.HTTP_201_CREATED)
 
 
 VALID_IMPORT_SENTIMENTS = {"positive", "negative", "neutral"}

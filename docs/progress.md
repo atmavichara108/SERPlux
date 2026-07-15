@@ -6,6 +6,26 @@
 
 ## Сделано
 
+- **Session: 2026-07-15 — Мультипровайдерная разметка: переключатель модели + регистрация провайдеров**
+  - [x] **`webhook.py`:** добавлен `model` параметр в `RunRequest` — позволяет выбрать конкретную модель LLM при запуске прогона.
+    - Проброшен через `_run_pipeline` → `request_params` → `main.run()` → `labeler.label()` → `_call_provider()`.
+    - Добавлен `POST /providers/register` — регистрация нового провайдера в runtime (201 Created, 409 Conflict).
+    - Обновлён `GET /providers` — возвращает `endpoint` и `api_key_env_var` помимо базовых полей.
+  - [x] **`labeler.py`:** `model` параметр добавлен во все функции цепочки: `_call_provider`, `_label_one_llm`, `_label_group_auto`, `_label_group_deep`, `label()`.
+    - `_call_provider` использует `model or provider_cfg["default_model"]` — override или дефолт провайдера.
+  - [x] **`main.py`:** извлекает `model` из config и пробрасывает в `label_kwargs`.
+  - [x] **`config.py`:** добавлена функция `register_provider(provider_id, cfg)` — динамическая регистрация провайдеров в runtime.
+    - Валидирует обязательные ключи: enabled, priority, default_model, models, endpoint, api_key_env_var.
+    - Возвращает False для дубликатов и невалидных конфигов.
+  - [x] **`.env.example`:** добавлены placeholder'ы для второго провайдера (SECONDARY_PROVIDER_API_KEY, ENDPOINT, DEFAULT_MODEL, MODELS).
+  - [x] **Тесты:** 237/237 passed.
+    - Обновлены моки в `test_labeler_modes.py` (добавлен `model=None` параметр).
+    - Исправлены args tuple в `test_webhook.py` (добавлен `model` на позицию 11).
+    - Новые тесты: `TestModelOverride` (2), `TestProviderRegistration` (4), `TestConfigRegisterProvider` (3), `test_label_passes_model_override`, `test_label_without_model_override`, `test_call_provider_uses_model_override`, `test_call_provider_uses_default_model_when_no_override`.
+  - [x] **Документация:** обновлены `docs/decisions.md` (новый ADR), `docs/progress.md` (эта запись).
+  - Status: Ready for commit
+  - Коммит: `feat(labeler): model override per run + POST /providers/register for runtime provider addition`
+
 - **Session: 2026-07-12 (одиннадцатая) — Онбординг клиента + шаблон листов**
   - [x] **Добавлена функция `initTemplateSheets()` в `apps_script.gs`** — создание 6 листов шаблона (Настройки, Данные, Отчёт, Эталон разметки, Спорные, Лог).
     - Идемпотентна: существующие листы не дублирует.

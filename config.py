@@ -103,3 +103,22 @@ PROVIDERS: dict[str, dict] = {
     },
 }
 DEFAULT_PROVIDER: str = "opencode-zen"
+_provider_log = setup_logging(__name__)
+
+
+def register_provider(provider_id: str, cfg: dict) -> bool:
+    """Регистрирует нового провайдера в runtime.
+    
+    cfg должен содержать: enabled, priority, default_model, models, endpoint, api_key_env_var.
+    Возвращает True если провайдер добавлен, False если уже существует.
+    """
+    if provider_id in PROVIDERS:
+        return False
+    required_keys = {"enabled", "priority", "default_model", "models", "endpoint", "api_key_env_var"}
+    if not required_keys.issubset(cfg.keys()):
+        missing = required_keys - cfg.keys()
+        _provider_log.warning("register_provider: отсутствуют ключи %s для %s", missing, provider_id)
+        return False
+    PROVIDERS[provider_id] = cfg
+    _provider_log.info("Зарегистрирован провайдер: %s", provider_id)
+    return True

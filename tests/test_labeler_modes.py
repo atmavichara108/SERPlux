@@ -56,7 +56,7 @@ def test_auto_mode_cache_hit_from_domain_labels(init_db, sample_row, monkeypatch
 
     llm_called = {"n": 0}
 
-    def fake_label_one_llm(row, provider_chain=None):
+    def fake_label_one_llm(row, provider_chain=None, model=None):
         llm_called["n"] += 1
         raise AssertionError("LLM не должен вызываться, когда есть кэш")
 
@@ -92,7 +92,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_empty_snippet(init_db, sample_
 
 def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample_row, monkeypatch):
     """AUTO режим: ошибка провайдера → neutral с confidence='uncertain'."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: None)
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: None)
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -106,7 +106,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample
 
 def test_auto_mode_snippet_success_and_saves_to_domain_labels(init_db, sample_row, monkeypatch):
     """AUTO режим: успешная разметка по сниппету, сохранённая в domain_labels."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -134,7 +134,7 @@ def test_auto_mode_respects_manual_l1_priority(init_db, sample_row, monkeypatch)
     )
 
     # Пытаемся перезаписать через AUTO режим (source='snippet')
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -160,7 +160,7 @@ def test_auto_mode_force_relabel_ignores_cache(init_db, sample_row, monkeypatch)
         db_path=init_db,
     )
 
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto", force_relabel=True)
@@ -253,7 +253,7 @@ def test_auto_mode_logs_stats_per_searcher_geo(init_db, caplog, monkeypatch):
         db_path=init_db,
     )
 
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
 
     rows = [
         {
@@ -294,7 +294,7 @@ def test_auto_mode_logs_stats_per_searcher_geo(init_db, caplog, monkeypatch):
 
 def test_full_pipeline_auto_then_deep(init_db, sample_row, monkeypatch):
     """Полный пайплайн: AUTO разметил, потом DEEP обрабатывает."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
 
     # Шаг 1: AUTO разметка
     rows = [sample_row]
@@ -312,7 +312,7 @@ def test_full_pipeline_auto_then_deep(init_db, sample_row, monkeypatch):
 
 def test_unknown_label_mode_defaults_to_auto(init_db, sample_row, monkeypatch):
     """Неизвестный режим падает на AUTO с warning."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "positive")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "positive")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="unknown_mode")
@@ -366,3 +366,90 @@ def test_label_one_llm_returns_none_on_empty_chain(monkeypatch):
     row = {"url": "https://x.com", "query": "test", "snippet": "test"}
     result = labeler._label_one_llm(row)
     assert result is None
+
+
+# ─── Тесты переключения модели ────────────────────────────────────────────────────
+
+
+def test_label_passes_model_override(monkeypatch, init_db, sample_row):
+    """label() передаёт model override в _label_one_llm."""
+    captured_model: dict[str, str | None] = {"value": None}
+
+    def fake_label_one_llm(row, provider_chain=None, model=None):
+        captured_model["value"] = model
+        return "positive"
+
+    monkeypatch.setattr(labeler, "_label_one_llm", fake_label_one_llm)
+
+    rows = [sample_row]
+    labeler.label(rows, db_path=init_db, label_mode="auto", model="custom-model-v2")
+
+    assert captured_model["value"] == "custom-model-v2"
+
+
+def test_label_without_model_override(monkeypatch, init_db, sample_row):
+    """label() без model передаёт None в _label_one_llm."""
+    captured_model: dict[str, str | None] = {"value": "not_none"}
+
+    def fake_label_one_llm(row, provider_chain=None, model=None):
+        captured_model["value"] = model
+        return "positive"
+
+    monkeypatch.setattr(labeler, "_label_one_llm", fake_label_one_llm)
+
+    rows = [sample_row]
+    labeler.label(rows, db_path=init_db, label_mode="auto")
+
+    assert captured_model["value"] is None
+
+
+def test_call_provider_uses_model_override(monkeypatch):
+    """_call_provider использует model override вместо default_model."""
+    captured_model: dict[str, str | None] = {"value": None}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"choices": [{"message": {"content": "positive"}}]}
+
+    import requests as req_mod
+    monkeypatch.setattr(req_mod, "post", lambda *args, **kwargs: (captured_model.update({"value": kwargs["json"]["model"]}) or FakeResponse()))
+
+    import config as cfg_mod
+    provider_cfg = {
+        "default_model": "default-model",
+        "endpoint": "https://example.com/v1/chat/completions",
+        "api_key_env_var": "TEST_API_KEY",
+    }
+    monkeypatch.setenv("TEST_API_KEY", "test-key")
+
+    labeler._call_provider("test-provider", provider_cfg, "prompt", model="override-model")
+
+    assert captured_model["value"] == "override-model"
+
+
+def test_call_provider_uses_default_model_when_no_override(monkeypatch):
+    """_call_provider использует default_model когда model=None."""
+    captured_model: dict[str, str | None] = {"value": None}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"choices": [{"message": {"content": "positive"}}]}
+
+    import requests as req_mod
+    monkeypatch.setattr(req_mod, "post", lambda *args, **kwargs: (captured_model.update({"value": kwargs["json"]["model"]}) or FakeResponse()))
+
+    import config as cfg_mod
+    provider_cfg = {
+        "default_model": "default-model-v1",
+        "endpoint": "https://example.com/v1/chat/completions",
+        "api_key_env_var": "TEST_API_KEY",
+    }
+    monkeypatch.setenv("TEST_API_KEY", "test-key")
+
+    labeler._call_provider("test-provider", provider_cfg, "prompt")
+
+    assert captured_model["value"] == "default-model-v1"

@@ -54,6 +54,7 @@ var SETTINGS_TEMPLATE = [
   ["force_rebuild_report", "false",    "Перестроить отчёт: true или false"],
   ["report_date",          "latest",   "Дата отчёта: latest или YYYY-MM-DD"],
   ["provider_chain",       "opencode-zen", "Цепочка провайдеров LLM (через запятую)"],
+  ["model",                "",             "Модель LLM (пусто = default_model провайдера)"],
   ["status",               "idle",     "Статус последнего прогона (обновляется автоматически)"]
 ];
 
@@ -500,6 +501,7 @@ function _readSettings() {
     forceRebuildReport: false,
     reportDate: DEFAULT_REPORT_DATE,
     providerChain: "",
+    model: "",
     status: "idle"
   };
 
@@ -549,6 +551,9 @@ function _readSettings() {
         break;
       case "provider_chain":
         settings.providerChain = String(val).trim();
+        break;
+      case "model":
+        settings.model = String(val).trim();
         break;
       case "status":
         settings.status = String(val).trim();
@@ -649,6 +654,9 @@ function runCollection() {
   };
   if (settings.providerChain) {
     payload.provider_chain = settings.providerChain;
+  }
+  if (settings.model) {
+    payload.model = settings.model;
   }
 
   _updateStatusCell("starting");
@@ -1306,6 +1314,9 @@ function labelOnly() {
   if (settings.providerChain) {
     payload.provider_chain = settings.providerChain;
   }
+  if (settings.model) {
+    payload.model = settings.model;
+  }
 
   _updateStatusCell("starting");
   var result = _post("/run", payload, secret);
@@ -1439,6 +1450,9 @@ function labelOnlyForDate() {
   };
   if (settings.providerChain) {
     payload.provider_chain = settings.providerChain;
+  }
+  if (settings.model) {
+    payload.model = settings.model;
   }
 
   _updateStatusCell("starting");
