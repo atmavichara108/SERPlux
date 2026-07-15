@@ -613,6 +613,104 @@ def register_provider(
     }, status_code=status.HTTP_201_CREATED)
 
 
+class ProviderUpdateRequest(BaseModel):
+    """Тело запроса на обновление провайдера."""
+    enabled: bool | None = None
+    priority: int | None = None
+    default_model: str | None = None
+    models: list[str] | None = None
+    endpoint: str | None = None
+    api_key_env_var: str | None = None
+
+
+@app.put("/providers/{provider_id}")
+def update_provider(
+    provider_id: str,
+    body: ProviderUpdateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Обновляет параметры провайдера в runtime.
+    
+    Обновляются только переданные поля (None = не менять).
+    Возвращает 404, если провайдер не найден.
+    """
+    _verify_token(authorization)
+    
+    if provider_id not in config.PROVIDERS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Провайдер '{provider_id}' не найден",
+        )
+    
+    cfg = config.PROVIDERS[provider_id]
+    updates = {}
+    if body.enabled is not None:
+        updates["enabled"] = body.enabled
+    if body.priority is not None:
+        updates["priority"] = body.priority
+    if body.default_model is not None:
+        updates["default_model"] = body.default_model
+    if body.models is not None:
+        updates["models"] = body.models
+    if body.endpoint is not None:
+        updates["endpoint"] = body.endpoint
+    if body.api_key_env_var is not None:
+        updates["api_key_env_var"] = body.api_key_env_var
+    
+    cfg.update(updates)
+    log.info("Провайдер '%s' обновлён: %s", provider_id, list(updates.keys()))
+    
+    return JSONResponse({
+        "updated": True,
+        "provider_id": provider_id,
+        "provider": {
+            "id": provider_id,
+            "enabled": cfg.get("enabled", False),
+            "priority": cfg.get("priority", 999),
+            "default_model": cfg.get("default_model", ""),
+            "models": cfg.get("models", []),
+            "endpoint": cfg.get("endpoint", ""),
+            "api_key_env_var": cfg.get("api_key_env_var", ""),
+        },
+    })
+
+
+@app.delete("/providers/{provider_id}")
+def delete_provider(
+    provider_id: str,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Удаляет провайдера из runtime-конфигурации.
+    
+    Возвращает 404, если провайдер не найден.
+    Нельзя удалить последнего включённого провайдера.
+    """
+    _verify_token(authorization)
+    
+    if provider_id not in config.PROVIDERS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Провайдер '{provider_id}' не найден",
+        )
+    
+    # Нельзя удалить последнего включённого провайдера
+    enabled_count = sum(1 for p in config.PROVIDERS.values() if p.get("enabled", False))
+    if config.PROVIDERS[provider_id].get("enabled", False) and enabled_count <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя удалить последнего включённого провайдера",
+        )
+    
+    del config.PROVIDERS[provider_id]
+    log.info("Провайдер '%s' удалён", provider_id)
+    
+    return JSONResponse({
+        "deleted": True,
+        "provider_id": provider_id,
+        "message": f"Провайдер '{provider_id}' удалён",
+    })
+
+
 VALID_IMPORT_SENTIMENTS = {"positive", "negative", "neutral"}
 VALID_IMPORT_SOURCES = {"manual_l1", "snippet", "page"}
 DEFAULT_IMPORT_SOURCE = "manual_l1"

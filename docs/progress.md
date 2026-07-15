@@ -23,6 +23,21 @@
     - Исправлены args tuple в `test_webhook.py` (добавлен `model` на позицию 11).
     - Новые тесты: `TestModelOverride` (2), `TestProviderRegistration` (4), `TestConfigRegisterProvider` (3), `test_label_passes_model_override`, `test_label_without_model_override`, `test_call_provider_uses_model_override`, `test_call_provider_uses_default_model_when_no_override`.
   - [x] **Документация:** обновлены `docs/decisions.md` (новый ADR), `docs/progress.md` (эта запись).
+  - [x] **CRUD провайдеров (дополнение):**
+    - `PUT /providers/{id}` — переключение enabled/disabled, смена priority (частичное обновление).
+    - `DELETE /providers/{id}` — удаление провайдера из runtime-конфигурации.
+    - Защита: нельзя удалить последнего включённого провайдера (400 Bad Request).
+  - [x] **Apps Script UI:**
+    - `manageProviders()` переписан из read-only диалога в полноценный CRUD UI с 5 действиями:
+      1. Добавить нового провайдера (диалог с полями: id, endpoint, model, models, api_key_env_var, priority)
+      2. Включить/выключить провайдера
+      3. Изменить приоритет
+      4. Удалить провайдера
+      5. Обновить список моделей в настройках
+    - `refreshModelDropdown()` — собирает все модели из enabled провайдеров, ставит dropdown на ячейку `model` листа «Настройки».
+    - Добавлены `_put()` и `_delete()` HTTP-хелперы.
+    - `refreshClientList()` теперь вызывает и `refreshModelDropdown()`.
+  - [x] **Тесты:** 245/245 passed (8 новых для PUT/DELETE).
   - Status: Ready for commit
   - Коммит: `feat(labeler): model override per run + POST /providers/register for runtime provider addition`
 

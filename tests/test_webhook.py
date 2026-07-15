@@ -1082,6 +1082,130 @@ class TestProviderRegistration:
         )
         assert resp.status_code == 403
 
+    def test_update_provider_toggle_enabled(self, client, monkeypatch):
+        """PUT /providers/{id} переключает enabled."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {
+            "test-provider": {
+                "enabled": True,
+                "priority": 1,
+                "default_model": "model-v1",
+                "models": ["model-v1"],
+                "endpoint": "https://test.com",
+                "api_key_env_var": "TEST_KEY",
+            }
+        })
+
+        resp = client.put(
+            "/providers/test-provider",
+            json={"enabled": False},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["updated"] is True
+        assert resp.json()["provider"]["enabled"] is False
+
+    def test_update_provider_change_priority(self, client, monkeypatch):
+        """PUT /providers/{id} меняет priority."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {
+            "test-provider": {
+                "enabled": True,
+                "priority": 1,
+                "default_model": "model-v1",
+                "models": ["model-v1"],
+                "endpoint": "https://test.com",
+                "api_key_env_var": "TEST_KEY",
+            }
+        })
+
+        resp = client.put(
+            "/providers/test-provider",
+            json={"priority": 5},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["provider"]["priority"] == 5
+
+    def test_update_provider_missing_returns_404(self, client):
+        """PUT /providers/{id} для несуществующего провайдера возвращает 404."""
+        resp = client.put(
+            "/providers/nonexistent",
+            json={"enabled": False},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 404
+
+    def test_update_provider_missing_auth_returns_401(self, client):
+        resp = client.put("/providers/test", json={"enabled": False})
+        assert resp.status_code == 401
+
+    def test_delete_provider(self, client, monkeypatch):
+        """DELETE /providers/{id} удаляет провайдера."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {
+            "opencode-zen": {
+                "enabled": True,
+                "priority": 1,
+                "default_model": "qwen3.6-plus",
+                "models": ["qwen3.6-plus"],
+                "endpoint": "https://opencode.ai/zen/v1/chat/completions",
+                "api_key_env_var": "OPENCODE_API_KEY",
+            },
+            "test-provider": {
+                "enabled": True,
+                "priority": 2,
+                "default_model": "model-v1",
+                "models": ["model-v1"],
+                "endpoint": "https://test.com",
+                "api_key_env_var": "TEST_KEY",
+            }
+        })
+
+        resp = client.delete(
+            "/providers/test-provider",
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
+        assert "test-provider" not in cfg_mod.PROVIDERS
+
+    def test_delete_provider_missing_returns_404(self, client):
+        """DELETE /providers/{id} для несуществующего провайдера возвращает 404."""
+        resp = client.delete(
+            "/providers/nonexistent",
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 404
+
+    def test_delete_last_enabled_provider_returns_400(self, client, monkeypatch):
+        """DELETE последнего включённого провайдера возвращает 400."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {
+            "only-one": {
+                "enabled": True,
+                "priority": 1,
+                "default_model": "model-v1",
+                "models": ["model-v1"],
+                "endpoint": "https://test.com",
+                "api_key_env_var": "TEST_KEY",
+            }
+        })
+
+        resp = client.delete(
+            "/providers/only-one",
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 400
+
+    def test_delete_provider_missing_auth_returns_401(self, client):
+        resp = client.delete("/providers/test")
+        assert resp.status_code == 401
+
 
 class TestConfigRegisterProvider:
     """Тесты config.register_provider."""

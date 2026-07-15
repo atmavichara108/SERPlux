@@ -1226,10 +1226,8 @@ function showProfile() {
 }
 
 /**
- * «Управление провайдерами...» — GET /providers, диалог-таблица.
- *
- * Кнопки управления — заглушки: POST/PUT/DELETE /providers не реализованы
- * (ADR 2026-07-03: провайдеры в config.py, read-only).
+ * «Управление провайдерами...» — полноценный UI: список, добавление,
+ * включение/выключение, удаление.
  */
 function manageProviders() {
   var ui = SpreadsheetApp.getUi();
@@ -1240,38 +1238,251 @@ function manageProviders() {
   }
 
   var result = _get("/providers", secret);
-
   if (!result.ok) {
     ui.alert("Ошибка", _friendlyError(result), ui.ButtonSet.OK);
     return;
   }
 
   var providers = result.data || [];
-
-  var text = "Провайдеры LLM:\n\n";
-
   if (!Array.isArray(providers) || providers.length === 0) {
-    text += "(нет зарегистрированных провайдеров)\n";
-  } else {
-    for (var i = 0; i < providers.length; i++) {
-      var p = providers[i];
-      var statusText = p.enabled ? "включён" : "выключен";
-      text += (i + 1) + ". " + (p.id || "—") + "\n" +
-        "   Модель: " + (p.default_model || "—") + "\n" +
-        "   Статус: " + statusText + " | Приоритет: " + (p.priority || "—") + "\n";
-      if (p.models && p.models.length > 0) {
-        text += "   Доступные модели: " + p.models.join(", ") + "\n";
-      }
-      text += "\n";
+    ui.alert("Управление провайдерами", "Нет зарегистрированных провайдеров.", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Формируем текст списка провайдеров
+  var text = "Провайдеры LLM:\n\n";
+  for (var i = 0; i < providers.length; i++) {
+    var p = providers[i];
+    var statusText = p.enabled ? "✓ включён" : "✗ выключен";
+    text += (i + 1) + ". " + (p.id || "—") + "\n" +
+      "   Модель: " + (p.default_model || "—") + "\n" +
+      "   Статус: " + statusText + " | Приоритет: " + (p.priority || "—") + "\n";
+    if (p.models && p.models.length > 0) {
+      text += "   Модели: " + p.models.join(", ") + "\n";
     }
+    text += "\n";
   }
 
   text += "─────────────────────────────\n" +
-    "Управление провайдерами (добавление, включение/выключение,\n" +
-    "приоритет) доступно через config.py на сервере.\n" +
-    "API-эндпоинты POST/PUT/DELETE /providers не реализованы.";
+    "Выберите действие:";
 
-  ui.alert("Управление провайдерами", text, ui.ButtonSet.OK);
+  var response = ui.alert("Управление провайдерами", text, ui.ButtonSet.OK_CANCEL);
+  if (response !== ui.Button.OK) return;
+
+  // Диалог выбора действия
+  var action = ui.prompt(
+    "Действие с провайдером",
+    "Введите номер действия:\n" +
+    "1 — Добавить нового провайдера\n" +
+    "2 — Включить/выключить провайдера\n" +
+    "3 — Изменить приоритет\n" +
+    "4 — Удалить провайдера\n" +
+    "5 — Обновить список моделей в настройках",
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response !== ui.Button.OK) return;
+
+  var actionNum = String(response.getResponseText()).trim();
+
+  if (actionNum === "1") {
+    _addProviderDialog(ui, secret);
+  } else if (actionNum === "2") {
+    _toggleProviderDialog(ui, secret, providers);
+  } else if (actionNum === "3") {
+    _changePriorityDialog(ui, secret, providers);
+  } else if (actionNum === "4") {
+    _deleteProviderDialog(ui, secret, providers);
+  } else if (actionNum === "5") {
+    refreshModelDropdown();
+    ui.alert("Готово", "Список моделей обновлён на листе «Настройки».", ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Диалог добавления нового провайдера.
+ */
+function _addProviderDialog(ui, secret) {
+  var idPrompt = ui.prompt(
+    "Добавить провайдера",
+    "Введите ID провайдера (например: openrouter):",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (idPrompt.getResponseText() === "") return;
+  var providerId = String(idPrompt.getResponseText()).trim();
+
+  var endpointPrompt = ui.prompt(
+    "Добавить провайдера",
+    "Введите endpoint (например: https://openrouter.ai/api/v1/chat/completions):",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (endpointPrompt.getResponseText() === "") return;
+  var endpoint = String(endpointPrompt.getResponseText()).trim();
+
+  var modelPrompt = ui.prompt(
+    "Добавить провайдера",
+    "Введите default_model (например: anthropic/claude-sonnet-4):",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (modelPrompt.getResponseText() === "") return;
+  var defaultModel = String(modelPrompt.getResponseText()).trim();
+
+  var modelsPrompt = ui.prompt(
+    "Добавить провайдера",
+    "Введите доступные модели через запятую (например: model1,model2):",
+    ui.ButtonSet.OK_CANCEL
+  );
+  var modelsStr = String(modelsPrompt.getResponseText()).trim();
+  var models = modelsStr ? modelsStr.split(",").map(function(m) { return m.trim(); }).filter(function(m) { return m; }) : [defaultModel];
+
+  var apiKeyPrompt = ui.prompt(
+    "Добавить провайдера",
+    "Введите имя переменной окружения для API ключа (например: OPENROUTER_API_KEY):",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (apiKeyPrompt.getResponseText() === "") return;
+  var apiKeyEnvVar = String(apiKeyPrompt.getResponseText()).trim();
+
+  var priorityPrompt = ui.prompt(
+    "Добавить провайдера",
+    "Введите приоритет (число, меньше = выше приоритет, по умолчанию 999):",
+    ui.ButtonSet.OK_CANCEL
+  );
+  var priorityStr = String(priorityPrompt.getResponseText()).trim();
+  var priority = priorityStr ? parseInt(priorityStr, 10) : 999;
+
+  var payload = {
+    provider_id: providerId,
+    enabled: true,
+    priority: priority,
+    default_model: defaultModel,
+    models: models,
+    endpoint: endpoint,
+    api_key_env_var: apiKeyEnvVar
+  };
+
+  var result = _post("/providers/register", payload, secret);
+  if (result.ok && result.code === 201) {
+    ui.alert("Успех", "Провайдер '" + providerId + "' зарегистрирован.\n\nНе забудьте добавить " + apiKeyEnvVar + " в .env на сервере!", ui.ButtonSet.OK);
+    refreshProviderChain();
+    refreshModelDropdown();
+  } else {
+    var detail = (result.data && result.data.detail) ? result.data.detail : "Ошибка при регистрации";
+    ui.alert("Ошибка", detail, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Диалог включения/выключения провайдера.
+ */
+function _toggleProviderDialog(ui, secret, providers) {
+  var idList = [];
+  for (var i = 0; i < providers.length; i++) {
+    idList.push((i + 1) + ". " + providers[i].id + " (" + (providers[i].enabled ? "вкл" : "выкл") + ")");
+  }
+
+  var prompt = ui.prompt(
+    "Включить/выключить провайдера",
+    "Доступные провайдеры:\n" + idList.join("\n") + "\n\nВведите номер провайдера:",
+    ui.ButtonSet.OK_CANCEL
+  );
+  var num = parseInt(String(prompt.getResponseText()).trim(), 10);
+  if (isNaN(num) || num < 1 || num > providers.length) return;
+
+  var provider = providers[num - 1];
+  var newEnabled = !provider.enabled;
+  var actionText = newEnabled ? "включить" : "выключить";
+
+  var confirm = ui.alert(
+    "Подтверждение",
+    "Вы уверены, что хотите " + actionText + " провайдера '" + provider.id + "'?",
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  var result = _put("/providers/" + provider.id, { enabled: newEnabled }, secret);
+  if (result.ok) {
+    ui.alert("Успех", "Провайдер '" + provider.id + "' " + (newEnabled ? "включён" : "выключен") + ".", ui.ButtonSet.OK);
+    refreshProviderChain();
+    refreshModelDropdown();
+  } else {
+    var detail = (result.data && result.data.detail) ? result.data.detail : "Ошибка";
+    ui.alert("Ошибка", detail, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Диалог изменения приоритета провайдера.
+ */
+function _changePriorityDialog(ui, secret, providers) {
+  var idList = [];
+  for (var i = 0; i < providers.length; i++) {
+    idList.push((i + 1) + ". " + providers[i].id + " (приоритет: " + (providers[i].priority || "—") + ")");
+  }
+
+  var prompt = ui.prompt(
+    "Изменить приоритет",
+    "Доступные провайдеры:\n" + idList.join("\n") + "\n\nВведите номер провайдера:",
+    ui.ButtonSet.OK_CANCEL
+  );
+  var num = parseInt(String(prompt.getResponseText()).trim(), 10);
+  if (isNaN(num) || num < 1 || num > providers.length) return;
+
+  var provider = providers[num - 1];
+
+  var priorityPrompt = ui.prompt(
+    "Изменить приоритет",
+    "Текущий приоритет '" + provider.id + "': " + (provider.priority || "—") + "\n\nВведите новый приоритет (число, меньше = выше):",
+    ui.ButtonSet.OK_CANCEL
+  );
+  var newPriority = parseInt(String(priorityPrompt.getResponseText()).trim(), 10);
+  if (isNaN(newPriority)) return;
+
+  var result = _put("/providers/" + provider.id, { priority: newPriority }, secret);
+  if (result.ok) {
+    ui.alert("Успех", "Приоритет '" + provider.id + "' изменён на " + newPriority + ".", ui.ButtonSet.OK);
+    refreshProviderChain();
+  } else {
+    var detail = (result.data && result.data.detail) ? result.data.detail : "Ошибка";
+    ui.alert("Ошибка", detail, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Диалог удаления провайдера.
+ */
+function _deleteProviderDialog(ui, secret, providers) {
+  var idList = [];
+  for (var i = 0; i < providers.length; i++) {
+    idList.push((i + 1) + ". " + providers[i].id + (providers[i].enabled ? " (вкл)" : ""));
+  }
+
+  var prompt = ui.prompt(
+    "Удалить провайдера",
+    "Доступные провайдеры:\n" + idList.join("\n") + "\n\nВведите номер провайдера для удаления:",
+    ui.ButtonSet.OK_CANCEL
+  );
+  var num = parseInt(String(prompt.getResponseText()).trim(), 10);
+  if (isNaN(num) || num < 1 || num > providers.length) return;
+
+  var provider = providers[num - 1];
+
+  var confirm = ui.alert(
+    "Подтверждение удаления",
+    "Вы уверены, что хотите удалить провайдера '" + provider.id + "'?\n\nЭто действие нельзя отменить без перезапуска контейнера.",
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  var result = _delete("/providers/" + provider.id, secret);
+  if (result.ok) {
+    ui.alert("Успех", "Провайдер '" + provider.id + "' удалён.", ui.ButtonSet.OK);
+    refreshProviderChain();
+    refreshModelDropdown();
+  } else {
+    var detail = (result.data && result.data.detail) ? result.data.detail : "Ошибка";
+    ui.alert("Ошибка", detail, ui.ButtonSet.OK);
+  }
 }
 
 /**
@@ -1563,8 +1774,9 @@ function refreshClientList() {
     ui.ButtonSet.OK
   );
 
-  // Автоматически обновляем список провайдеров
+  // Автоматически обновляем списки провайдеров и моделей
   refreshProviderChain();
+  refreshModelDropdown();
 }
 
 /**
@@ -1574,13 +1786,11 @@ function refreshClientList() {
 function refreshProviderChain() {
   var secret = _getSecret();
   if (!secret) {
-    // Тихо выходим если нет секрета (вызывается из refreshClientList)
     return;
   }
 
   var result = _get("/providers", secret);
   if (!result.ok) {
-    // Тихо выходим при ошибке
     return;
   }
 
@@ -1589,7 +1799,6 @@ function refreshProviderChain() {
     return;
   }
 
-  // Извлекаем id провайдеров
   var providerIds = [];
   for (var i = 0; i < providers.length; i++) {
     if (providers[i].id && providers[i].enabled) {
@@ -1601,7 +1810,6 @@ function refreshProviderChain() {
     return;
   }
 
-  // Находим ячейку provider_chain на листе «Настройки»
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
   if (!sheet) return;
@@ -1617,13 +1825,70 @@ function refreshProviderChain() {
 
   if (providerRow === -1) return;
 
-  // Устанавливаем Data Validation dropdown
   var cell = sheet.getRange(providerRow, 2);
   cell.setDataValidation(
     SpreadsheetApp.newDataValidation()
       .requireValueInList(providerIds, true)
-      .setAllowInvalid(true)  // разрешаем ручной ввод для цепочек через запятую
+      .setAllowInvalid(true)
       .setHelpText("Выберите провайдера или введите цепочку через запятую")
+      .build()
+  );
+}
+
+/**
+ * Обновляет выпадающий список моделей на листе «Настройки».
+ * GET /providers → собирает все модели из enabled провайдеров → Data Validation dropdown.
+ */
+function refreshModelDropdown() {
+  var secret = _getSecret();
+  if (!secret) return;
+
+  var result = _get("/providers", secret);
+  if (!result.ok) return;
+
+  var providers = result.data || [];
+  if (!Array.isArray(providers) || providers.length === 0) return;
+
+  // Собираем все уникальные модели из enabled провайдеров
+  var modelSet = {};
+  var modelList = [];
+  for (var i = 0; i < providers.length; i++) {
+    var p = providers[i];
+    if (!p.enabled) continue;
+    if (p.models && Array.isArray(p.models)) {
+      for (var j = 0; j < p.models.length; j++) {
+        var m = p.models[j];
+        if (m && !modelSet[m]) {
+          modelSet[m] = true;
+          modelList.push(m);
+        }
+      }
+    }
+  }
+
+  if (modelList.length === 0) return;
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
+  if (!sheet) return;
+
+  var data = sheet.getDataRange().getValues();
+  var modelRow = -1;
+  for (var i = 0; i < data.length; i++) {
+    if (String(data[i][0]).trim().toLowerCase() === "model") {
+      modelRow = i + 1;
+      break;
+    }
+  }
+
+  if (modelRow === -1) return;
+
+  var cell = sheet.getRange(modelRow, 2);
+  cell.setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(modelList, true)
+      .setAllowInvalid(true)
+      .setHelpText("Выберите модель или оставьте пустым для default_model провайдера")
       .build()
   );
 }
@@ -1911,13 +2176,23 @@ function _get(path, secret) {
   return _request("get", path, null, secret);
 }
 
+/** PUT-запрос к webhook. */
+function _put(path, payload, secret) {
+  return _request("put", path, payload, secret);
+}
+
+/** DELETE-запрос к webhook. */
+function _delete(path, secret) {
+  return _request("delete", path, null, secret);
+}
+
 /**
  * Универсальный HTTP-запрос к webhook-серверу.
  * Все запросы используют Bearer-авторизацию.
  *
- * @param {string} method — "get" или "post"
+ * @param {string} method — "get", "post", "put" или "delete"
  * @param {string} path — путь эндпоинта (/run, /status, /clients, /providers)
- * @param {object|null} payload — тело запроса (для POST)
+ * @param {object|null} payload — тело запроса (для POST/PUT)
  * @param {string} secret — Bearer-токен
  * @return {object} {ok: bool, code: int, body: string, data: object}
  */

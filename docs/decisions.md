@@ -29,17 +29,22 @@
 - `GET /providers` теперь возвращает `endpoint` и `api_key_env_var` (полезно для UI).
 - Все функции labeler.py получили дополнительный параметр `model` (backward compatible, default=None).
 - Тесты обновлены: моки принимают `model=None`, добавлены тесты override и регистрации.
+- **CRUD провайдеров:** добавлены `PUT /providers/{id}` (toggle enabled, change priority) и `DELETE /providers/{id}` (удаление).
+  - Нельзя удалить последнего включённого провайдера (400 Bad Request).
+  - Apps Script UI: полноценное управление через диалоги (добавление, toggle, приоритет, удаление).
+  - Dropdown моделей на листе «Настройки» обновляется автоматически из всех enabled провайдеров.
 
 **Статус:** Принято и реализовано
 
 **Затронутые файлы:**
-- `webhook.py`: `model` в `RunRequest`, `POST /providers/register`, обновлён `GET /providers`
+- `webhook.py`: `model` в `RunRequest`, `POST /providers/register`, `PUT /providers/{id}`, `DELETE /providers/{id}`, обновлён `GET /providers`
 - `labeler.py`: `model` параметр во всех функциях цепочки
 - `main.py`: проброс `model` в `label_kwargs`
 - `config.py`: `register_provider()` функция
+- `apps_script.gs`: полноценный UI управления провайдерами, `refreshModelDropdown()`, `_put()`, `_delete()`
 - `.env.example`: placeholder'ы для второго провайдера
 - `tests/test_labeler_modes.py`: обновлены моки, добавлены 4 теста
-- `tests/test_webhook.py`: обновлены args tuple, добавлены 9 тестов
+- `tests/test_webhook.py`: обновлены args tuple, добавлены 17 тестов (PUT/DELETE)
 
 ---
 
