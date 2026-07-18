@@ -454,7 +454,16 @@ class TestProvidersEndpoint:
         assert zen["enabled"] is True
         assert zen["priority"] == 1
         assert zen["default_model"] == "qwen3.6-plus"
-        assert "qwen3.6-plus" in zen["models"]
+        # Проверяем все модели: текущая + бесплатные
+        expected_models = {
+            "qwen3.6-plus",
+            "big-pickle",
+            "deepseek-v4-flash-free",
+            "mimo-v2.5-free",
+            "north-mini-code-free",
+            "nemotron-3-ultra-free",
+        }
+        assert set(zen["models"]) == expected_models
 
     def test_list_providers_missing_auth_returns_401(self, client):
         """GET /providers без Bearer возвращает 401."""
