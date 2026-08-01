@@ -541,14 +541,16 @@ def get_label_history(position_id: int, db_path: str = DB_PATH) -> list[dict]:
 
 
 def get_domain_label(
-    url: str,
+    domain: str,
     query: str,
     geo: str,
     db_path: str = DB_PATH,
 ) -> str | None:
     """
-    Возвращает sentiment из справочника domain_labels по (url, query, geo),
+    Возвращает sentiment из справочника domain_labels по (domain, query, geo),
     или None если запись не найдена.
+    
+    domain — домен (без схемы, пути и параметров), lowercase.
     """
     _ensure_db(db_path)
     conn = _get_conn(db_path)
@@ -557,7 +559,7 @@ def get_domain_label(
             """SELECT sentiment
                FROM domain_labels
                WHERE url = ? AND query = ? AND geo = ?""",
-            (url, query.lower(), geo),
+            (domain.lower(), query.lower(), geo),
         ).fetchone()
         return row["sentiment"] if row else None
     finally:
@@ -565,7 +567,7 @@ def get_domain_label(
 
 
 def upsert_domain_label(
-    url: str,
+    domain: str,
     query: str,
     geo: str,
     sentiment: str,
@@ -573,7 +575,9 @@ def upsert_domain_label(
     db_path: str = DB_PATH,
 ) -> None:
     """
-    INSERT или UPDATE записи в domain_labels по PRIMARY KEY (url, query, geo).
+    INSERT или UPDATE записи в domain_labels по PRIMARY KEY (domain, query, geo).
+    
+    domain — домен (без схемы, пути и параметров), lowercase.
 
     Приоритет source:
       - 'manual_l1' — не перезаписывается источниками 'snippet' или 'page'.
@@ -586,18 +590,19 @@ def upsert_domain_label(
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     try:
+        domain_lower = domain.lower()
         # Проверяем существующую запись и её source
         existing = conn.execute(
             """SELECT source FROM domain_labels
                WHERE url = ? AND query = ? AND geo = ?""",
-            (url, query.lower(), geo),
+            (domain_lower, query.lower(), geo),
         ).fetchone()
 
         if existing is not None and existing["source"] == "manual_l1" and source != "manual_l1":
             # Существующая manual_l1 не перезаписывается автоматическими источниками
             log.debug(
                 "domain_labels: пропускаю обновление %s/%s/%s (manual_l1 -> %s)",
-                url, query, geo, source
+                domain, query, geo, source
             )
             return
 
@@ -609,7 +614,7 @@ def upsert_domain_label(
                     sentiment = excluded.sentiment,
                     source = excluded.source,
                     updated_at = datetime('now')""",
-            (url, query.lower(), geo, sentiment, source),
+            (domain_lower, query.lower(), geo, sentiment, source),
         )
         conn.commit()
     finally:
@@ -623,7 +628,7 @@ def bulk_upsert_domain_labels(
     """
     Массовый upsert записей в domain_labels.
 
-    Каждый элемент items — dict с ключами: url, query, geo, sentiment, source.
+    Каждый элемент items — dict с ключами: domain, query, geo, sentiment, source.
     Применяются те же правила приоритета source, что и в upsert_domain_label.
     """
     valid_sources = {"manual_l1", "snippet", "page"}
@@ -637,7 +642,7 @@ def bulk_upsert_domain_labels(
     conn = _get_conn(db_path)
     try:
         # Сначала находим все существующие manual_l1, которые нельзя перезаписывать
-        keys = [(item["url"], item["query"].lower(), item["geo"]) for item in items]
+        keys = [(item["domain"].lower(), item["query"].lower(), item["geo"]) for item in items]
         placeholders = ",".join("(?, ?, ?)" for _ in keys)
         if placeholders:
             flat_keys = [v for tup in keys for v in tup]
@@ -654,24 +659,24 @@ def bulk_upsert_domain_labels(
             existing_manual = set()
 
         for item in items:
-            url = item["url"]
+            domain = item["domain"].lower()
             query = item["query"].lower()
             geo = item["geo"]
             sentiment = item["sentiment"]
             source = item["source"]
 
-            if (url, query, geo) in existing_manual and source != "manual_l1":
+            if (domain, query, geo) in existing_manual and source != "manual_l1":
                 continue
 
             conn.execute(
                 """INSERT INTO domain_labels
                        (url, query, geo, sentiment, source, updated_at)
-                   VALUES (?, ?, ?, ?, ?, datetime('now'))
-                   ON CONFLICT(url, query, geo) DO UPDATE SET
-                       sentiment = excluded.sentiment,
-                       source = excluded.source,
-                       updated_at = datetime('now')""",
-                (url, query, geo, sentiment, source),
+                    VALUES (?, ?, ?, ?, ?, datetime('now'))
+                    ON CONFLICT(url, query, geo) DO UPDATE SET
+                        sentiment = excluded.sentiment,
+                        source = excluded.source,
+                        updated_at = datetime('now')""",
+                (domain, query, geo, sentiment, source),
             )
         conn.commit()
     finally:

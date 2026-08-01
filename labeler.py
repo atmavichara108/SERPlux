@@ -1,6 +1,7 @@
 import os
 import re
 import time
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 import requests
 
@@ -14,6 +15,17 @@ log = config.setup_logging(__name__)
 LLM_PAUSE = 1  # секунд между вызовами LLM
 
 LABEL_PATTERN = re.compile(r"\b(positive|negative|neutral)\b", re.IGNORECASE)
+
+
+def _extract_domain(url: str) -> str:
+    """Извлекает домен из URL для нормализации ключа кэша."""
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc.lower()
+    except Exception:
+        return url.lower()
 
 
 def _build_prompt(query: str, url: str, snippet: str) -> str:
@@ -159,18 +171,19 @@ def _label_group_auto(
         # uncertain для пустого сниппета / ошибки провайдера
         row["confidence"] = "high"
 
-        url = row.get("url")
+        url = row.get("url") or ""
+        domain = row.get("domain") or _extract_domain(url)
         query = row.get("query") or ""
         snippet = row.get("snippet", "")
 
-        # Шаг 1: Проверяем кэш domain_labels (url, query, geo)
-        if url and not force_relabel:
-            cached_sentiment = storage.get_domain_label(url, query, geo, db_path)
+        # Шаг 1: Проверяем кэш domain_labels (domain, query, geo)
+        if domain and not force_relabel:
+            cached_sentiment = storage.get_domain_label(domain, query, geo, db_path)
             if cached_sentiment is not None:
                 row["sentiment"] = cached_sentiment
                 row["label"] = cached_sentiment
                 stats["cache_hit"] += 1
-                log.debug("AUTO кэш-хит: %s/%s/%s -> %s", url, query, geo, cached_sentiment)
+                log.debug("AUTO кэш-хит: %s/%s/%s -> %s", domain, query, geo, cached_sentiment)
                 result.append(row)
                 continue
 
@@ -183,8 +196,8 @@ def _label_group_auto(
             row["confidence"] = "uncertain"
             stats["snippet_fallback_neutral"] += 1
             # Сохраняем в кэш (источник snippet — нейтральный фоллбэк)
-            if url:
-                storage.upsert_domain_label(url, query, geo, "neutral", "snippet", db_path)
+            if domain:
+                storage.upsert_domain_label(domain, query, geo, "neutral", "snippet", db_path)
             result.append(row)
             continue
 
@@ -214,9 +227,9 @@ def _label_group_auto(
         row["label"] = sentiment
         last_real_call_ref[0] = time.time()
         
-        # Сохраняем в кэш domain_labels
-        if url:
-            storage.upsert_domain_label(url, query, geo, sentiment, "snippet", db_path)
+        # Сохраняем в кэш domain_labels по домену
+        if domain:
+            storage.upsert_domain_label(domain, query, geo, sentiment, "snippet", db_path)
         
         result.append(row)
 

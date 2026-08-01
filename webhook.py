@@ -782,8 +782,17 @@ def import_domain_labels(
         sentiment = _extract_str(raw.get("sentiment")).lower()
         source = _extract_str(raw.get("source")).lower() or DEFAULT_IMPORT_SOURCE
 
+        # Извлекаем домен из URL для кэша
+        domain = ""
+        if url:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc.lower()
+            except Exception:
+                domain = url.lower()
+
         # Валидация
-        if not url or not query or not geo or not sentiment:
+        if not domain or not query or not geo or not sentiment:
             skipped += 1
             _add_sample(f"row {idx}: missing required fields")
             log.warning("labels_import: row %s missing required fields", idx)
@@ -803,7 +812,7 @@ def import_domain_labels(
 
         try:
             storage.upsert_domain_label(
-                url=url,
+                domain=domain,
                 query=query,
                 geo=geo,
                 sentiment=sentiment,
@@ -813,10 +822,10 @@ def import_domain_labels(
             imported += 1
         except Exception as exc:
             errors += 1
-            _add_sample(f"row {idx}: db error for {url}/{query}/{geo}: {exc}")
+            _add_sample(f"row {idx}: db error for {domain}/{query}/{geo}: {exc}")
             log.error(
                 "labels_import: db error row %s %s/%s/%s: %s",
-                idx, url, query, geo, exc,
+                idx, domain, query, geo, exc,
             )
 
     log.info(
