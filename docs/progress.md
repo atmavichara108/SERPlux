@@ -6,6 +6,30 @@
 
 ## Сделано
 
+- **Session: 2026-08-01 — Исправление кэша разметки + улучшение промпта LLM**
+  - [x] **Проблема 2 (кэш не используется) — ИСПРАВЛЕНА:**
+    - Корневая причина: кэш использовал полный URL как ключ, но URL меняются между прогонами (UTM-метки, параметры).
+    - `labeler.py`: добавлена `_extract_domain()` — извлекает домен из URL. Кэш теперь ищет по `(domain, query, geo)`.
+    - `storage.py`: `get_domain_label()`, `upsert_domain_label()`, `bulk_upsert_domain_labels()` переключены на параметр `domain`.
+    - `webhook.py`: `labels/import` endpoint извлекает домен из URL перед сохранением в кэш.
+    - Домен нормализуется в lowercase для консистентности.
+  - [x] **Проблема 1 (низкое качество разметки) — ИСПРАВЛЕНА:**
+    - `_build_prompt()` переписан с few-shot примерами и чёткими критериями.
+    - Добавлены 3 примера (positive/negative/neutral) с реальными данными.
+    - Детальные критерии для каждого sentiment (bullet points).
+    - Явная инструкция по формату вывода.
+  - [x] **Проблема 3 (эталон игнорируется) — ИСПРАВЛЕНА:**
+    - `parseList1ToEtalon()` в Apps Script теперь извлекает домен из URL вместо сохранения полного URL.
+    - `importEtalonToDb()` обновлён на использование колонки `domain` вместо `url`.
+    - Заголовок листа «Эталон разметки» изменён с `url` на `domain`.
+  - [x] **Тесты:** 245/245 passed.
+    - Обновлены все тесты на использование `domain` вместо `url`.
+    - `test_labeler_modes.py`, `test_domain_labels.py`, `test_webhook.py` — все исправлены.
+  - [x] **Документация:** обновлены `docs/decisions.md` (новый ADR), `docs/progress.md` (эта запись).
+  - [x] **Ветка:** работа ведётся в `fix/labeling-cache-and-quality` (не main).
+  - Status: Ready for PR
+  - Коммиты: `a5b6dac`, `14072e2`
+
 - **Session: 2026-07-15 — Мультипровайдерная разметка: переключатель модели + регистрация провайдеров**
   - [x] **`webhook.py`:** добавлен `model` параметр в `RunRequest` — позволяет выбрать конкретную модель LLM при запуске прогона.
     - Проброшен через `_run_pipeline` → `request_params` → `main.run()` → `labeler.label()` → `_call_provider()`.
