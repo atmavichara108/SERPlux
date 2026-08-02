@@ -783,11 +783,13 @@ def import_domain_labels(
         source = _extract_str(raw.get("source")).lower() or DEFAULT_IMPORT_SOURCE
 
         # Извлекаем домен из URL для кэша
-        domain = ""
-        if url:
+        domain = _extract_str(raw.get("domain"))
+        if not domain and url:
             try:
                 from urllib.parse import urlparse
                 domain = urlparse(url).netloc.lower()
+                if not domain:
+                    domain = url.lower()  # fallback: уже домен без схемы
             except Exception:
                 domain = url.lower()
 

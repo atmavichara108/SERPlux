@@ -6,6 +6,24 @@
 
 ## Сделано
 
+- **Session: 2026-08-03 — Фикс 3 критических багов в кэше разметки, webhook и reporter**
+  - [x] **Баг 1 — Отсутствие миграции URL → domain в БД:**
+    - `migrate.py`: добавлена `migrate_url_to_domain(conn)` — извлекает домен из полных URL в `domain_labels`, сохраняет `manual_l1` при конфликтах, удаляет исходные записи с полными URL.
+    - Вызвана в `migrate()` после `_apply_schema_patches()`.
+  - [x] **Баг 2 — Webhook urlparse пропускал домены без схемы:**
+    - `webhook.py`: `import_domain_labels()` теперь сначала берёт `domain` из поля `domain`, fallback на `urlparse(url).netloc`, затем на `url.lower()` (если пришёл уже домен).
+    - `apps_script.gs`: `importEtalonToDb()` шлёт поле `domain` вместо `url`.
+  - [x] **Баг 3 — Reporter не фильтровал по client_id:**
+    - `reporter.py`: `get_history(filters={"date": date, "client_id": client_id})` вместо фильтра только по дате.
+  - [x] **Очистка отравлённого автокэша:**
+    - `migrate.py`: добавлена `cleanup_snippet_cache(conn)` — бэкапит `source IN ('snippet','page')` в `domain_labels_backup_2026_08_01`, затем удаляет из основной таблицы.
+    - Вызвана в `migrate()` после миграции URL → domain.
+  - [x] **Тесты:** 245/245 passed.
+  - [x] **Ручная проверка миграции:** на тестовой БД с полными URL и snippet/page записями — миграция отработала, backup-таблица создана, в `domain_labels` остались только `manual_l1`.
+  - [x] **Документация:** обновлены `docs/decisions.md` (новый ADR), `docs/progress.md` (эта запись).
+  - Status: Ready for PR
+  - Коммит: `fix: migrate domain_labels to domain keys + fix webhook urlparse + cleanup cache`
+
 - **Session: 2026-08-01 — Исправление кэша разметки + улучшение промпта LLM**
   - [x] **Проблема 2 (кэш не используется) — ИСПРАВЛЕНА:**
     - Корневая причина: кэш использовал полный URL как ключ, но URL меняются между прогонами (UTM-метки, параметры).

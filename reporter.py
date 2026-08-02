@@ -267,7 +267,7 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
     if date is None:
         raise ValueError("Дата не определена и нет данных в базе")
 
-    rows = get_history(filters={"date": date}, db_path=db_path)
+    rows = get_history(filters={"date": date, "client_id": client_id}, db_path=db_path)
     if not rows:
         log.warning("Нет данных за дату %s", date)
         return

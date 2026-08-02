@@ -2668,7 +2668,7 @@ function importEtalonToDb() {
     }
 
     labels.push({
-      url: domain,
+      domain: domain,
       query: query,
       geo: geo,
       sentiment: sentiment,

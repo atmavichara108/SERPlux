@@ -1,6 +1,46 @@
 
 # Лог архитектурных решений (ADR)
 
+## 2026-08-03 — ADR: Миграция domain_labels + фикс webhook urlparse + reporter client_id filter
+
+**Контекст:** В ветке `fix/labeling-cache-and-quality` после перехода кэша на домен обнаружилось 3 критических бага:
+1. В БД остались старые записи с полными URL (`https://example.com/page`), а новый код ищет по домену (`example.com`). Старые записи никогда не находились.
+2. Apps Script шлёт `{domain: "example.com"}`, а webhook делал `urlparse("example.com").netloc` → пустая строка, и валидация пропускала все записи.
+3. `reporter.py` вызывал `get_history(filters={"date": date})` без `client_id`, отчёт смешивал данные всех клиентов.
+
+**Решение:**
+1. **Миграция URL → domain:** `migrate.py` добавлена `migrate_url_to_domain(conn)`.
+   - Находит `url LIKE 'http%'`.
+   - Извлекает домен через `urlparse`, сохраняет `manual_l1` при конфликте с автоматическими source.
+   - Удаляет исходную запись с полным URL, чтобы не осталось дублей по PK.
+2. **Фикс webhook urlparse:** `import_domain_labels()` теперь сначала читает `domain` из тела, затем fallback на `urlparse(url).netloc`, затем на `url.lower()`.
+   - `importEtalonToDb()` в Apps Script шлёт поле `domain` вместо `url`.
+3. **Фильтр по client_id в reporter:** `build_report()` передаёт `filters={"date": date, "client_id": client_id}`.
+4. **Очистка автокэша:** `migrate.py` добавлена `cleanup_snippet_cache(conn)`.
+   - Бэкапит `source IN ('snippet','page')` в `domain_labels_backup_2026_08_01`.
+   - Удаляет автоматические разметки из `domain_labels`, оставляя только `manual_l1`.
+
+**Почему:**
+- Переход на домен бессмысленен без миграции старых данных.
+- Импорт эталона должен работать с доменами без схемы.
+- Мультиклиентность требует фильтрации отчёта по `client_id`.
+- Автоматические разметки (snippet/page) после бага потеряли доверие; их нужно отделить и сохранить в бэкап.
+
+**Следствия:**
+- `domain_labels` после миграции содержит только домены; старые полные URL удалены.
+- `domain_labels_backup_2026_08_01` создаётся при наличии автокэша; можно восстановить при необходимости.
+- 245/245 тестов зелёные.
+
+**Статус:** Принято и реализовано
+
+**Затронутые файлы:**
+- `migrate.py`: `migrate_url_to_domain()`, `cleanup_snippet_cache()`
+- `webhook.py`: `import_domain_labels()` — извлечение домена с fallback
+- `reporter.py`: `build_report()` — фильтр по `client_id`
+- `apps_script.gs`: `importEtalonToDb()` — отправляет `domain` вместо `url`
+
+---
+
 ## 2026-08-01 — ADR: Кэш разметки по домену вместо полного URL + улучшение промпта LLM
 
 **Контекст:** Кэш domain_labels не работал — каждый новый прогон модель размечала заново, даже если URL уже был в эталоне. Корневая причина: кэш использовал полный URL как ключ, но URL меняются между прогонами (UTM-метки, параметры запроса). Эталонная разметка, спарсенная из Лист1, тоже не использовалась — парсер сохранял полные URL, а не домены.

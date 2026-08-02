@@ -45,6 +45,7 @@ import shutil
 import sqlite3
 import sys
 from datetime import datetime
+from urllib.parse import urlparse
 
 import storage
 
@@ -279,6 +280,115 @@ def _migrate_labels(conn: sqlite3.Connection) -> int:
         WHERE r.label IS NOT NULL
     """)
     return conn.total_changes
+
+
+def migrate_url_to_domain(conn: sqlite3.Connection) -> None:
+    """Извлекает домен из полных URL в domain_labels.
+
+    Старая схема хранила в колонке url полный URL (https://example.com/page).
+    Новая схема использует ту же колонку url, но хранит в ней домен.
+    Эта функция мигрирует старые полные URL в домены, сохраняя manual_l1.
+    """
+    rows = conn.execute(
+        "SELECT url, query, geo, sentiment, source FROM domain_labels WHERE url LIKE 'http%'"
+    ).fetchall()
+
+    if not rows:
+        log.info("Миграция domain_labels: нет записей с полными URL")
+        return
+
+    log.info("Миграция domain_labels: найдено %s записей с полными URL", len(rows))
+
+    migrated = 0
+    for row in rows:
+        try:
+            domain = urlparse(row["url"]).netloc.lower()
+            if not domain:
+                log.warning("Не удалось извлечь домен из %s", row["url"])
+                continue
+
+            # Проверяем, нет ли уже записи с этим доменом
+            existing = conn.execute(
+                "SELECT source FROM domain_labels WHERE url = ? AND query = ? AND geo = ?",
+                (domain, row["query"], row["geo"]),
+            ).fetchone()
+
+            if existing:
+                # Если есть конфликт, сохраняем manual_l1
+                if existing["source"] == "manual_l1" and row["source"] != "manual_l1":
+                    log.debug("Пропускаю %s (manual_l1 уже есть)", row["url"])
+                    conn.execute(
+                        "DELETE FROM domain_labels WHERE url = ? AND query = ? AND geo = ?",
+                        (row["url"], row["query"], row["geo"]),
+                    )
+                    continue
+                elif row["source"] == "manual_l1" and existing["source"] != "manual_l1":
+                    # manual_l1 имеет приоритет
+                    conn.execute(
+                        "DELETE FROM domain_labels WHERE url = ? AND query = ? AND geo = ?",
+                        (domain, row["query"], row["geo"]),
+                    )
+
+            # Обновляем или вставляем
+            conn.execute(
+                """INSERT OR REPLACE INTO domain_labels (url, query, geo, sentiment, source, updated_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+                (domain, row["query"], row["geo"], row["sentiment"], row["source"]),
+            )
+
+            # Удаляем исходную запись с полным URL, чтобы не осталось дублей по PK
+            conn.execute(
+                "DELETE FROM domain_labels WHERE url = ? AND query = ? AND geo = ?",
+                (row["url"], row["query"], row["geo"]),
+            )
+            migrated += 1
+        except Exception as e:
+            log.error("Ошибка миграции %s: %s", row["url"], e)
+
+    log.info("Миграция domain_labels: мигрировано %s записей", migrated)
+
+
+def cleanup_snippet_cache(conn: sqlite3.Connection) -> None:
+    """Удаляет автоматические разметки (source='snippet' или 'page'), сохраняя manual_l1.
+
+    Перед удалением создаёт бэкап-таблицу domain_labels_backup_2026_08_01.
+    """
+    backup_rows = conn.execute(
+        "SELECT * FROM domain_labels WHERE source IN ('snippet', 'page')"
+    ).fetchall()
+
+    if not backup_rows:
+        log.info("Очистка кэша: нет записей source=snippet/page")
+        return
+
+    log.info("Очистка кэша: найдено %s записей source=snippet/page", len(backup_rows))
+
+    # Создаём таблицу бэкапа
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS domain_labels_backup_2026_08_01 (
+            url TEXT,
+            query TEXT,
+            geo TEXT,
+            sentiment TEXT,
+            source TEXT,
+            updated_at TEXT
+        )
+    """)
+
+    # Копируем данные в бэкап
+    for row in backup_rows:
+        conn.execute(
+            "INSERT INTO domain_labels_backup_2026_08_01 VALUES (?, ?, ?, ?, ?, ?)",
+            (row["url"], row["query"], row["geo"], row["sentiment"], row["source"], row["updated_at"]),
+        )
+
+    # Удаляем из основной таблицы
+    conn.execute("DELETE FROM domain_labels WHERE source IN ('snippet', 'page')")
+
+    log.info(
+        "Очистка кэша: удалено %s записей, бэкап в domain_labels_backup_2026_08_01",
+        len(backup_rows),
+    )
 
 
 def _verify_schema(conn: sqlite3.Connection) -> None:
@@ -622,6 +732,12 @@ def migrate(db_path: str) -> None:
 
         # Шаг 2: патчи для старых БД (confidence + domain_labels)
         _apply_schema_patches(conn)
+
+        # Шаг 2a: миграция полных URL -> домены в domain_labels
+        migrate_url_to_domain(conn)
+
+        # Шаг 2b: очистка автоматического кэша (snippet/page), сохраняя manual_l1
+        cleanup_snippet_cache(conn)
 
         # Шаг 3: авто-клиент default (всегда, идемпотентно)
         conn.execute(
