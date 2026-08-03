@@ -2537,16 +2537,42 @@ function parseList1ToEtalon() {
  * Возвращает null для нейтральных/белых цветов.
  */
 function _colorToSentiment(bgColor) {
-  if (!bgColor || bgColor === "#ffffff" || bgColor === "#fff" || bgColor === "white") {
+  if (!bgColor) return null;
+
+  var color = String(bgColor).trim().toLowerCase();
+
+  // Белый/прозрачный — неразмеченная ячейка
+  if (color === "" || color === "#ffffff" || color === "#fff" ||
+      color === "white" || color === "rgb(255,255,255)" ||
+      color === "rgb(255, 255, 255)" || color === "rgba(255,255,255,1)" ||
+      color === "rgba(255, 255, 255, 1)") {
     return null;
   }
 
-  var hex = bgColor.replace("#", "").toLowerCase();
-  if (hex.length !== 6) return null;
+  var r, g, b;
 
-  var r = parseInt(hex.substr(0, 2), 16);
-  var g = parseInt(hex.substr(2, 2), 16);
-  var b = parseInt(hex.substr(4, 2), 16);
+  // rgb(r, g, b) или rgba(r, g, b, a)
+  var rgbMatch = color.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)$/);
+  if (rgbMatch) {
+    r = parseInt(rgbMatch[1], 10);
+    g = parseInt(rgbMatch[2], 10);
+    b = parseInt(rgbMatch[3], 10);
+  } else {
+    // hex: #rrggbb, #rgb, #rrggbbaa
+    var hex = color.replace("#", "");
+    if (hex.length === 3) {
+      // #rgb -> #rrggbb
+      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+    } else if (hex.length === 8) {
+      // #rrggbbaa: берём только rgb
+      hex = hex.substr(0, 6);
+    }
+    if (hex.length !== 6) return null;
+
+    r = parseInt(hex.substr(0, 2), 16);
+    g = parseInt(hex.substr(2, 2), 16);
+    b = parseInt(hex.substr(4, 2), 16);
+  }
 
   // Зелёный: G > R и G > B
   if (g > r && g > b) return "positive";
