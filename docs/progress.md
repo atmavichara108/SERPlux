@@ -6,6 +6,26 @@
 
 ## Сделано
 
+- **Session: 2026-08-04 — Точечные критические фиксы: нормализация URL/geo, retry 429, защита кэша от падений**
+  - [x] **storage.py — нормализация путей и geo:**
+    - `normalize_url()`: путь (`path`) теперь тоже приводится к lowercase, чтобы `/Investigation/` и `/investigation/` не давали ложных Cache MISS.
+    - `get_domain_label()`, `upsert_domain_label()`, `bulk_upsert_domain_labels()`: geo нормализуется через `_normalize_geo()` — `.strip().lower()`, чтобы пробелы по краям и регистр не ломали ключ `(url, query, geo)`.
+  - [x] **storage.py — нормализация geo через `config.GEO_DISPLAY`:**
+    - `_normalize_geo()` теперь маппит русские ключи Topvisor (`'Германия'`) и английские значения Эталона (`'Germany'`, `'Cyprus Eng'`) на единый канонический русский ключ в lowercase (`'германия'`, `'кипр eng'`).
+    - Прямой и обратный (case-insensitive) маппинг через `config.GEO_DISPLAY`; неизвестные geo падают в `g.lower()`.
+  - [x] **labeler.py — защита от 429 и отравления кэша:**
+    - `_call_provider()`: добавлен retry с exponential backoff (3 попытки: 3с, 6с, 12с) при HTTP 429 и сетевых ошибках (`requests.exceptions.RequestException`).
+    - `_label_group_auto()`: временный `neutral` при ошибке провайдера больше не сохраняется в `domain_labels` (source='snippet'), чтобы не отравлять кэш. Сохраняются только успешные ответы LLM и реальные пустые сниппеты.
+  - [x] **Тесты:**
+    - Добавлены `test_url_normalized_lowercase_path`, `test_geo_normalized_strip_and_lowercase`, `test_bulk_upsert_domain_labels_geo_normalized`.
+    - Добавлены `test_geo_normalized_english_value_maps_to_russian_key`, `test_geo_normalized_cyprus_eng_alias` — проверяют языковое согласование geo.
+    - Обновлён `test_auto_mode_snippet_fallback_to_neutral_on_provider_error` — проверяет, что кэш не отравился.
+    - Добавлены тесты retry: `test_call_provider_retries_on_429_and_succeeds`, `test_call_provider_retries_on_network_error_and_succeeds`, `test_call_provider_gives_up_after_retries_on_429`.
+  - [x] **Тесты:** 256/256 passed.
+  - [x] **Документация:** обновлены `docs/decisions.md` (новый ADR 2026-08-04 — Retry 429 + защита кэша + нормализация geo), `docs/progress.md` (эта запись).
+  - Status: Ready for deploy
+  - Коммит: `fix(storage,labeler): normalize URL path and geo, retry 429, prevent cache poisoning on provider errors`
+
 - **Session: 2026-08-03 — Откат кэша разметки с домена на полный URL + усиленное логирование**
   - [x] **Проблема:** URL `https://www.motor-oel-guenstig.de/chempioil/` размечалась как neutral, хотя в Лист1 стояла positive. Кэш не брал эталон.
   - [x] **Корневая причина:** ADR 2026-08-01 перевёл кэш `domain_labels` на ключ по домену. Это приводило к рассинхрону www/без-www и теряло гранулярность (разные страницы одного домена). Заказчик отклонил гипотезу «сократить эталон до домена».

@@ -571,8 +571,25 @@ def normalize_url(url: str) -> str:
 
 
 def _normalize_geo(geo: str) -> str:
-    """Нормализует geo: strip + lowercase для стабильного составного ключа."""
-    return (geo or "").strip().lower()
+    """
+    Нормализует geo: strip + маппинг через GEO_DISPLAY + lowercase.
+    Поддерживает русские ключи (Topvisor) и английские значения (Эталон),
+    например 'Германия'/'Germany' -> 'германия', 'Кипр Eng'/'Cyprus Eng' -> 'кипр eng'.
+    """
+    g = (geo or "").strip()
+    lower = g.lower()
+
+    # Прямой маппинг: русский ключ из GEO_DISPLAY
+    for key, value in config.GEO_DISPLAY.items():
+        if key.lower() == lower:
+            return key.lower()
+
+    # Обратный маппинг: английское значение -> русский ключ
+    for key, value in config.GEO_DISPLAY.items():
+        if value.lower() == lower:
+            return key.lower()
+
+    return lower
 
 
 def get_domain_label(

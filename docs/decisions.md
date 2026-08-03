@@ -1,6 +1,42 @@
 
 # Лог архитектурных решений (ADR)
 
+## 2026-08-04 — ADR: Нормализация URL path и geo, retry 429, защита кэша от падений провайдера
+
+**Контекст:** После перехода кэша на полный URL (ADR 2026-08-04) обнаружились 3 критических узких места:
+1. `normalize_url()` приводил к lowercase только `scheme` и `netloc`, но не `path`. Пути с разным регистром (`/Investigation/` vs `/investigation/`) давали ложные Cache MISS.
+2. Аргумент `geo` в `get/upsert/bulk_upsert_domain_labels` использовался как есть: пробелы по краям или разница регистра (`Литва` vs `ЛИТВА` vs ` литва `) ломали составной ключ `(url, query, geo)` и приводили к дублям/промахам кэша.
+3. При HTTP 429 или сетевом сбое `_call_provider()` сразу возвращал `None`, а `_label_group_auto()` сохранял временный `neutral` с `source='snippet'` в `domain_labels`, отравляя кэш ложными данными.
+
+**Решение:**
+1. **URL path lowercase:** `storage.normalize_url()` теперь приводит `parsed.path` к `.lower()` перед `urlunparse()`.
+2. **Geo normalization:** добавлена `storage._normalize_geo(geo) -> str` — `.strip().lower()`. Используется во всех операциях `domain_labels`: `get_domain_label`, `upsert_domain_label`, `bulk_upsert_domain_labels`.
+3. **Retry с exponential backoff:** `labeler._call_provider()` делает до 3 попыток с паузами 3с, 6с, 12с при HTTP 429 и `requests.exceptions.RequestException` (сетевые/транспортные ошибки). 5xx и 429 retryable; 4xx (кроме 429) и ошибки парсинга ответа — нет.
+4. **Защита кэша от падений:** `_label_group_auto()` вводит флаг `provider_failed`. Если `_label_one_llm()` вернул `None` (все попытки исчерпаны), sentiment ставится `neutral` с `confidence='uncertain'` для строки, но **не сохраняется** в `domain_labels`. Сохраняются только успешные ответы LLM и реальные пустые сниппеты.
+
+**Почему:**
+- Кэш должен быть детерминированным: разные регистры в path/geo не должны плодить дубли и пропускать эталон.
+- 429 — стандартная кратковременная проблема rate-limit; exponential backoff дешевле и надёжнее, чем мгновенный fallback.
+- Временный `neutral` при ошибке провайдера — не истина, а маркер неуверенности для одной строки; попадание в персистентный кэш искажает будущие разметки.
+
+**Следствия:**
+- Все записи в `domain_labels` теперь хранят geo в lowercase. Существующие записи с `geo` в другом регистре остаются как есть, но `get_domain_label` их найдёт благодаря нормализации при поиске. Новые записи пишутся нормализованно.
+- URL с uppercase путем (`/Investigation/`) теперь совпадают с lowercase-вариантом.
+- При временном сбое провайдера строка получит `neutral`/`uncertain`, но следующий прогон снова вызовет LLM для этого URL, не увидев его в кэше.
+- 254/254 тестов зелёные.
+
+**Статус:** Принято и реализовано
+
+**Затронутые файлы:**
+- `storage.py`: `normalize_url()`, `_normalize_geo()`, `get_domain_label()`, `upsert_domain_label()`, `bulk_upsert_domain_labels()`.
+- `labeler.py`: `_call_provider()` (retry), `_label_group_auto()` (флаг `provider_failed`).
+- `tests/test_domain_labels.py`: новые тесты lowercase path, geo strip/lowercase, bulk geo normalization.
+- `tests/test_labeler_modes.py`: тесты retry 429/network, обновлён тест кэш-не-отравляется.
+- `tests/test_webhook.py`: прямой SQL-запрос в `test_import_labels_success_array_format` приведён к lowercase geo.
+- `docs/progress.md`, `docs/decisions.md`.
+
+---
+
 ## 2026-08-03 — ADR: Миграция domain_labels + фикс webhook urlparse + reporter client_id filter
 
 **Контекст:** В ветке `fix/labeling-cache-and-quality` после перехода кэша на домен обнаружилось 3 критических бага:
