@@ -127,31 +127,68 @@ def _get_provider_chain(provider_chain: str | list[str] | None = None) -> list[t
 
 
 def _call_provider(provider_id: str, provider_cfg: dict, prompt: str, model: str | None = None) -> str | None:
-    """Вызывает LLM-провайдера по его конфигу. Возвращает сырой ответ или None."""
+    """
+    Вызывает LLM-провайдера по его конфигу. Возвращает сырой ответ или None.
+
+    При получении HTTP 429 или сетевой ошибке делает до 3 попыток
+    с экспоненциальной задержкой (3с, 6с, 12с).
+    """
     api_key = os.environ.get(provider_cfg["api_key_env_var"])
     if not api_key:
         log.warning("%s: %s не задан", provider_id, provider_cfg["api_key_env_var"])
         return None
-    try:
-        resp = requests.post(
-            provider_cfg["endpoint"],
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model or provider_cfg["default_model"],
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-            },
-            timeout=(10, 60),
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        log.warning("%s ошибка: %s", provider_id, e)
-        return None
+
+    max_retries = 3
+    base_delay = 3  # секунды
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(
+                provider_cfg["endpoint"],
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model or provider_cfg["default_model"],
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0,
+                },
+                timeout=(10, 60),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else None
+            # 429 и 5xx — временные проблемы, делаем retry
+            if status_code == 429 or (status_code is not None and status_code >= 500):
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    log.warning(
+                        "%s HTTP %s (попытка %s/%s), повтор через %ss",
+                        provider_id, status_code, attempt, max_retries, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+            log.warning("%s HTTP ошибка: %s", provider_id, e)
+            return None
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries:
+                delay = base_delay * (2 ** (attempt - 1))
+                log.warning(
+                    "%s сетевая ошибка (попытка %s/%s), повтор через %ss: %s",
+                    provider_id, attempt, max_retries, delay, e,
+                )
+                time.sleep(delay)
+                continue
+            log.warning("%s сетевая ошибка после %s попыток: %s", provider_id, max_retries, e)
+            return None
+        except Exception as e:
+            # Ошибки парсинга/структуры ответа — не retry
+            log.warning("%s ошибка: %s", provider_id, e)
+            return None
+    return None
 
 
 def _label_one_llm(row: dict, provider_chain: str | list[str] | None = None, model: str | None = None) -> str | None:
@@ -263,12 +300,14 @@ def _label_group_auto(
         sentiment = _label_one_llm(row, provider_chain=provider_chain, model=model)
 
         # Если LLM не ответила или ошибка провайдера
+        provider_failed = False
         if sentiment is None:
             log.warning("AUTO provider ERROR: url=%s query='%s' -> neutral (uncertain)",
                         url, query)
             sentiment = "neutral"
             row["confidence"] = "uncertain"
             stats["provider_error"] += 1
+            provider_failed = True
         else:
             stats["snippet_success"] += 1
             log.info("AUTO LLM: url=%s query='%s' -> %s", url, query, sentiment)
@@ -277,8 +316,9 @@ def _label_group_auto(
         row["label"] = sentiment
         last_real_call_ref[0] = time.time()
 
-        # Сохраняем в кэш domain_labels по полному URL
-        if url_norm:
+        # Сохраняем в кэш только успешные ответы LLM или реальные пустые сниппеты.
+        # Временный neutral при ошибке провайдера не сохраняем, чтобы не отравлять кэш.
+        if url_norm and not provider_failed:
             storage.upsert_domain_label(url_norm, query, geo, sentiment, "snippet", db_path)
             log.info("AUTO upsert: url=%s -> %s (source=snippet)", url, sentiment)
 

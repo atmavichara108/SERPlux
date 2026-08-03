@@ -91,7 +91,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_empty_snippet(init_db, sample_
 
 
 def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample_row, monkeypatch):
-    """AUTO режим: ошибка провайдера → neutral с confidence='uncertain'."""
+    """AUTO режим: ошибка провайдера → neutral с confidence='uncertain', кэш не отравляется."""
     monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: None)
 
     rows = [sample_row]
@@ -102,6 +102,12 @@ def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample
     assert labeled["sentiment"] == "neutral"
     assert labeled["label"] == "neutral"
     assert labeled["confidence"] == "uncertain"
+
+    # Временный neutral при ошибке не должен попасть в domain_labels
+    cached = storage.get_domain_label(
+        "https://example.com/page1", "subject A", "Литва", init_db
+    )
+    assert cached is None
 
 
 def test_auto_mode_snippet_success_and_saves_to_domain_labels(init_db, sample_row, monkeypatch):
@@ -365,6 +371,103 @@ def test_label_one_llm_returns_none_on_empty_chain(monkeypatch):
 
     row = {"url": "https://x.com", "query": "test", "snippet": "test"}
     result = labeler._label_one_llm(row)
+    assert result is None
+
+
+# ─── Тесты retry при 429 / сетевых ошибках ───────────────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, status_code, content):
+        self.status_code = status_code
+        self._content = content
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.exceptions.HTTPError(f"{self.status_code}", response=self)
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+def test_call_provider_retries_on_429_and_succeeds(monkeypatch):
+    """_call_provider повторяет запрос при 429 и возвращает результат при успехе."""
+    import requests as req_mod
+
+    responses = iter([
+        _FakeResponse(429, "Too Many Requests"),
+        _FakeResponse(200, "positive"),
+    ])
+
+    def fake_post(*args, **kwargs):
+        resp = next(responses)
+        if resp.status_code >= 400:
+            raise req_mod.exceptions.HTTPError("error", response=resp)
+        return resp
+
+    monkeypatch.setattr(req_mod, "post", fake_post)
+    monkeypatch.setattr(labeler.time, "sleep", lambda x: None)
+
+    provider_cfg = {
+        "default_model": "default-model",
+        "endpoint": "https://example.com/v1/chat/completions",
+        "api_key_env_var": "TEST_API_KEY",
+    }
+    monkeypatch.setenv("TEST_API_KEY", "test-key")
+
+    result = labeler._call_provider("test-provider", provider_cfg, "prompt")
+    assert result == "positive"
+
+
+def test_call_provider_retries_on_network_error_and_succeeds(monkeypatch):
+    """_call_provider повторяет запрос при сетевой ошибке и возвращает результат."""
+    import requests as req_mod
+
+    responses = iter([
+        req_mod.exceptions.ConnectionError("connection refused"),
+        _FakeResponse(200, "negative"),
+    ])
+
+    def fake_post(*args, **kwargs):
+        item = next(responses)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(req_mod, "post", fake_post)
+    monkeypatch.setattr(labeler.time, "sleep", lambda x: None)
+
+    provider_cfg = {
+        "default_model": "default-model",
+        "endpoint": "https://example.com/v1/chat/completions",
+        "api_key_env_var": "TEST_API_KEY",
+    }
+    monkeypatch.setenv("TEST_API_KEY", "test-key")
+
+    result = labeler._call_provider("test-provider", provider_cfg, "prompt")
+    assert result == "negative"
+
+
+def test_call_provider_gives_up_after_retries_on_429(monkeypatch):
+    """_call_provider сдаётся после 3 попыток и возвращает None."""
+    import requests as req_mod
+
+    def fake_post(*args, **kwargs):
+        resp = _FakeResponse(429, "Too Many Requests")
+        raise req_mod.exceptions.HTTPError("error", response=resp)
+
+    monkeypatch.setattr(req_mod, "post", fake_post)
+    monkeypatch.setattr(labeler.time, "sleep", lambda x: None)
+
+    provider_cfg = {
+        "default_model": "default-model",
+        "endpoint": "https://example.com/v1/chat/completions",
+        "api_key_env_var": "TEST_API_KEY",
+    }
+    monkeypatch.setenv("TEST_API_KEY", "test-key")
+
+    result = labeler._call_provider("test-provider", provider_cfg, "prompt")
     assert result is None
 
 

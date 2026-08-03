@@ -545,7 +545,7 @@ def get_label_history(position_id: int, db_path: str = DB_PATH) -> list[dict]:
 def normalize_url(url: str) -> str:
     """
     Канонизирует URL для ключа в domain_labels:
-      - lowercase scheme и host
+      - lowercase scheme, host и path
       - убирает fragment (#...)
       - убирает trailing slash, если он единственный символ пути
       - query-параметры оставляет как есть
@@ -557,7 +557,7 @@ def normalize_url(url: str) -> str:
         parsed = urlparse(url.strip())
         scheme = (parsed.scheme or "").lower()
         netloc = (parsed.netloc or "").lower()
-        path = parsed.path or ""
+        path = (parsed.path or "").lower()
         # Убираем trailing slash в конце пути
         if path.endswith("/"):
             path = path[:-1]
@@ -568,6 +568,11 @@ def normalize_url(url: str) -> str:
     except Exception:
         # Fallback: хотя бы lowercase и без fragment
         return url.strip().lower().split("#")[0]
+
+
+def _normalize_geo(geo: str) -> str:
+    """Нормализует geo: strip + lowercase для стабильного составного ключа."""
+    return (geo or "").strip().lower()
 
 
 def get_domain_label(
@@ -590,7 +595,7 @@ def get_domain_label(
             """SELECT sentiment
                FROM domain_labels
                WHERE url = ? AND query = ? AND geo = ?""",
-            (normalize_url(url), query.lower(), geo),
+            (normalize_url(url), query.lower(), _normalize_geo(geo)),
         ).fetchone()
         return row["sentiment"] if row else None
     finally:
@@ -623,11 +628,12 @@ def upsert_domain_label(
     conn = _get_conn(db_path)
     try:
         url_norm = normalize_url(url)
+        geo_norm = _normalize_geo(geo)
         # Проверяем существующую запись и её source
         existing = conn.execute(
             """SELECT source FROM domain_labels
                WHERE url = ? AND query = ? AND geo = ?""",
-            (url_norm, query.lower(), geo),
+            (url_norm, query.lower(), geo_norm),
         ).fetchone()
 
         if existing is not None and existing["source"] == "manual_l1" and source != "manual_l1":
@@ -646,7 +652,7 @@ def upsert_domain_label(
                     sentiment = excluded.sentiment,
                     source = excluded.source,
                     updated_at = datetime('now')""",
-            (url_norm, query.lower(), geo, sentiment, source),
+            (url_norm, query.lower(), geo_norm, sentiment, source),
         )
         conn.commit()
     finally:
@@ -674,7 +680,10 @@ def bulk_upsert_domain_labels(
     conn = _get_conn(db_path)
     try:
         # Сначала находим все существующие manual_l1, которые нельзя перезаписывать
-        keys = [(normalize_url(item["url"]), item["query"].lower(), item["geo"]) for item in items]
+        keys = [
+            (normalize_url(item["url"]), item["query"].lower(), _normalize_geo(item["geo"]))
+            for item in items
+        ]
         placeholders = ",".join("(?, ?, ?)" for _ in keys)
         if placeholders:
             flat_keys = [v for tup in keys for v in tup]
@@ -693,11 +702,11 @@ def bulk_upsert_domain_labels(
         for item in items:
             url_norm = normalize_url(item["url"])
             query = item["query"].lower()
-            geo = item["geo"]
+            geo_norm = _normalize_geo(item["geo"])
             sentiment = item["sentiment"]
             source = item["source"]
 
-            if (url_norm, query, geo) in existing_manual and source != "manual_l1":
+            if (url_norm, query, geo_norm) in existing_manual and source != "manual_l1":
                 continue
 
             conn.execute(
@@ -708,7 +717,7 @@ def bulk_upsert_domain_labels(
                         sentiment = excluded.sentiment,
                         source = excluded.source,
                         updated_at = datetime('now')""",
-                (url_norm, query, geo, sentiment, source),
+                (url_norm, query, geo_norm, sentiment, source),
             )
         conn.commit()
     finally:

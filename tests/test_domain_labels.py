@@ -63,7 +63,8 @@ def test_upsert_domain_label_insert(init_db):
         row = conn.execute(
             "SELECT url, query, geo, sentiment, source FROM domain_labels"
         ).fetchone()
-        assert row == ("https://example.com/page", "subject a", "Литва", "negative", "snippet")
+        # geo хранится в lowercase после нормализации
+        assert row == ("https://example.com/page", "subject a", "литва", "negative", "snippet")
     finally:
         conn.close()
 
@@ -139,9 +140,10 @@ def test_domain_query_geo_unique(init_db):
 
     conn = sqlite3.connect(init_db)
     try:
+        # geo хранится в lowercase после нормализации
         count = conn.execute(
             "SELECT COUNT(*) FROM domain_labels WHERE url = ? AND query = ? AND geo = ?",
-            ("https://example.com/page", "subject a", "Литва"),
+            ("https://example.com/page", "subject a", "литва"),
         ).fetchone()[0]
         assert count == 1
     finally:
@@ -241,6 +243,44 @@ def test_url_normalized_trailing_slash_and_fragment(init_db):
     # Trailing slash и fragment отбрасываются, scheme/host lowercase
     assert storage.get_domain_label("https://example.com/Page?foo=bar", "subject a", "Литва", init_db) == "positive"
     assert storage.get_domain_label("HTTPS://EXAMPLE.COM/Page?foo=bar", "subject a", "Литва", init_db) == "positive"
+
+
+def test_url_normalized_lowercase_path(init_db):
+    """Путь приводится к lowercase, чтобы `/Investigation/` и `/investigation/` совпадали."""
+    storage.upsert_domain_label(
+        "https://Example.COM/Investigation/", "subject a", "Литва", "negative", "snippet", db_path=init_db
+    )
+
+    assert storage.get_domain_label("https://example.com/investigation", "subject a", "Литва", init_db) == "negative"
+    assert storage.get_domain_label("https://EXAMPLE.COM/INVESTIGATION", "subject a", "Литва", init_db) == "negative"
+
+
+# ─── geo normalization ───────────────────────────────────────────────────────
+
+
+def test_geo_normalized_strip_and_lowercase(init_db):
+    """Пробелы по краям и регистр geo не ломают составной ключ."""
+    storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "positive", "snippet", db_path=init_db
+    )
+
+    assert storage.get_domain_label("https://example.com/page", "subject a", " литва ", init_db) == "positive"
+    assert storage.get_domain_label("https://example.com/page", "subject a", "ЛИТВА", init_db) == "positive"
+
+
+def test_bulk_upsert_domain_labels_geo_normalized(init_db):
+    """bulk_upsert нормализует geo, чтобы совпадал ключ с ручной вставкой."""
+    storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
+    )
+
+    items = [
+        {"url": "https://example.com/page", "query": "subject a", "geo": " литва ", "sentiment": "negative", "source": "snippet"},
+    ]
+    storage.bulk_upsert_domain_labels(items, db_path=init_db)
+
+    # manual_l1 не перезаписан из-за нормализации geo
+    assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
 
 
 # ─── source validation ───────────────────────────────────────────────────────
