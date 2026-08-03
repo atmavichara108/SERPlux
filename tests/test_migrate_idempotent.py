@@ -499,3 +499,46 @@ def test_migrate_seed_without_env_project_id_still_creates_client(empty_db, monk
     assert client["project_id"] is None
     assert len(client["queries"]) == 4
     assert len(client["regions_map"]) == 15
+
+
+# ─── 6. Очистка domain_labels ─────────────────────────────────────────────────
+
+
+def test_truncate_domain_labels_removes_all_records(db_path):
+    """truncate_domain_labels(keep_manual_l1=False) очищает таблицу целиком."""
+    storage._init_db(db_path)
+    storage.upsert_domain_label(
+        "https://example.com", "q", "g", "positive", "manual_l1", db_path=db_path
+    )
+    storage.upsert_domain_label(
+        "https://example.com/x", "q", "g", "negative", "snippet", db_path=db_path
+    )
+
+    conn = sqlite3.connect(db_path)
+    try:
+        migrate.truncate_domain_labels(conn)
+        assert conn.execute("SELECT COUNT(*) FROM domain_labels").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_truncate_domain_labels_keeps_manual_l1(db_path):
+    """truncate_domain_labels(keep_manual_l1=True) сохраняет manual_l1."""
+    storage._init_db(db_path)
+    storage.upsert_domain_label(
+        "https://example.com", "q", "g", "positive", "manual_l1", db_path=db_path
+    )
+    storage.upsert_domain_label(
+        "https://example.com/x", "q", "g", "negative", "snippet", db_path=db_path
+    )
+
+    conn = sqlite3.connect(db_path)
+    try:
+        migrate.truncate_domain_labels(conn, keep_manual_l1=True)
+        rows = conn.execute(
+            "SELECT url, source FROM domain_labels ORDER BY url"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0] == ("https://example.com", "manual_l1")
+    finally:
+        conn.close()

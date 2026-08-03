@@ -492,7 +492,7 @@
     "/labels/import": {
       "post": {
         "summary": "Import Domain Labels",
-        "description": "Батчевый импорт разметки доменов в domain_labels.\n\nПринимает тело в двух формах:\n  - массив объектов [{domain, query, geo, sentiment, source}, ...]\n  - объект {\"labels\": [...]}\n\nДля каждой записи вызывает storage.upsert_domain_label, поэтому\nсрабатывают правила приоритета source (manual_l1 не перезаписывается\nsnippet/page) и идемпотентность по PK (domain, query, geo).\n\nБитая запись не прерывает батч. Возвращает сводку imported/skipped/errors\nи первые ~5 примеров ошибок.",
+        "description": "Батчевый импорт разметки URL в domain_labels.\n\nПринимает тело в двух формах:\n  - массив объектов [{url, query, geo, sentiment, source}, ...]\n  - объект {\"labels\": [...]}\n\nurl должен быть полным URL. Для ключа в domain_labels используется\nканонизированный полный URL, а не домен.\n\nДля каждой записи вызывает storage.upsert_domain_label, поэтому\nсрабатывают правила приоритета source (manual_l1 не перезаписывается\nsnippet/page) и идемпотентность по PK (url, query, geo).\n\nБитая запись не прерывает батч. Возвращает сводку imported/skipped/errors\nи первые ~5 примеров ошибок.",
         "operationId": "import_domain_labels_labels_import_post",
         "parameters": [
           {
@@ -520,11 +520,21 @@
                 "anyOf": [
                   {
                     "type": "object",
-                    "additionalProperties": true
+                    "properties": {
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/DomainLabel"
+                        }
+                      }
+                    },
+                    "required": ["labels"]
                   },
                   {
                     "type": "array",
-                    "items": {}
+                    "items": {
+                      "$ref": "#/components/schemas/DomainLabel"
+                    }
                   }
                 ],
                 "title": "Body"
@@ -557,6 +567,37 @@
   },
   "components": {
     "schemas": {
+      "DomainLabel": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "URL",
+            "description": "Полный URL для ключа в domain_labels"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "geo": {
+            "type": "string",
+            "title": "Geo"
+          },
+          "sentiment": {
+            "type": "string",
+            "enum": ["positive", "negative", "neutral"],
+            "title": "Sentiment"
+          },
+          "source": {
+            "type": "string",
+            "enum": ["manual_l1", "snippet", "page"],
+            "title": "Source",
+            "default": "manual_l1"
+          }
+        },
+        "required": ["url", "query", "geo", "sentiment"],
+        "type": "object",
+        "title": "DomainLabel"
+      },
       "ClientCreateRequest": {
         "properties": {
           "client_id": {

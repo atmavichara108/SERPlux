@@ -82,7 +82,7 @@
 
 ```json
 [
-  {"domain": "example.com", "query": "juri sudheimer", "geo": "Литва", "sentiment": "positive"}
+  {"url": "https://example.com/", "query": "juri sudheimer", "geo": "Литва", "sentiment": "positive"}
 ]
 ```
 

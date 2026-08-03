@@ -32,7 +32,8 @@ def _get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
 def _ensure_domain_labels_schema(conn: sqlite3.Connection) -> None:
     """
     Создаёт таблицу domain_labels с актуальной схемой (url, query, geo).
-    Если существует старая схема (с id/client_id или с domain), дропает и пересоздаёт.
+    Колонка url хранит ПОЛНЫЙ URL (канонизированный), не домен.
+    Если существует старая схема (с id/client_id), дропает и пересоздаёт.
     Это миграция: старый snippet-кэш затрётся, это ОК.
     """
     # Проверяем, существует ли старая схема
@@ -41,7 +42,7 @@ def _ensure_domain_labels_schema(conn: sqlite3.Connection) -> None:
         for row in conn.execute("PRAGMA table_info(domain_labels)").fetchall()
     }
     if old_cols and ("client_id" in old_cols or "id" in old_cols or "domain" in old_cols):
-        log.warning("domain_labels: обнаружена старая схема, пересоздаю (domain→url миграция)")
+        log.warning("domain_labels: обнаружена старая схема (id/client_id/domain), пересоздаю")
         conn.execute("DROP TABLE IF EXISTS domain_labels")
         # Удаляем устаревшие индексы
         conn.execute("DROP INDEX IF EXISTS idx_domlbl_client_domain")
@@ -145,8 +146,9 @@ def _init_db(db_path: str = DB_PATH) -> None:
             VALUES (1, 'idle')
         """)
 
-        # Справочник размеченных доменов (источник истины для режима domains).
-        # Мультиклиентная через ключ (domain, query, geo) — без client_id.
+        # Справочник размеченных URL (источник истины для режима auto/domains).
+        # Мультиклиентная через ключ (url, query, geo) — без client_id.
+        # Колонка url хранит полный URL (канонизированный), не домен.
         # Приоритет source: manual_l1 > snippet/page. manual_l1 не перезаписывается
         # автоматическими источниками (snippet/page), только другим manual_l1.
         _ensure_domain_labels_schema(conn)
@@ -540,17 +542,46 @@ def get_label_history(position_id: int, db_path: str = DB_PATH) -> list[dict]:
         conn.close()
 
 
+def normalize_url(url: str) -> str:
+    """
+    Канонизирует URL для ключа в domain_labels:
+      - lowercase scheme и host
+      - убирает fragment (#...)
+      - убирает trailing slash, если он единственный символ пути
+      - query-параметры оставляет как есть
+    """
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(url.strip())
+        scheme = (parsed.scheme or "").lower()
+        netloc = (parsed.netloc or "").lower()
+        path = parsed.path or ""
+        # Убираем trailing slash в конце пути
+        if path.endswith("/"):
+            path = path[:-1]
+        params = parsed.params
+        query = parsed.query
+        fragment = ""  # отбрасываем
+        return urlunparse((scheme, netloc, path, params, query, fragment))
+    except Exception:
+        # Fallback: хотя бы lowercase и без fragment
+        return url.strip().lower().split("#")[0]
+
+
 def get_domain_label(
-    domain: str,
+    url: str,
     query: str,
     geo: str,
     db_path: str = DB_PATH,
 ) -> str | None:
     """
-    Возвращает sentiment из справочника domain_labels по (domain, query, geo),
+    Возвращает sentiment из справочника domain_labels по (url, query, geo),
     или None если запись не найдена.
-    
-    domain — домен (без схемы, пути и параметров), lowercase.
+
+    url — полный URL (канонизированный через _normalize_url). Колонка в БД
+    называется url, но PRIMARY KEY (url, query, geo).
     """
     _ensure_db(db_path)
     conn = _get_conn(db_path)
@@ -559,7 +590,7 @@ def get_domain_label(
             """SELECT sentiment
                FROM domain_labels
                WHERE url = ? AND query = ? AND geo = ?""",
-            (domain.lower(), query.lower(), geo),
+            (normalize_url(url), query.lower(), geo),
         ).fetchone()
         return row["sentiment"] if row else None
     finally:
@@ -567,7 +598,7 @@ def get_domain_label(
 
 
 def upsert_domain_label(
-    domain: str,
+    url: str,
     query: str,
     geo: str,
     sentiment: str,
@@ -575,9 +606,10 @@ def upsert_domain_label(
     db_path: str = DB_PATH,
 ) -> None:
     """
-    INSERT или UPDATE записи в domain_labels по PRIMARY KEY (domain, query, geo).
-    
-    domain — домен (без схемы, пути и параметров), lowercase.
+    INSERT или UPDATE записи в domain_labels по PRIMARY KEY (url, query, geo).
+
+    url — полный URL (канонизированный через _normalize_url). Колонка в БД
+    называется url.
 
     Приоритет source:
       - 'manual_l1' — не перезаписывается источниками 'snippet' или 'page'.
@@ -590,19 +622,19 @@ def upsert_domain_label(
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     try:
-        domain_lower = domain.lower()
+        url_norm = normalize_url(url)
         # Проверяем существующую запись и её source
         existing = conn.execute(
             """SELECT source FROM domain_labels
                WHERE url = ? AND query = ? AND geo = ?""",
-            (domain_lower, query.lower(), geo),
+            (url_norm, query.lower(), geo),
         ).fetchone()
 
         if existing is not None and existing["source"] == "manual_l1" and source != "manual_l1":
             # Существующая manual_l1 не перезаписывается автоматическими источниками
             log.debug(
                 "domain_labels: пропускаю обновление %s/%s/%s (manual_l1 -> %s)",
-                domain, query, geo, source
+                url, query, geo, source
             )
             return
 
@@ -614,7 +646,7 @@ def upsert_domain_label(
                     sentiment = excluded.sentiment,
                     source = excluded.source,
                     updated_at = datetime('now')""",
-            (domain_lower, query.lower(), geo, sentiment, source),
+            (url_norm, query.lower(), geo, sentiment, source),
         )
         conn.commit()
     finally:
@@ -628,7 +660,7 @@ def bulk_upsert_domain_labels(
     """
     Массовый upsert записей в domain_labels.
 
-    Каждый элемент items — dict с ключами: domain, query, geo, sentiment, source.
+    Каждый элемент items — dict с ключами: url, query, geo, sentiment, source.
     Применяются те же правила приоритета source, что и в upsert_domain_label.
     """
     valid_sources = {"manual_l1", "snippet", "page"}
@@ -642,7 +674,7 @@ def bulk_upsert_domain_labels(
     conn = _get_conn(db_path)
     try:
         # Сначала находим все существующие manual_l1, которые нельзя перезаписывать
-        keys = [(item["domain"].lower(), item["query"].lower(), item["geo"]) for item in items]
+        keys = [(normalize_url(item["url"]), item["query"].lower(), item["geo"]) for item in items]
         placeholders = ",".join("(?, ?, ?)" for _ in keys)
         if placeholders:
             flat_keys = [v for tup in keys for v in tup]
@@ -659,13 +691,13 @@ def bulk_upsert_domain_labels(
             existing_manual = set()
 
         for item in items:
-            domain = item["domain"].lower()
+            url_norm = normalize_url(item["url"])
             query = item["query"].lower()
             geo = item["geo"]
             sentiment = item["sentiment"]
             source = item["source"]
 
-            if (domain, query, geo) in existing_manual and source != "manual_l1":
+            if (url_norm, query, geo) in existing_manual and source != "manual_l1":
                 continue
 
             conn.execute(
@@ -676,7 +708,7 @@ def bulk_upsert_domain_labels(
                         sentiment = excluded.sentiment,
                         source = excluded.source,
                         updated_at = datetime('now')""",
-                (domain, query, geo, sentiment, source),
+                (url_norm, query, geo, sentiment, source),
             )
         conn.commit()
     finally:

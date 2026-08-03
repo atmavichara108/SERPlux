@@ -114,7 +114,7 @@
 - **Схема данных:** clients, positions, labels, domain_labels (версионирование, мультитенантность)
 - **Миграционный скрипт:** `migrate.py` (бэкап → перенос results → positions/labels)
 - **Версионирование меток:** label_version = MAX+1, retry на UNIQUE violation
-- **domain_labels:** справочник размеченных доменов (источник истины для режима domains)
+- **domain_labels:** справочник размеченных URL (источник истины для режима auto); первичный ключ по (url, query, geo), где url — полный канонизированный URL
 - **Тесты:** 64 теста (storage_schema, labeler_modes, migrate_idempotent)
 
 ### Fixed

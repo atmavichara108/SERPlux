@@ -60,39 +60,46 @@ Row = {
   — НОВАЯ функция. Возвращает все версии меток для позиции:
   `[{label_mode, label_version, sentiment, created_at}, ...]`.
 
-- `get_domain_label(domain: str, query: str, geo: str, db_path: str = DB_PATH) -> str | None`
-  — Возвращает `sentiment` из `domain_labels` по `(domain, query, geo)`,
-  или `None` если записи нет. `query` нормализуется к lowercase.
-  Справочник является источником истины для режима `domains`.
+- `get_domain_label(url: str, query: str, geo: str, db_path: str = DB_PATH) -> str | None`
+  — Возвращает `sentiment` из `domain_labels` по `(url, query, geo)`,
+  или `None` если записи нет. `url` канонизируется через `storage.normalize_url`
+  (lowercase scheme+host, убирается trailing slash и fragment). `query` нормализуется
+  к lowercase. Справочник является источником истины для режима `auto` (кэш).
 
-- `upsert_domain_label(domain: str, query: str, geo: str, sentiment: str,
+- `upsert_domain_label(url: str, query: str, geo: str, sentiment: str,
                        source: str, db_path: str = DB_PATH) -> None`
-  — INSERT или UPDATE записи в `domain_labels` по `PRIMARY KEY (domain, query, geo)`.
+  — INSERT или UPDATE записи в `domain_labels` по `PRIMARY KEY (url, query, geo)`.
+  `url` канонизируется перед записью. Колонка в БД называется `url` и хранит
+  полный URL, а не домен.
   При UPDATE обновляет `sentiment`, `source`, `updated_at`.
   Приоритет `source`: `manual_l1` не перезаписывается источниками `snippet`/`page`;
   `manual_l1` может перезаписать любую существующую запись.
   Полный канон разметки: `docs/labeling_canon.md`.
 
 - `bulk_upsert_domain_labels(items: list[dict], db_path: str = DB_PATH) -> None`
-  — Массовый upsert списка записей `{domain, query, geo, sentiment, source}`.
-  Применяются те же правила приоритета `source`, что и в `upsert_domain_label`.
+  — Массовый upsert списка записей `{url, query, geo, sentiment, source}`.
+  `url` канонизируется. Применяются те же правила приоритета `source`,
+  что и в `upsert_domain_label`.
 
 - **Заполнение `domain_labels`:**
   Ручная эталонная разметка (source=`manual_l1`) обычно заполняется вне приложения.
   Для разовых импортов из Google Sheets предусмотрен изолированный
   `POST /labels/import` (см. ниже) и функция `importEtalonToDb()` в `apps_script.gs`,
   не привязанная к меню. Эндпоинт идемпотентен и устойчив к битым записям.
+  Ключ кэша — полный URL (канонизированный), не домен.
 
 - **`POST /labels/import`**
   **Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>` (без токена — 401).
   **Тело:** допускаются два формата:
-    - голый массив `[{domain, query, geo, sentiment, source}, ...]`;
+    - голый массив `[{url, query, geo, sentiment, source}, ...]`;
     - объект `{"labels": [...]}`.
+  Поле `url` должно быть **полным URL** (как в выдаче). Устаревшее поле `domain`
+  не принимается.
   `source` по умолчанию `"manual_l1"` (если не передан или пуст).
   **Поведение:**
   - Каждая запись импортируется через `storage.upsert_domain_label`, поэтому
     работают правила приоритета `source` (`manual_l1` не перезаписывается
-    `snippet`/`page`) и идемпотентность по PK `(domain, query, geo)`.
+    `snippet`/`page`) и идемпотентность по PK `(url, query, geo)`.
   - Битая запись не прерывает батч: увеличивается `skipped` (валидация) или
     `errors` (ошибка БД), собираются первые ~5 сообщений в `error_samples`.
   - Ответ HTTP 200 даже при частичных ошибках:
@@ -196,14 +203,15 @@ DEFAULT_PROVIDER: str = "opencode-zen"
 
    **Режимы (двухрежимная система):**
    
-   - **AUTO (дефолт):** иерархический режим с fallback на neutral
-     - Шаг 1: ищет `sentiment` в справочнике `domain_labels(domain, query, geo)`
-       - Если найдено → `sentiment` из справочника, `confidence='high'`, LLM не вызывается (нулевая стоимость)
-     - Шаг 2: если в справочнике нет → вызывает LLM для сниппета (как режим "snippets")
-       - Успех → `sentiment` из LLM, `confidence='high'`, сохраняет в `domain_labels` с `source='snippet'`
-     - Шаг 3: при ошибке LLM (сеть, таймаут, провайдер недоступен) → `sentiment='neutral'`, `confidence='uncertain'`
-       - neutral как маркер неуверенности (пропускаемые и ошибочные случаи помечаются)
-     - Кэширование: пары (url, query) с `sentiment != None` берутся из `domain_labels` повторно
+  - **AUTO (дефолт):** иерархический режим с fallback на neutral
+      - Шаг 1: ищет `sentiment` в справочнике `domain_labels(url, query, geo)`
+        по **полному URL** (канонизированному). Если найдено → `sentiment` из
+        справочника, `confidence='high'`, LLM не вызывается (нулевая стоимость)
+      - Шаг 2: если в справочнике нет → вызывает LLM для сниппета (как режим "snippets")
+        - Успех → `sentiment` из LLM, `confidence='high'`, сохраняет в `domain_labels` с `source='snippet'`
+      - Шаг 3: при ошибке LLM (сеть, таймаут, провайдер недоступен) → `sentiment='neutral'`, `confidence='uncertain'`
+        - neutral как маркер неуверенности (пропускаемые и ошибочные случаи помечаются)
+      - Кэширование: пары (url, query, geo) с `sentiment != None` берутся из `domain_labels` повторно
    
    - **DEEP (зарезервирован для v2):** обработка только `sentiment=='neutral'` по контенту страницы
      - Сейчас → заглушка, возвращает `sentiment` без изменений (проходит нейтральные без обработки)
@@ -215,12 +223,12 @@ DEFAULT_PROVIDER: str = "opencode-zen"
    - Причины пропусков: empty_snippet, provider_error, domain_missing, other_skip
    - WARNING/ERROR для пустых сниппетов, ошибок провайдеров, отсутствия доменов в справочнике
 
-- `_label_group_auto(rows: list[dict], ...provider_chain...) -> list[dict]`
-   — Вспомогательная функция для режима AUTO.
-   - Группирует строки по `(domain, query, geo)`
-   - Для каждой группы проверяет `domain_labels` → LLM → neutral
-   - Логирует статистику по группе
-   - Вызывает `storage.upsert_domain_label()` с приоритетом `source='snippet'`
+   - `_label_group_auto(rows: list[dict], ...provider_chain...) -> list[dict]`
+    — Вспомогательная функция для режима AUTO.
+    - Группирует строки по `(searcher, geo)`
+    - Для каждой строки проверяет `domain_labels(url, query, geo)` → LLM → neutral
+    - Логирует статистику по группе и детальный лог для каждой строки
+    - Вызывает `storage.upsert_domain_label()` с приоритетом `source='snippet'`
 
 - `_label_group_deep(rows: list[dict]) -> list[dict]`
    — Вспомогательная функция для режима DEEP (v2).
@@ -467,7 +475,7 @@ Health-check для мониторинга контейнера (без авто
 - `client_id` по умолчанию = "default" (для миграции с одноклиентной модели)
 - `update_labels()` → `insert_labels()`: INSERT новой версии, не UPDATE существующей
 - Таблица `labels` получила поле `confidence` (`'high' | 'uncertain'`), пока всегда `'high'`
-- Режим `domains` работает через справочник `domain_labels` (без LLM); режим `snippets` — через кэш + LLM
+- Режим `auto` (дефолт) использует справочник `domain_labels` (кэш по полному URL) → затем LLM по сниппету; режим `deep` зарезервирован для разметки по контенту страницы
 
 ## Миграция схемы (domain_labels + confidence)
 
@@ -478,23 +486,25 @@ Health-check для мониторинга контейнера (без авто
 ALTER TABLE labels
 ADD COLUMN confidence TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high';
 
--- Актуальная схема domain_labels (мультиклиентная через ключ domain/query/geo)
+-- Актуальная схема domain_labels (ключ по полному URL + query + geo)
+-- Колонка url хранит полный канонизированный URL (storage.normalize_url),
+-- не домен. См. ADR 2026-08-04 в docs/decisions.md.
 CREATE TABLE domain_labels (
-    domain      TEXT NOT NULL,
+    url         TEXT NOT NULL,
     query       TEXT NOT NULL,           -- нормализованный key субъекта, lowercase
     geo         TEXT NOT NULL,           -- geo_name как в regions_map
     sentiment   TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral')),
     source      TEXT NOT NULL CHECK(source IN ('manual_l1','snippet','page')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (domain, query, geo)
+    PRIMARY KEY (url, query, geo)
 );
 
-CREATE INDEX idx_domlbl_domain_query ON domain_labels(domain, query);
+CREATE INDEX idx_domlbl_url_query ON domain_labels(url, query);
 CREATE INDEX idx_domlbl_geo ON domain_labels(geo);
 ```
 
 - `migrate.py` выполняет эти DDL-шаги идемпотентно
-- Если существует старая схема `domain_labels` (с `id`/`client_id`) — таблица пересоздаётся
+- Если существует старая схема `domain_labels` (с `id`/`client_id`/`domain`) — таблица пересоздаётся
 - На боевой БД запускать **только после бэкапа** и проверки на копии
 
 ## reporter.py — раскладка отчёта

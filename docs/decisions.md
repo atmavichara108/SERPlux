@@ -31,13 +31,13 @@
 - `domain_labels_backup_2026_08_01` создаётся при наличии автокэша; можно восстановить при необходимости.
 - 245/245 тестов зелёные.
 
-**Статус:** Принято и реализовано
+**Статус:** Частично отменено. Фильтр `client_id` в reporter и `cleanup_snippet_cache` остаются в силе. Миграция URL → domain и работа с `domain` в `labels/import` отменены см. ADR 2026-08-04 «Кэш разметки по полному URL».
 
 **Затронутые файлы:**
-- `migrate.py`: `migrate_url_to_domain()`, `cleanup_snippet_cache()`
-- `webhook.py`: `import_domain_labels()` — извлечение домена с fallback
+- `migrate.py`: `migrate_url_to_domain()` (теперь deprecated no-op), `cleanup_snippet_cache()`
+- `webhook.py`: `import_domain_labels()` — принимает полный `url`
 - `reporter.py`: `build_report()` — фильтр по `client_id`
-- `apps_script.gs`: `importEtalonToDb()` — отправляет `domain` вместо `url`
+- `apps_script.gs`: `importEtalonToDb()` — отправляет полный `url`
 
 ---
 
@@ -68,7 +68,7 @@
 - Все тесты обновлены на использование `domain` вместо `url`.
 - 245/245 тестов зелёные.
 
-**Статус:** Принято и реализовано
+**Статус:** Отменено (см. ADR 2026-08-03 — кэш снова по полному URL).
 
 **Затронутые файлы:**
 - `labeler.py`: `_extract_domain()`, обновлён `_build_prompt()` с few-shot примерами
@@ -76,6 +76,43 @@
 - `webhook.py`: `labels/import` извлекает домен из URL
 - `apps_script.gs`: `parseList1ToEtalon()` сохраняет домен, `importEtalonToDb()` использует `domain`
 - `tests/test_labeler_modes.py`, `tests/test_domain_labels.py`, `tests/test_webhook.py`: обновлены на `domain`
+
+---
+
+## 2026-08-04 — ADR: Кэш разметки по полному URL (откат кэша по домену) + усиленное логирование
+
+**Контекст:** После перехода на кэш по домену (ADR 2026-08-01) заказчик обнаружил, что разметка не берётся из эталона: URL `https://www.motor-oel-guenstig.de/chempioil/` размечалась как neutral, хотя в Лист1 стояла positive. Гипотеза «сократить эталон до домена» была отклонена — URL между прогонами Topvisor повторяются, и сравнение должно быть по URL.
+
+**Решение:**
+1. **Кэш по полному URL:** все функции `get_domain_label()`, `upsert_domain_label()`, `bulk_upsert_domain_labels()` снова работают с полным URL.
+   - `storage.normalize_url()` канонизирует URL: lowercase scheme+host, убирает trailing slash и fragment. Query-параметры сохраняются.
+   - `labeler.py`: кэш по `(url, query, geo)` вместо `(domain, query, geo)`. Добавлено детальное логирование каждого cache hit/miss/LLM-вызова/upsert — видно на сервере во время прогона.
+   - `webhook.py`: `POST /labels/import` принимает поле `url` (полный URL). Устаревшее поле `domain` отклоняется с warning.
+   - `apps_script.gs`: `parseList1ToEtalon()` и `importEtalonToDb()` сохраняют и отправляют полный URL. Заголовок листа «Эталон разметки» изменён с `domain` на `url`.
+2. **Усиленное логирование разметки:** в `labeler.py` логируются на уровне INFO: `url`, `query`, `geo`, cache hit/miss, LLM-ответ, upsert, ошибки провайдера/пустые сниппеты.
+3. **Миграция:** `migrate_url_to_domain()` отключена (no-op с deprecation warning). Добавлена `truncate_domain_labels()` для полной очистки таблицы перед перезаимпортом эталона.
+
+**Почему:**
+- URL между прогонами Topvisor стабильны и точно повторяются.
+- Сравнение по домену теряет гранулярность: разные страницы одного домена могут иметь разную тональность.
+- Сравнение по домену давало рассинхрон www/без-www (Topvisor отдаёт `domain` без `www`, `urlparse` — с `www`).
+- Подробные логи позволяют в реальном времени на сервере видеть, почему строка получила ту или иную метку.
+
+**Следствия:**
+- Записи в `domain_labels` с доменами (после ADR 2026-08-01) больше не будут найдены. Нужно очистить таблицу и переимпортировать эталон из Лист1 через `parseList1ToEtalon()` → `importEtalonToDb()`.
+- Все тесты обновлены на использование полного URL.
+- 246/246 тестов зелёные.
+
+**Статус:** Принято и реализовано
+
+**Затронутые файлы:**
+- `labeler.py`: кэш по URL, детальное логирование разметки.
+- `storage.py`: `normalize_url()`, `get_domain_label()`, `upsert_domain_label()`, `bulk_upsert_domain_labels()` — параметр `url`, канонизация.
+- `webhook.py`: `labels/import` принимает полный URL.
+- `apps_script.gs`: `parseList1ToEtalon()`, `importEtalonToDb()` — полный URL.
+- `migrate.py`: `migrate_url_to_domain()` отключена, добавлена `truncate_domain_labels()`.
+- `docs/contracts.md`, `docs/decisions.md`, `docs/progress.md`, `AGENTS.md`, `README.md`, `openapi.json`, `docs/user-guide.md`, `template/SHEETS.md`, `CHANGELOG.md`.
+- `tests/test_labeler_modes.py`, `tests/test_domain_labels.py`, `tests/test_webhook.py`.
 
 ---
 

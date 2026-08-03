@@ -147,7 +147,7 @@ SERPlux автоматически собирает поисковую выда�
 
 ### Режимы разметки
 
-- **`auto` (дефолт):** справочник доменов → LLM по сниппету → neutral при ошибке. Нулевая стоимость для известных доменов.
+- **`auto` (дефолт):** справочник URL → LLM по сниппету → neutral при ошибке. Нулевая стоимость для известных URL.
 - **`deep`:** заглушка для v2 (уточнение neutral по контенту страницы).
 
 ---
@@ -158,7 +158,7 @@ SERPlux автоматически собирает поисковую выда�
 
 В вашей таблице есть два специальных листа:
 
-- **«Эталон разметки»** — кэш разметки по доменам. Пополняется автоматически при каждом прогоне (нейронка сохраняет найденные тональности). Это справочник, чтобы не переразмечать один и тот же домен дважды.
+- **«Эталон разметки»** — кэш разметки по URL. Пополняется автоматически при каждом прогоне (нейронка сохраняет найденные тональности). Это справочник, чтобы не переразмечать один и тот же URL дважды.
   
 - **«Спорные»** — накопитель для будущих улучшений (v2.0). Если нейронка сомневается, URL попадает сюда для ручной проверки или доразметки по контенту страницы.
 
@@ -166,16 +166,16 @@ SERPlux автоматически собирает поисковую выда�
 
 **Лист «Эталон разметки»:**
 ```
-domain          | query           | geo        | sentiment | source
-example.com     | juri sudheimer  | Lithuania  | positive  | auto
-competitor.com  | juri sudheimer  | Lithuania  | negative  | auto
-news.com        | john doe        | Germany    | neutral   | auto
+url                                     | query           | geo        | sentiment | source
+https://example.com/                    | juri sudheimer  | Lithuania  | positive  | auto
+https://competitor.com/review           | juri sudheimer  | Lithuania  | negative  | auto
+https://news.com/article                | john doe        | Germany    | neutral   | auto
 ```
 
 **Лист «Спорные»:**
 ```
-domain          | query           | geo        | url                           | причина
-disputed.com    | juri sudheimer  | Lithuania  | https://disputed.com/news/123 | double_meaning
+url                                     | query           | geo        | причина
+https://disputed.com/news/123           | juri sudheimer  | Lithuania  | double_meaning
 ```
 
 ### Как использовать

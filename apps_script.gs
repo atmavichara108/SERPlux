@@ -2356,12 +2356,12 @@ var DEPTH = 10;
    * - Буферы: D,E,F после первого субъекта; по 1 колонке перед остальными
    *
    * Контракт эталона:
-   * - query = ИМЯ СУБЪЕКТА (lowercase), НИКОГДА не страна
-   * - geo = реальная страна из подзаголовка, НИКОГДА не константа
-   * - url = полный URL из ячейки (без обрезки до домена)
-   * - sentiment = цвет заливки ячейки номера (зелёный=positive, красный=negative, жёлтый=neutral)
-   * - source = manual_l1
-   */
+    * - query = ИМЯ СУБЪЕКТА (lowercase), НИКОГДА не страна
+    * - geo = реальная страна из подзаголовка, НИКОГДА не константа
+    * - url = полный URL из ячейки (сохраняется как есть, без обрезки до домена)
+    * - sentiment = цвет заливки ячейки номера (зелёный=positive, красный=negative, жёлтый=neutral)
+    * - source = manual_l1
+    */
 function parseList1ToEtalon() {
   var ui = SpreadsheetApp.getUi();
 
@@ -2390,7 +2390,7 @@ function parseList1ToEtalon() {
   spornye.clear();
 
   // Заголовки «Эталон разметки»
-  etalon.getRange(1, 1, 1, 5).setValues([["domain", "query", "geo", "sentiment", "source"]]);
+  etalon.getRange(1, 1, 1, 5).setValues([["url", "query", "geo", "sentiment", "source"]]);
   // Заголовки «Спорные»
   spornye.getRange(1, 1, 1, 6).setValues([["row", "col", "hex", "url", "geo", "query"]]);
 
@@ -2500,11 +2500,8 @@ function parseList1ToEtalon() {
             continue;
           }
 
-          // Извлекаем домен из URL для кэша (без схемы, пути и параметров)
-          var domain = urlCell.replace(/^https?:\/\//i, "").split("/")[0].split("?")[0].toLowerCase();
-
-          // Сохраняем домен вместо полного URL
-          etalonRows.push([domain, query, geo, sentiment, "manual_l1"]);
+          // Сохраняем полный URL для сравнения по URL (не по домену)
+          etalonRows.push([urlCell, query, geo, sentiment, "manual_l1"]);
       }
 
       // Переходим к следующему гео-блоку (пропускаем буферную строку)
@@ -2561,21 +2558,6 @@ function _colorToSentiment(bgColor) {
   return null;
 }
 
-/**
- * Извлекает домен из URL.
- * https://example.com/path → example.com
- */
-function _extractDomain(url) {
-  if (!url) return "";
-  try {
-    var match = url.match(/^https?:\/\/([^\/\?#]+)/i);
-    if (match) return match[1].toLowerCase();
-  } catch (e) {
-    Logger.log("_extractDomain: ошибка парсинга URL '" + url + "': " + e);
-  }
-  return "";
-}
-
 // ─── Разовый импорт эталона (НЕ в меню, запускать вручную через Run) ─────────
 
 var ETALON_SHEET_NAME = "Эталон разметки";
@@ -2588,7 +2570,8 @@ var VALID_ETALON_SENTIMENTS = ["positive", "negative", "neutral"];
  * Запуск: в редакторе Apps Script выбрать функцию importEtalonToDb() → Run.
  * НЕ добавляется в меню onOpen и не вызывается автоматически.
  *
- * Ожидаемые колонки (первая строка): domain, query, geo, sentiment.
+ * Ожидаемые колонки (первая строка): url, query, geo, sentiment.
+ * url должен быть полным URL (как в выдаче), для сравнения по URL.
  * Если колонки не распознаны — логирует заголовки и останавливается.
  * Отправляет батчами по 100 строк на POST /labels/import.
  * Битые записи и ошибки батча не прерывают импорт остальных записей.
@@ -2636,7 +2619,7 @@ function importEtalonToDb() {
     colMap[headers[i]] = i;
   }
 
-  var required = ["domain", "query", "geo", "sentiment"];
+  var required = ["url", "query", "geo", "sentiment"];
   var missing = required.filter(function (k) { return !(k in colMap); });
   if (missing.length > 0) {
     var err = "Не удалось определить обязательные колонки: " + missing.join(", ") +
@@ -2651,12 +2634,12 @@ function importEtalonToDb() {
   var localSkipped = 0;
   for (var r = 1; r < values.length; r++) {
     var row = values[r];
-    var domain = String(row[colMap["domain"]] || "").trim();
+    var url = String(row[colMap["url"]] || "").trim();
     var query = String(row[colMap["query"]] || "").trim().toLowerCase();
     var geo = String(row[colMap["geo"]] || "").trim();
     var sentiment = String(row[colMap["sentiment"]] || "").trim().toLowerCase();
 
-    if (!domain || !query || !geo || !sentiment) {
+    if (!url || !query || !geo || !sentiment) {
       localSkipped++;
       continue;
     }
@@ -2668,7 +2651,7 @@ function importEtalonToDb() {
     }
 
     labels.push({
-      domain: domain,
+      url: url,
       query: query,
       geo: geo,
       sentiment: sentiment,
@@ -2720,7 +2703,7 @@ function importEtalonToDb() {
   }
 
   var summary = "Импорт эталона завершён.\n\n" +
-    "Отправлено: " + labels.length + "\n" +
+    "Отправлено URL: " + labels.length + "\n" +
     "Импортировано в БД: " + totalImported + "\n" +
     "Пропущено: " + totalSkipped + "\n" +
     "Ошибок: " + totalErrors;
@@ -2847,15 +2830,15 @@ function _ensureReportSheet(spreadsheet) {
 
 /**
  * _ensureEtalonSheet — создаёт лист «Эталон разметки» с заголовками.
- * Заголовки: domain | query | geo | sentiment | source
- * Пополняется нейронкой при прогонах, кэш разметки по (domain, query, geo).
+ * Заголовки: url | query | geo | sentiment | source
+ * Пополняется нейронкой при прогонах, кэш разметки по (url, query, geo).
  */
 function _ensureEtalonSheet(spreadsheet) {
   try {
     var sheet = spreadsheet.getSheetByName(ETALON_SHEET_NAME);
     if (sheet === null) {
       sheet = spreadsheet.insertSheet(ETALON_SHEET_NAME);
-      var headers = ["domain", "query", "geo", "sentiment", "source"];
+      var headers = ["url", "query", "geo", "sentiment", "source"];
       sheet.appendRow(headers);
       Logger.log("_ensureEtalonSheet: создан лист '" + ETALON_SHEET_NAME + "' с заголовками");
     } else {
@@ -2868,7 +2851,7 @@ function _ensureEtalonSheet(spreadsheet) {
 
 /**
  * _ensureDisputedSheet — создаёт лист «Спорные» с заголовками.
- * Заголовки: domain | query | geo | url | причина
+ * Заголовки: url | query | geo | причина
  * Задел под deep-режим (v2): читается в future версии для доразметки по контенту страницы.
  */
 function _ensureDisputedSheet(spreadsheet) {
@@ -2876,7 +2859,7 @@ function _ensureDisputedSheet(spreadsheet) {
     var sheet = spreadsheet.getSheetByName(DISPUTED_SHEET_NAME);
     if (sheet === null) {
       sheet = spreadsheet.insertSheet(DISPUTED_SHEET_NAME);
-      var headers = ["domain", "query", "geo", "url", "причина"];
+      var headers = ["url", "query", "geo", "причина"];
       sheet.appendRow(headers);
       Logger.log("_ensureDisputedSheet: создан лист '" + DISPUTED_SHEET_NAME + "' с заголовками");
     } else {

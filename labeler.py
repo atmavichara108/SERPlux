@@ -1,7 +1,6 @@
 import os
 import re
 import time
-from urllib.parse import urlparse
 from dotenv import load_dotenv
 import requests
 
@@ -17,15 +16,9 @@ LLM_PAUSE = 1  # секунд между вызовами LLM
 LABEL_PATTERN = re.compile(r"\b(positive|negative|neutral)\b", re.IGNORECASE)
 
 
-def _extract_domain(url: str) -> str:
-    """Извлекает домен из URL для нормализации ключа кэша."""
-    if not url:
-        return ""
-    try:
-        parsed = urlparse(url)
-        return parsed.netloc.lower()
-    except Exception:
-        return url.lower()
+def _normalize_url_for_cache(url: str) -> str:
+    """Канонизирует URL для поиска в domain_labels. Делегирует storage.normalize_url."""
+    return storage.normalize_url(url)
 
 
 def _build_prompt(query: str, url: str, snippet: str) -> str:
@@ -191,12 +184,14 @@ def _label_group_auto(
 ) -> list[dict]:
     """
     Режим AUTO: кэш domain_labels → сниппет → neutral при ошибке.
-    
+
     Логика:
-      1. Проверяем кэш: get_domain_label(domain, query, geo) → берём из справочника
+      1. Проверяем кэш: get_domain_label(url, query, geo) → берём из справочника
       2. Нет в кэше → разметка по сниппету через LLM
       3. LLM не уверена (пустой сниппет / ошибка провайдера) → sentiment=neutral, source=snippet
       4. Результат → upsert domain_labels (source='snippet'), уважая manual_l1
+
+    Важно: ключ кэша — ПОЛНЫЙ URL (канонизированный), не домен.
     """
     result = []
     searcher = group_rows[0].get("searcher") or "unknown"
@@ -221,32 +216,37 @@ def _label_group_auto(
         row["confidence"] = "high"
 
         url = row.get("url") or ""
-        domain = row.get("domain") or _extract_domain(url)
+        url_norm = _normalize_url_for_cache(url)
         query = row.get("query") or ""
         snippet = row.get("snippet", "")
 
-        # Шаг 1: Проверяем кэш domain_labels (domain, query, geo)
-        if domain and not force_relabel:
-            cached_sentiment = storage.get_domain_label(domain, query, geo, db_path)
+        log.info("AUTO: url=%s query='%s' geo=%s — cache lookup", url, query, geo)
+
+        # Шаг 1: Проверяем кэш domain_labels (url, query, geo)
+        if url_norm and not force_relabel:
+            cached_sentiment = storage.get_domain_label(url_norm, query, geo, db_path)
             if cached_sentiment is not None:
                 row["sentiment"] = cached_sentiment
                 row["label"] = cached_sentiment
                 stats["cache_hit"] += 1
-                log.debug("AUTO кэш-хит: %s/%s/%s -> %s", domain, query, geo, cached_sentiment)
+                log.info("AUTO cache HIT: url=%s -> %s", url, cached_sentiment)
                 result.append(row)
                 continue
 
+        log.info("AUTO cache MISS: url=%s, calling LLM", url)
+
         # Шаг 2: Если сниппет пуст — ставим neutral (маркер неуверенности)
         if not snippet or not snippet.strip():
-            log.warning("AUTO: пустой сниппет для url=%s query='%s', ставлю neutral",
-                        row.get("url", "—"), query)
+            log.warning("AUTO empty snippet: url=%s query='%s' -> neutral (uncertain)",
+                        url, query)
             row["sentiment"] = "neutral"
             row["label"] = "neutral"
             row["confidence"] = "uncertain"
             stats["snippet_fallback_neutral"] += 1
             # Сохраняем в кэш (источник snippet — нейтральный фоллбэк)
-            if domain:
-                storage.upsert_domain_label(domain, query, geo, "neutral", "snippet", db_path)
+            if url_norm:
+                storage.upsert_domain_label(url_norm, query, geo, "neutral", "snippet", db_path)
+                log.info("AUTO upsert: url=%s -> neutral (source=snippet)", url)
             result.append(row)
             continue
 
@@ -261,25 +261,27 @@ def _label_group_auto(
             time.sleep(wait)
 
         sentiment = _label_one_llm(row, provider_chain=provider_chain, model=model)
-        
+
         # Если LLM не ответила или ошибка провайдера
         if sentiment is None:
-            log.warning("AUTO: ошибка провайдера для url=%s query='%s', ставлю neutral",
-                        row.get("url", "—"), query)
+            log.warning("AUTO provider ERROR: url=%s query='%s' -> neutral (uncertain)",
+                        url, query)
             sentiment = "neutral"
             row["confidence"] = "uncertain"
             stats["provider_error"] += 1
         else:
             stats["snippet_success"] += 1
+            log.info("AUTO LLM: url=%s query='%s' -> %s", url, query, sentiment)
 
         row["sentiment"] = sentiment
         row["label"] = sentiment
         last_real_call_ref[0] = time.time()
-        
-        # Сохраняем в кэш domain_labels по домену
-        if domain:
-            storage.upsert_domain_label(domain, query, geo, sentiment, "snippet", db_path)
-        
+
+        # Сохраняем в кэш domain_labels по полному URL
+        if url_norm:
+            storage.upsert_domain_label(url_norm, query, geo, sentiment, "snippet", db_path)
+            log.info("AUTO upsert: url=%s -> %s (source=snippet)", url, sentiment)
+
         result.append(row)
 
     log.info(
@@ -340,17 +342,17 @@ def _label_group_deep(
         # Обрабатываем только neutral
         if sentiment == "neutral":
             stats["neutral_found"] += 1
-            domain = row.get("domain")
             query = row.get("query") or ""
             url = row.get("url")
-            
+            url_norm = _normalize_url_for_cache(url) if url else ""
+
             # TODO: Заходим на страницу по URL, размечаем по контенту
             # Пока это заглушка — оставляем neutral
             log.debug("DEEP: neutral URL=%s ждёт разметки по контенту (заглушка)", url)
             # sentiment остаётся "neutral"
             # После реализации контент-разметки:
             # sentiment = _label_by_page_content(url, query, provider_chain)
-            # storage.upsert_domain_label(domain, query, geo, sentiment, "page", db_path)
+            # storage.upsert_domain_label(url_norm, query, geo, sentiment, "page", db_path)
             stats["page_relabeled"] += 1
         
         row["label"] = sentiment
@@ -478,7 +480,21 @@ if __name__ == "__main__":
         },
     ]
 
-    print("=== Тест labeler.py (режим AUTO, РЕАЛЬНЫЙ Zen, изолированная БД: %s) ===\n" % TEST_DB)
+    print("=== Тест labeler.py (режим AUTO, мок LLM, изолированная БД: %s) ===\n" % TEST_DB)
+
+    # Подменяем LLM на детерминированный мок, чтобы не расходовать токены в примере
+    def _fake_label_one_llm(row, provider_chain=None, model=None):
+        url = row.get("url", "")
+        if "ivan-petrov.ru" in url:
+            return "positive"
+        if "sanctions" in url:
+            return "negative"
+        return "neutral"
+
+    _label_one_llm_real = _label_one_llm
+    # Подмена имени в глобальном пространстве __main__ (при запуске как скрипт
+    # import labeler as _labeler_mod создаёт дубль модуля, поэтому globals()).
+    globals()["_label_one_llm"] = _fake_label_one_llm
 
     results = label(fake_rows, TEST_DB, label_mode="auto")
 
@@ -494,16 +510,16 @@ if __name__ == "__main__":
     storage.save(results, TEST_DB)
     storage.insert_labels(results, TEST_DB)
 
-    print("=== Тест кэша domain_labels ===")
-    # Вставляем тестовую метку в domain_labels
-    storage.upsert_domain_label("test-domain.com", "test query", "TestGeo", "positive", "manual_l1", TEST_DB)
-    cached = storage.get_domain_label("test-domain.com", "test query", "TestGeo", TEST_DB)
+    print("=== Тест кэша domain_labels (полный URL) ===")
+    # Вставляем тестовую метку в domain_labels (полный URL)
+    storage.upsert_domain_label("https://test-domain.com/path", "test query", "TestGeo", "positive", "manual_l1", TEST_DB)
+    cached = storage.get_domain_label("https://test-domain.com/path/", "test query", "TestGeo", TEST_DB)
     print(f"  Вставленная метка: {cached} (ожидалось 'positive')")
     assert cached == "positive"
 
     # Проверяем, что manual_l1 не перезаписывается
-    storage.upsert_domain_label("test-domain.com", "test query", "TestGeo", "negative", "snippet", TEST_DB)
-    cached = storage.get_domain_label("test-domain.com", "test query", "TestGeo", TEST_DB)
+    storage.upsert_domain_label("https://test-domain.com/path", "test query", "TestGeo", "negative", "snippet", TEST_DB)
+    cached = storage.get_domain_label("https://test-domain.com/path/", "test query", "TestGeo", TEST_DB)
     print(f"  После попытки перезаписать snippet: {cached} (ожидалось 'positive')")
     assert cached == "positive", "manual_l1 был перезаписан!"
 
@@ -520,6 +536,9 @@ if __name__ == "__main__":
     deep_results = label(auto_results, TEST_DB, label_mode="deep")
     for row in deep_results:
         print(f"  {row['url']}: sentiment={row['sentiment']} (mode={row.get('label_mode')})")
+
+    # Восстанавливаем реальный LLM-вызов
+    globals()["_label_one_llm"] = _label_one_llm_real
 
     if _os.path.exists(TEST_DB):
         _os.remove(TEST_DB)

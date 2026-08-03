@@ -729,6 +729,9 @@ def import_domain_labels(
       - массив объектов [{url, query, geo, sentiment, source}, ...]
       - объект {"labels": [...]}
 
+    url должен быть полным URL. Для ключа в domain_labels используется
+    канонизированный полный URL (storage.normalize_url), а не домен.
+
     Для каждой записи вызывает storage.upsert_domain_label, поэтому
     срабатывают правила приоритета source (manual_l1 не перезаписывается
     snippet/page) и идемпотентность по PK (url, query, geo).
@@ -782,19 +785,18 @@ def import_domain_labels(
         sentiment = _extract_str(raw.get("sentiment")).lower()
         source = _extract_str(raw.get("source")).lower() or DEFAULT_IMPORT_SOURCE
 
-        # Извлекаем домен из URL для кэша
-        domain = _extract_str(raw.get("domain"))
-        if not domain and url:
-            try:
-                from urllib.parse import urlparse
-                domain = urlparse(url).netloc.lower()
-                if not domain:
-                    domain = url.lower()  # fallback: уже домен без схемы
-            except Exception:
-                domain = url.lower()
+        # Поддержка legacy-поля domain: логируем warning и пропускаем
+        if not url and raw.get("domain"):
+            log.warning("labels_import: row %s использует устаревшее поле 'domain', "
+                        "ожидается 'url' с полным URL", idx)
+            skipped += 1
+            _add_sample(f"row {idx}: legacy 'domain' field, use 'url'")
+            continue
+
+        url_norm = storage.normalize_url(url)
 
         # Валидация
-        if not domain or not query or not geo or not sentiment:
+        if not url_norm or not query or not geo or not sentiment:
             skipped += 1
             _add_sample(f"row {idx}: missing required fields")
             log.warning("labels_import: row %s missing required fields", idx)
@@ -814,7 +816,7 @@ def import_domain_labels(
 
         try:
             storage.upsert_domain_label(
-                domain=domain,
+                url=url_norm,
                 query=query,
                 geo=geo,
                 sentiment=sentiment,
@@ -824,10 +826,10 @@ def import_domain_labels(
             imported += 1
         except Exception as exc:
             errors += 1
-            _add_sample(f"row {idx}: db error for {domain}/{query}/{geo}: {exc}")
+            _add_sample(f"row {idx}: db error for {url_norm}/{query}/{geo}: {exc}")
             log.error(
                 "labels_import: db error row %s %s/%s/%s: %s",
-                idx, domain, query, geo, exc,
+                idx, url_norm, query, geo, exc,
             )
 
     log.info(

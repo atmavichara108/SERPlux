@@ -69,7 +69,7 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 - **Ключи в .env:** ВСЕ (Topvisor, Google service account, OPENCODE_API_KEY, WEBHOOK_SECRET) только через .env, никогда не хардкодь. .env в .gitignore.
 - **Топвизор лимиты:** асинхронная сборка может быть медленной (поллинг) или упасть по лимиту тарифа. Смотри docs/topvisor-api.md.
 - **Аккумулятивный отчёт:** reporter.py вставляет новые версии СВЕРХУ, старые сдвигаются вниз. Максимум 10 версий, старейшие обрезаются. Лист "Отчёт" никогда не очищается.
-- **Кэш разметки:** labeler.py кэширует по (domain, query, geo). Одна пара может быть видна в разных searcher'ах/гео — кэш переиспользуется.
+- **Кэш разметки:** labeler.py кэширует по (url, query, geo), где url — полный канонизированный URL из `storage.normalize_url()`. Один и тот же URL может быть виден в разных searcher'ах/гео — кэш переиспользуется.
 
 ## Агенты и команды
 

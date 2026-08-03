@@ -6,6 +6,35 @@
 
 ## Сделано
 
+- **Session: 2026-08-03 — Откат кэша разметки с домена на полный URL + усиленное логирование**
+  - [x] **Проблема:** URL `https://www.motor-oel-guenstig.de/chempioil/` размечалась как neutral, хотя в Лист1 стояла positive. Кэш не брал эталон.
+  - [x] **Корневая причина:** ADR 2026-08-01 перевёл кэш `domain_labels` на ключ по домену. Это приводило к рассинхрону www/без-www и теряло гранулярность (разные страницы одного домена). Заказчик отклонил гипотезу «сократить эталон до домена».
+  - [x] **storage.py:**
+    - Добавлена `normalize_url()` — канонизация: lowercase scheme+host, убирает trailing slash и fragment, query сохраняет.
+    - `get_domain_label()`, `upsert_domain_label()`, `bulk_upsert_domain_labels()` снова работают по полному URL (параметр `url`, колонка `url` в БД).
+  - [x] **labeler.py:**
+    - Кэш ищет/пишет по полному URL `_normalize_url(row["url"])`, не по домену.
+    - Добавлено детальное логирование на INFO: cache lookup/hit/miss, LLM-вызов, upsert, provider error, empty snippet.
+  - [x] **webhook.py:**
+    - `POST /labels/import` принимает полное поле `url`. Legacy-поле `domain` отклоняется с warning.
+  - [x] **apps_script.gs:**
+    - `parseList1ToEtalon()` и `importEtalonToDb()` сохраняют/отправляют полный URL.
+    - Заголовок листа «Эталон разметки» — `url` вместо `domain`.
+    - Лист «Спорные» — `url` вместо `domain`.
+    - Удалён неиспользуемый `_extractDomain()`.
+  - [x] **migrate.py:**
+    - `migrate_url_to_domain()` отключена (no-op с deprecation warning).
+    - Добавлена `truncate_domain_labels()` для очистки таблицы перед перезаимпортом эталона.
+  - [x] **Тесты:** 248/248 passed.
+    - Обновлены `test_domain_labels.py`, `test_labeler_modes.py`, `test_webhook.py` — полный URL вместо домена.
+    - Добавлен тест `test_url_normalized_trailing_slash_and_fragment`.
+    - Добавлены тесты `truncate_domain_labels`.
+  - [x] **Code review:** 1 MEDIUM (storage._normalize_url → public normalize_url), 2 MEDIUM (schema openapi /labels/import), 2 MINOR — все выполнены.
+  - [x] **Документация:** обновлены `docs/contracts.md`, `docs/decisions.md` (новый ADR 2026-08-04, статус ADR 2026-08-01 — Отменено), `docs/progress.md`, `AGENTS.md`, `README.md`, `openapi.json`, `docs/user-guide.md`, `template/SHEETS.md`, `CHANGELOG.md`, `docs/labeling_canon.md`.
+  - [x] **Ручная проверка:** `python storage.py` OK, `python labeler.py` — мок LLM работает, кэш по URL работает, логи детальные.
+  - Status: Ready for deploy
+  - Коммит: `fix: revert domain cache to URL-based cache + detailed labeling logs`
+
 - **Session: 2026-08-03 — Фикс 3 критических багов в кэше разметки, webhook и reporter**
   - [x] **Баг 1 — Отсутствие миграции URL → domain в БД:**
     - `migrate.py`: добавлена `migrate_url_to_domain(conn)` — извлекает домен из полных URL в `domain_labels`, сохраняет `manual_l1` при конфликтах, удаляет исходные записи с полными URL.

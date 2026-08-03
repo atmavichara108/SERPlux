@@ -155,7 +155,8 @@ topvisor Snapshots API: сбор ТОПа выдачи. Сбор асинхро�
 ## Разметка по тональности
 
 DeepSeek v4 Flash Free через opencode.ai/zen — дешёвый и быстрый.
-Кэш по паре (domain + query + geo): повторно встреченные домены не гоняются через LLM.
+Кэш по тройке (полный URL + query + geo): повторно встреченные URL не гоняются через LLM.
+URL канонизируется (lowercase scheme/host, убирается trailing slash/fragment) перед поиском в кэше.
 Режимы: `auto` (справочник → LLM → neutral) и `deep` (заглушка для v2).
 
 ## Документация

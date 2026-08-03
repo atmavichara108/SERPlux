@@ -147,18 +147,18 @@ Lithuania | URL       Germany | URL                    | Lithuania | URL       G
 ## Лист 4: «Эталон разметки»
 
 ### Назначение
-Кэш тональности по парам (domain, query, geo). Пополняется автоматически при прогонах.
+Кэш тональности по тройкам (url, query, geo). Пополняется автоматически при прогонах. url — полный URL, не домен.
 
 ### Структура
 
-| domain | query | geo | sentiment | source |
-|--------|-------|-----|-----------|--------|
+| url | query | geo | sentiment | source |
+|-----|-------|-----|-----------|--------|
 
 ### Типы данных
 
 | Колонка | Тип | Пример | Примечание |
 |---------|-----|--------|-----------|
-| domain | Строка | example.com | Домен из URL |
+| url | URL | https://example.com/ | Полный URL из выдачи |
 | query | Строка (lowercase) | juri sudheimer | Имя субъекта, НЕ страна |
 | geo | Строка | Lithuania | Реальная страна, НЕ константа |
 | sentiment | Enum | positive, negative, neutral | По LLM или вручную |
@@ -166,7 +166,7 @@ Lithuania | URL       Germany | URL                    | Lithuania | URL       G
 
 ### Примечания
 - **Создаётся:** функцией `_ensureEtalonSheet()` с заголовками
-- **Первичный ключ:** (domain, query, geo)
+- **Первичный ключ:** (url, query, geo)
 - **Заполняется:** labeler.py при прогоне (сохраняет найденные метки)
 - **Приоритет:** ручная разметка (source=manual_l1) не перезаписывается автоматикой
 - **Читается:** на начало следующего прогона (кэш для ускорения)
@@ -181,17 +181,17 @@ Lithuania | URL       Germany | URL                    | Lithuania | URL       G
 
 ### Структура
 
-| domain | query | geo | url | причина |
-|--------|-------|-----|-----|---------|
+| url | query | geo | причина |
+|-----|-------|-----|---------|
 
 ### Типы данных
 
 | Колонка | Тип | Пример | Примечание |
 |---------|-----|--------|-----------|
-| domain | Строка | disputed.com | Домен из URL |
+| url | URL | https://disputed.com/news/123 | Полный URL |
 | query | Строка | juri sudheimer | Имя субъекта |
 | geo | Строка | Lithuania | Реальная страна |
-| url | URL | https://disputed.com/news/123 | Полный URL |
+| причина | Строка | double_meaning | Причина попадания в спорные |
 | причина | Строка | double_meaning, low_confidence | Описание |
 
 ### Примечания
