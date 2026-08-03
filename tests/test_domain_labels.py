@@ -268,24 +268,28 @@ def test_geo_normalized_strip_and_lowercase(init_db):
     assert storage.get_domain_label("https://example.com/page", "subject a", "ЛИТВА", init_db) == "positive"
 
 
-def test_geo_normalized_english_value_maps_to_russian_key(init_db):
-    """Английское название из Эталона приводится к русскому ключу GEO_DISPLAY."""
+def test_geo_normalized_english_value_lowercase(init_db):
+    """Английское geo нормализуется только к lowercase, без маппинга на русский ключ."""
     storage.upsert_domain_label(
-        "https://example.com/page", "subject a", "Германия", "positive", "manual_l1", db_path=init_db
+        "https://example.com/page", "subject a", "Germany", "positive", "manual_l1", db_path=init_db
     )
 
     assert storage.get_domain_label("https://example.com/page", "subject a", "Germany", init_db) == "positive"
-    assert storage.get_domain_label("https://example.com/page", "subject a", "GERMANY", init_db) == "positive"
+    assert storage.get_domain_label("https://example.com/page", "subject a", "germany", init_db) == "positive"
+    # Русский ключ — отдельная запись, не совпадает с английским
+    assert storage.get_domain_label("https://example.com/page", "subject a", "Германия", init_db) is None
 
 
-def test_geo_normalized_cyprus_eng_alias(init_db):
-    """Алиас 'Cyprus Eng' и русский 'Кипр Eng' сводятся к одному каноничному geo."""
+def test_geo_normalized_cyprus_eng_lowercase(init_db):
+    """Значение geo нормализуется только к lowercase, алиасы не маппятся."""
     storage.upsert_domain_label(
         "https://example.com/page", "subject a", "Кипр Eng", "positive", "manual_l1", db_path=init_db
     )
 
-    assert storage.get_domain_label("https://example.com/page", "subject a", "Cyprus Eng", init_db) == "positive"
+    assert storage.get_domain_label("https://example.com/page", "subject a", "Кипр Eng", init_db) == "positive"
     assert storage.get_domain_label("https://example.com/page", "subject a", "кипр eng", init_db) == "positive"
+    # Английский алиас — отдельная запись, не совпадает с русским
+    assert storage.get_domain_label("https://example.com/page", "subject a", "Cyprus Eng", init_db) is None
 
 
 def test_bulk_upsert_domain_labels_geo_normalized(init_db):

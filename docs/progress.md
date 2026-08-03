@@ -6,6 +6,19 @@
 
 ## Сделано
 
+- **Session: 2026-08-04 (финальный фикс) — Упрощение нормализации geo: отказ от GEO_DISPLAY маппинга**
+  - [x] **storage.py — `_normalize_geo()`:**
+    - Убран сложный прямой/обратный маппинг через `config.GEO_DISPLAY`.
+    - Теперь простая и надёжная нормализация: `(geo or "").strip().lower()`.
+    - Любое `geo` (`'Germany'`, `'germany'`, `'Германия'`, `'германия'`) приводится к единому нижнему регистру без потери данных.
+    - Используется в `get_domain_label()`, `upsert_domain_label()`, `bulk_upsert_domain_labels()`.
+  - [x] **Тесты:**
+    - Переписаны `test_geo_normalized_english_value_lowercase` и `test_geo_normalized_cyprus_eng_lowercase` — проверяют только `strip().lower()`, без маппинга английских названий на русские ключи.
+  - [x] **Тесты:** 256/256 passed.
+  - [x] **Документация:** обновлены `docs/decisions.md` (уточнение ADR 2026-08-04 — отказ от GEO_DISPLAY маппинга), `docs/progress.md` (эта запись).
+  - Status: Ready for deploy
+  - Коммит: `fix(storage): simplify geo normalization to strip+lowercase, remove GEO_DISPLAY mapping`
+
 - **Session: 2026-08-04 — Точечные критические фиксы: нормализация URL/geo, retry 429, защита кэша от падений**
   - [x] **storage.py — нормализация путей и geo:**
     - `normalize_url()`: путь (`path`) теперь тоже приводится к lowercase, чтобы `/Investigation/` и `/investigation/` не давали ложных Cache MISS.
