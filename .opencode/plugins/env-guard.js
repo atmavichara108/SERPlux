@@ -59,13 +59,13 @@ export const EnvGuard = async ({ $, client }) => {
           await block(`похоже, в код вписывается реальный ключ. Секреты только через os.environ / .env`)
         }
       }
-    },
 
-    // 4. Подстраховка: не дать утечь ключу в webfetch-параметры
-    "tool.execute.before.webfetch": async (input, output) => {
-      const url = output.args?.url || ""
-      if (LOOKS_LIKE_SECRET.test(url)) {
-        await block("в URL webfetch похоже на ключ — блокирую")
+      // 4. Подстраховка: не дать утечь ключу в webfetch-параметры
+      if (input.tool === "webfetch") {
+        const url = args.url || ""
+        if (LOOKS_LIKE_SECRET.test(url)) {
+          await block("в URL webfetch похоже на ключ — блокирую")
+        }
       }
     },
   }

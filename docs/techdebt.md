@@ -167,6 +167,29 @@
 
 ## Средний приоритет (качество и UX)
 
+### 2026-08-04 — Test-metrics claims не синхронизированы с каноном (T-087/T-098)
+
+**Проблема:** Числа тестов в живых артефактах устарели и не совпадают
+между собой: `README.md` и `AGENTS.md` — 224, `docs/verification.md` — 172,
+`TASKS.md` — 95/111, исторический «grep=94». Канонический источник —
+`docs/test-metrics.md` (T-087): на HEAD `f7ccd3e` executed = **256/256**
+(`./venv/bin/python -m pytest -q --tb=short`, exit 0, 3.52s), collected = 256,
+test definitions (rg `def test_`) = 212.
+
+**Где:** README.md, AGENTS.md (таблица команд), docs/CANON.md,
+docs/release-1.0.md, docs/user-guide.md, docs/verification.md, TASKS.md.
+
+**Влияние:** Агенты и человек видят неверные метрики покрытия; сверка
+«карточка ↔ репо ↔ docs» даёт ложные расхождения.
+
+**Статус:** Открыто. Реализация — за пользователем при проектной работе
+в этом репо (не librarian, не build-агент по умолчанию).
+
+**Что делать:** Обновить claims во всех перечисленных артефактах до
+значений канона из `docs/test-metrics.md` (executed 256/256, definitions
+212 на HEAD f7ccd3e), каждый claim — с пометкой HEAD/даты. После
+синхронизации перенести эту запись в конец реестра с пометкой ✔.
+
 ### 2026-07-04 — /status не отдаёт stats (provider_used, collected, cost_estimate)
 
 **Статус:** ✔ Исправлено в ходе аудита 2026-07-10.

@@ -1,16 +1,17 @@
 
 // .opencode/plugins/compaction.js
-// Memory-management для SERPlux: при компакции сессии флашит ключевые
-// выводы в docs/decisions.md и инжектит persistent-context в summary,
+// Memory-management для SERPlux: инжектит persistent-context в compaction
+// prompt через единственный документированный хук experimental.session.compacting,
 // чтобы агент не терял phase/stack/anti-goals после сжатия контекста.
-// Адаптировано из dv-hub/.opencode/plugins/compaction.ts (.js формат).
+// Контракт: @opencode-ai/plugin Hooks["experimental.session.compacting"]
+//   (input: { sessionID }, output: { context: string[]; prompt?: string })
+// output.context.push(...) добавляет контекст к дефолтному compaction prompt;
+// output.prompt (если задан) полностью заменяет его.
+// session.compact в SDK отсутствует; session.compacted — post-event с payload
+// { sessionID } без текста summary, flush summary-text через plugin hooks
+// SDK не поддерживается.
 
-import { appendFileSync } from "node:fs"
-import { join } from "node:path"
-
-const DECISIONS_REL = "docs/decisions.md"
-
-// Persistent project context — добавляется в каждый compaction summary.
+// Persistent project context — добавляется в compaction prompt.
 // Держим актуальным: phase/stack/контракты/anti-goals переживают компакцию.
 const PERSISTENT_CONTEXT = `
 # SERPlux — Persistent Context (injected on compaction)
@@ -53,44 +54,24 @@ build (Kimi K2.7 Code), plan (GLM-5.2), collector-dev, reviewer (GLM-5.2),
 ui-dev (⏸ paused), infra-dev (Qwen 3.7 Plus).
 
 ## Память (memory-management)
-- Ключевые выводы сессии переживают компакцию на диске: docs/decisions.md.
-- compaction.js автофлашит compaction summary в раздел «Compaction flush».
-- Куратор ADR — вручную выше этого раздела. /dream — финальный flush сессии.
-- Восстановить контекст: docs/decisions.md, docs/progress.md, docs/contracts.md.
+- Persistent context инжектится в compaction prompt плагином compaction.js
+  (хук experimental.session.compacting) — phase/stack/anti-goals переживают компакцию.
+- Flush текста compaction summary на диск SDK-хуками не поддерживается
+  (session.compacted event carries only sessionID). Куратор ADR — вручную в docs/decisions.md.
+- /dream — финальный flush сессии. Восстановить контекст: docs/decisions.md, docs/progress.md, docs/contracts.md.
 `.trim()
 
-const stamp = () =>
-  new Date().toISOString().replace("T", " ").slice(0, 19)
-
 export default async ({ directory }) => {
-  const root = directory || process.cwd()
-  const decisionsFile = join(root, DECISIONS_REL)
-
   return {
-    // Fires when opencode compacts the session to free the context window.
-    // 1) Flush: дописать compaction summary в docs/decisions.md — ключевые
-    //    выводы переживают сжатие на диске, а не только в окне.
-    // 2) Inject: добавить persistent context в summary — агент сохраняет
-    //    phase/stack/anti-goals после компакции.
-    "session.compact": async ({ summary }) => {
-      const text = (summary || "").trim()
-
-      // --- flush to disk ---
+    // Единственный документированный compaction-хук: experimental.session.compacting.
+    // Fires до генерации LLM continuation summary. output.context.push(...)
+    // добавляет persistent context к дефолтному compaction prompt — агент
+    // сохраняет phase/stack/anti-goals после компакции.
+    "experimental.session.compacting": async (input, output) => {
       try {
-        const entry =
-          `\n\n## Compaction flush — ${stamp()}\n\n` +
-          `> Автосохранение ключевых выводов сессии перед сбросом контекстного окна.\n` +
-          `> Это раздел автофлаша (плагин compaction.js). Куратор ADR — выше, вручную.\n\n` +
-          `${text}\n`
-        appendFileSync(decisionsFile, entry, "utf8")
+        output.context.push(PERSISTENT_CONTEXT)
       } catch (e) {
-        // Сбой флаша не должен ломать компакцию.
-        console.error("[compaction.js] flush to docs/decisions.md failed:", e?.message || e)
-      }
-
-      // --- inject persistent context into summary ---
-      return {
-        summary: `${summary}\n\n---\n\n${PERSISTENT_CONTEXT}`,
+        console.error("[compaction.js] inject persistent context failed:", e?.message || e)
       }
     },
   }

@@ -25,18 +25,18 @@ export const CommitGuard = async ({ $, client }) => {
 
       // Запускаем тесты с захватом вывода; nothrow + quiet — не печатаем в TUI
       const result = await $`./venv/bin/python -m pytest -q --tb=short`.nothrow().quiet()
-      const output = (result.stdout?.toString() || "") + (result.stderr?.toString() || "")
+      const testOutput = (result.stdout?.toString() || "") + (result.stderr?.toString() || "")
 
       if (result.exitCode !== 0) {
         // FAIL: полный вывод — в структурный лог, в TUI — краткое сообщение
         await client.app.log({
-          body: { service: "commit-guard", level: "error", message: `Tests failed:\n${output}` },
+          body: { service: "commit-guard", level: "error", message: `Tests failed:\n${testOutput}` },
         }).catch(() => {})
         throw new Error("CommitGuard: ❌ Tests FAILED, cannot commit")
       }
 
       // PASS: парсим количество тестов (пример: "64 passed")
-      const match = output.match(/(\d+)\s+passed/)
+      const match = testOutput.match(/(\d+)\s+passed/)
       const passedCount = match ? match[1] : "?"
       await client.app.log({
         body: { service: "commit-guard", level: "info", message: `✅ ${passedCount} tests passed` },
