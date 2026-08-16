@@ -2514,7 +2514,7 @@ function parseList1ToEtalon() {
 
   // Записываем в «Эталон разметки»
   if (etalonRows.length > 0) {
-    etalon.getRange(2, 1, etalonRows.length, 5).setValues(etalonRows);
+    etalon.getRange(2, 1, etalonRows.length, 4).setValues(etalonRows);
   }
 
   // Записываем в «Спорные»
