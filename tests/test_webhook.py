@@ -823,9 +823,8 @@ class TestLabelsImportEndpoint:
 
         conn = sqlite3.connect(client_db)
         try:
-            # geo хранится в lowercase после нормализации
             rows = conn.execute(
-                "SELECT source FROM domain_labels WHERE url = ? AND query = ? AND geo = ?", ("https://a.com", "q1", "литва"),
+                "SELECT source FROM domain_labels WHERE domain = ? AND query = ?", ("a.com", "q1"),
             ).fetchall()
             assert rows[0][0] == "manual_l1"
         finally:
@@ -1269,4 +1268,3 @@ class TestConfigRegisterProvider:
 
         assert result is False
         assert "incomplete" not in cfg_mod.PROVIDERS
-

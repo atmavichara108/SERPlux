@@ -536,9 +536,9 @@ def test_truncate_domain_labels_keeps_manual_l1(db_path):
     try:
         migrate.truncate_domain_labels(conn, keep_manual_l1=True)
         rows = conn.execute(
-            "SELECT url, source FROM domain_labels ORDER BY url"
+            "SELECT domain, source FROM domain_labels ORDER BY domain"
         ).fetchall()
         assert len(rows) == 1
-        assert rows[0] == ("https://example.com", "manual_l1")
+        assert rows[0] == ("example.com", "manual_l1")
     finally:
         conn.close()

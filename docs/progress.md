@@ -6,6 +6,8 @@
 
 ## Сделано
 
+- **Session: 2026-08-16 — Ключ эталона и coverage diff:** `domain_labels` переведена на `(domain, query)` без `geo`; добавлены симметричные `normalize_domain()`/`normalize_query()`, отключена запись snippet/page, добавлен отчёт покрытия перед auto-разметкой, синхронизированы импорт webhook и Apps Script.
+
 - **Session: 2026-08-04 (финальный фикс) — Упрощение нормализации geo: отказ от GEO_DISPLAY маппинга**
   - [x] **storage.py — `_normalize_geo()`:**
     - Убран сложный прямой/обратный маппинг через `config.GEO_DISPLAY`.

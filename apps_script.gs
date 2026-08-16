@@ -2357,8 +2357,8 @@ var DEPTH = 10;
    *
    * Контракт эталона:
     * - query = ИМЯ СУБЪЕКТА (lowercase), НИКОГДА не страна
-    * - geo = реальная страна из подзаголовка, НИКОГДА не константа
-    * - url = полный URL из ячейки (сохраняется как есть, без обрезки до домена)
+     * - geo = реальная страна из подзаголовка, используется только для «Спорные»
+     * - domain = значение ссылки из ячейки; нормализацию выполняет сервер
     * - sentiment = цвет заливки ячейки номера (зелёный=positive, красный=negative, жёлтый=neutral)
     * - source = manual_l1
     */
@@ -2390,7 +2390,7 @@ function parseList1ToEtalon() {
   spornye.clear();
 
   // Заголовки «Эталон разметки»
-  etalon.getRange(1, 1, 1, 5).setValues([["url", "query", "geo", "sentiment", "source"]]);
+  etalon.getRange(1, 1, 1, 4).setValues([["domain", "query", "sentiment", "source"]]);
   // Заголовки «Спорные»
   spornye.getRange(1, 1, 1, 6).setValues([["row", "col", "hex", "url", "geo", "query"]]);
 
@@ -2500,8 +2500,8 @@ function parseList1ToEtalon() {
             continue;
           }
 
-          // Сохраняем полный URL для сравнения по URL (не по домену)
-          etalonRows.push([urlCell, query, geo, sentiment, "manual_l1"]);
+          // Сервер симметрично нормализует значение до домена.
+          etalonRows.push([urlCell, query, sentiment, "manual_l1"]);
       }
 
       // Переходим к следующему гео-блоку (пропускаем буферную строку)
@@ -2596,8 +2596,8 @@ var VALID_ETALON_SENTIMENTS = ["positive", "negative", "neutral"];
  * Запуск: в редакторе Apps Script выбрать функцию importEtalonToDb() → Run.
  * НЕ добавляется в меню onOpen и не вызывается автоматически.
  *
- * Ожидаемые колонки (первая строка): url, query, geo, sentiment.
- * url должен быть полным URL (как в выдаче), для сравнения по URL.
+ * Ожидаемые колонки (первая строка): domain, query, sentiment.
+ * Допускается url вместо domain для совместимости с уже заполненным листом.
  * Если колонки не распознаны — логирует заголовки и останавливается.
  * Отправляет батчами по 100 строк на POST /labels/import.
  * Битые записи и ошибки батча не прерывают импорт остальных записей.
@@ -2645,7 +2645,8 @@ function importEtalonToDb() {
     colMap[headers[i]] = i;
   }
 
-  var required = ["url", "query", "geo", "sentiment"];
+  var domainColumn = ("domain" in colMap) ? "domain" : "url";
+  var required = [domainColumn, "query", "sentiment"];
   var missing = required.filter(function (k) { return !(k in colMap); });
   if (missing.length > 0) {
     var err = "Не удалось определить обязательные колонки: " + missing.join(", ") +
@@ -2660,12 +2661,11 @@ function importEtalonToDb() {
   var localSkipped = 0;
   for (var r = 1; r < values.length; r++) {
     var row = values[r];
-    var url = String(row[colMap["url"]] || "").trim();
+    var domain = String(row[colMap[domainColumn]] || "").trim();
     var query = String(row[colMap["query"]] || "").trim().toLowerCase();
-    var geo = String(row[colMap["geo"]] || "").trim();
     var sentiment = String(row[colMap["sentiment"]] || "").trim().toLowerCase();
 
-    if (!url || !query || !geo || !sentiment) {
+    if (!domain || !query || !sentiment) {
       localSkipped++;
       continue;
     }
@@ -2677,9 +2677,8 @@ function importEtalonToDb() {
     }
 
     labels.push({
-      url: url,
+      domain: domain,
       query: query,
-      geo: geo,
       sentiment: sentiment,
       source: "manual_l1"
     });

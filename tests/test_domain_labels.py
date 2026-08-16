@@ -4,9 +4,9 @@ T-00X — тесты таблицы domain_labels (storage.py).
 Проверяем:
 - get_domain_label / upsert_domain_label
 - приоритет source='manual_l1'
-- уникальность (url, query, geo)
+- уникальность (domain, query)
 - bulk_upsert_domain_labels
-- нормализация URL (lowercase scheme/host, trailing slash, fragment)
+- нормализация домена
 """
 
 import sqlite3
@@ -61,10 +61,9 @@ def test_upsert_domain_label_insert(init_db):
     conn = sqlite3.connect(init_db)
     try:
         row = conn.execute(
-            "SELECT url, query, geo, sentiment, source FROM domain_labels"
+            "SELECT domain, query, sentiment, source FROM domain_labels"
         ).fetchone()
-        # geo хранится в lowercase после нормализации
-        assert row == ("https://example.com/page", "subject a", "литва", "negative", "snippet")
+        assert row == ("example.com", "subject a", "negative", "snippet")
     finally:
         conn.close()
 
@@ -127,7 +126,7 @@ def test_manual_l1_overwrites_snippet(init_db):
     assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
 
 
-# ─── Уникальность (domain, query, geo) ───────────────────────────────────────
+# ─── Уникальность (domain, query) ────────────────────────────────────────────
 
 
 def test_domain_query_geo_unique(init_db):
@@ -140,10 +139,9 @@ def test_domain_query_geo_unique(init_db):
 
     conn = sqlite3.connect(init_db)
     try:
-        # geo хранится в lowercase после нормализации
         count = conn.execute(
-            "SELECT COUNT(*) FROM domain_labels WHERE url = ? AND query = ? AND geo = ?",
-            ("https://example.com/page", "subject a", "литва"),
+            "SELECT COUNT(*) FROM domain_labels WHERE domain = ? AND query = ?",
+            ("example.com", "subject a"),
         ).fetchone()[0]
         assert count == 1
     finally:
@@ -152,7 +150,7 @@ def test_domain_query_geo_unique(init_db):
     assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "negative"
 
 
-def test_different_geo_is_separate_record(init_db):
+def test_different_geo_uses_same_record(init_db):
     storage.upsert_domain_label(
         "https://example.com/page", "subject a", "Литва", "positive", "snippet", db_path=init_db
     )
@@ -160,8 +158,7 @@ def test_different_geo_is_separate_record(init_db):
         "https://example.com/page", "subject a", "Латвия", "negative", "snippet", db_path=init_db
     )
 
-    assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
-    assert storage.get_domain_label("https://example.com/page", "subject a", "Латвия", init_db) == "negative"
+    assert storage.get_domain_label("https://example.com/page", "subject a", init_db) == "negative"
 
 
 def test_different_query_is_separate_record(init_db):
@@ -232,40 +229,48 @@ def test_query_normalized_to_lowercase(init_db):
     assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
 
 
-# ─── URL normalization ───────────────────────────────────────────────────────
+# ─── Domain normalization ───────────────────────────────────────────────────
 
 
-def test_url_normalized_trailing_slash_and_fragment(init_db):
+@pytest.mark.parametrize("value, expected", [
+    ("https://www.chempioil.com/de", "chempioil.com"),
+    ("www.occrp.org", "occrp.org"),
+    ("https://sctchemicals.ae/production/", "sctchemicals.ae"),
+    ("OCCRP.ORG", "occrp.org"),
+])
+def test_normalize_domain_examples(value, expected):
+    assert storage.normalize_domain(value) == expected
+
+
+def test_domain_normalized_trailing_slash_and_fragment(init_db):
     storage.upsert_domain_label(
         "https://Example.COM/Page/?foo=bar#frag", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
     )
 
-    # Trailing slash и fragment отбрасываются, scheme/host lowercase
-    assert storage.get_domain_label("https://example.com/Page?foo=bar", "subject a", "Литва", init_db) == "positive"
-    assert storage.get_domain_label("HTTPS://EXAMPLE.COM/Page?foo=bar", "subject a", "Литва", init_db) == "positive"
+    assert storage.get_domain_label("https://example.com/Page?foo=bar", "subject a", init_db) == "positive"
+    assert storage.get_domain_label("HTTPS://EXAMPLE.COM/Page?foo=bar", "subject a", init_db) == "positive"
 
 
-def test_url_normalized_lowercase_path(init_db):
+def test_domain_normalized_lowercase_path(init_db):
     """Путь приводится к lowercase, чтобы `/Investigation/` и `/investigation/` совпадали."""
     storage.upsert_domain_label(
         "https://Example.COM/Investigation/", "subject a", "Литва", "negative", "snippet", db_path=init_db
     )
 
-    assert storage.get_domain_label("https://example.com/investigation", "subject a", "Литва", init_db) == "negative"
-    assert storage.get_domain_label("https://EXAMPLE.COM/INVESTIGATION", "subject a", "Литва", init_db) == "negative"
+    assert storage.get_domain_label("https://example.com/investigation", "subject a", init_db) == "negative"
+    assert storage.get_domain_label("https://EXAMPLE.COM/INVESTIGATION", "subject a", init_db) == "negative"
 
 
 # ─── geo normalization ───────────────────────────────────────────────────────
 
 
-def test_geo_normalized_strip_and_lowercase(init_db):
+def test_geo_is_not_part_of_key(init_db):
     """Пробелы по краям и регистр geo не ломают составной ключ."""
     storage.upsert_domain_label(
         "https://example.com/page", "subject a", "Литва", "positive", "snippet", db_path=init_db
     )
 
-    assert storage.get_domain_label("https://example.com/page", "subject a", " литва ", init_db) == "positive"
-    assert storage.get_domain_label("https://example.com/page", "subject a", "ЛИТВА", init_db) == "positive"
+    assert storage.get_domain_label("https://example.com/page", "subject a", init_db) == "positive"
 
 
 def test_geo_normalized_english_value_lowercase(init_db):
@@ -274,10 +279,7 @@ def test_geo_normalized_english_value_lowercase(init_db):
         "https://example.com/page", "subject a", "Germany", "positive", "manual_l1", db_path=init_db
     )
 
-    assert storage.get_domain_label("https://example.com/page", "subject a", "Germany", init_db) == "positive"
-    assert storage.get_domain_label("https://example.com/page", "subject a", "germany", init_db) == "positive"
-    # Русский ключ — отдельная запись, не совпадает с английским
-    assert storage.get_domain_label("https://example.com/page", "subject a", "Германия", init_db) is None
+    assert storage.get_domain_label("https://example.com/page", "subject a", init_db) == "positive"
 
 
 def test_geo_normalized_cyprus_eng_lowercase(init_db):
@@ -286,10 +288,7 @@ def test_geo_normalized_cyprus_eng_lowercase(init_db):
         "https://example.com/page", "subject a", "Кипр Eng", "positive", "manual_l1", db_path=init_db
     )
 
-    assert storage.get_domain_label("https://example.com/page", "subject a", "Кипр Eng", init_db) == "positive"
-    assert storage.get_domain_label("https://example.com/page", "subject a", "кипр eng", init_db) == "positive"
-    # Английский алиас — отдельная запись, не совпадает с русским
-    assert storage.get_domain_label("https://example.com/page", "subject a", "Cyprus Eng", init_db) is None
+    assert storage.get_domain_label("https://example.com/page", "subject a", init_db) == "positive"
 
 
 def test_bulk_upsert_domain_labels_geo_normalized(init_db):

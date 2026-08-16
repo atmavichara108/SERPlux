@@ -515,6 +515,12 @@ def test_schema_has_required_constraints(init_db):
         }
         assert required_indexes <= indexes, f"Не хватает индексов: {required_indexes - indexes}"
 
+        domain_columns = [r[1] for r in conn.execute("PRAGMA table_info(domain_labels)").fetchall()]
+        assert domain_columns[:2] == ["domain", "query"]
+        assert "geo" not in domain_columns
+        assert "url" not in domain_columns
+        assert "idx_domlbl_domain_query" in indexes
+
         # FK включены в positions и labels
         for table in ("positions", "labels"):
             fks = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()

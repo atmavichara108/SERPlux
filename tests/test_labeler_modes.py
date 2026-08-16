@@ -110,8 +110,8 @@ def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample
     assert cached is None
 
 
-def test_auto_mode_snippet_success_and_saves_to_domain_labels(init_db, sample_row, monkeypatch):
-    """AUTO режим: успешная разметка по сниппету, сохранённая в domain_labels."""
+def test_auto_mode_snippet_success_is_not_saved_to_domain_labels(init_db, sample_row, monkeypatch):
+    """AUTO режим: успешная разметка по сниппету не меняет эталон."""
     monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
 
     rows = [sample_row]
@@ -122,9 +122,22 @@ def test_auto_mode_snippet_success_and_saves_to_domain_labels(init_db, sample_ro
     assert labeled["sentiment"] == "negative"
     assert labeled["label"] == "negative"
 
-    # Проверяем, что результат сохранён в domain_labels
+    # Нейроразметка не записывается в domain_labels.
     cached = storage.get_domain_label("https://example.com/page1", "subject A", "Литва", init_db)
-    assert cached == "negative"
+    assert cached is None
+
+
+def test_report_etalon_coverage(init_db, sample_row, caplog):
+    """Coverage считает уникальные domain+query и логирует пропущенный эталон."""
+    import logging
+    storage.upsert_domain_label("www.example.com", " SUBJECT A ", sentiment="positive", source="manual_l1", db_path=init_db)
+    rows = [sample_row, {**sample_row, "url": "https://other.example/page"}]
+    caplog.set_level(logging.INFO, logger="labeler")
+
+    report = labeler.report_etalon_coverage(rows, init_db)
+
+    assert report == {"total": 2, "matched": 1, "unmatched": 1, "coverage_pct": 50.0}
+    assert "НЕТ ЭТАЛОНА: domain=other.example query=subject a" in caplog.text
 
 
 def test_auto_mode_respects_manual_l1_priority(init_db, sample_row, monkeypatch):
