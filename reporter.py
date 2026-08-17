@@ -34,6 +34,18 @@ def _get_geo_display(geo: str) -> str:
     return GEO_DISPLAY.get(geo, geo)
 
 
+def _unique_geo_displays(geo_order: list[str]) -> list[str]:
+    """Убирает дубли после отображения алиасов гео (например, Лондон/Великобритания)."""
+    result = []
+    seen = set()
+    for geo in geo_order:
+        display = _get_geo_display(geo)
+        if display not in seen:
+            seen.add(display)
+            result.append(geo)
+    return result
+
+
 def _get_spreadsheet(sheet_id: str | None = None):
     credentials_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
     sheet_id = sheet_id or os.environ.get("GOOGLE_SHEET_ID")
@@ -346,7 +358,7 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
             hdr_row[sb["url"]] = sb["display"]
         report_data.append(hdr_row)
 
-        for geo_key in geo_order:
+        for geo_key in _unique_geo_displays(geo_order):
             geo_display = _get_geo_display(geo_key)
 
             geo_row = [""] * cols

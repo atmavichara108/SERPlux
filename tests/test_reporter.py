@@ -463,6 +463,14 @@ class TestAccumulativeReport:
         assert not _is_version_header(["Lithuania", "", ""])
         assert not _is_version_header(["1", "", ""])
 
+    def test_unique_geo_displays_removes_united_kingdom_alias(self):
+        """Великобритания и Лондон не создают две секции United Kingdom."""
+        from reporter import _unique_geo_displays
+
+        assert _unique_geo_displays(["Литва", "Великобритания", "Лондон", "Кипр"]) == [
+            "Литва", "Великобритания", "Кипр"
+        ]
+
     def test_build_report_accumulates_versions(self, monkeypatch):
         """Второй вызов build_report вставляет новый блок сверху, не вызывая clear()."""
         from reporter import build_report
