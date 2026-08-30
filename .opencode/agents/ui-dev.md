@@ -2,7 +2,7 @@
 ---
 description: Google Sheets UI (Apps Script меню, лист Настройки). Web UI — будущая опция под ADR.
 mode: subagent
-model: opencode-go/kimi-k2.7-code
+model: opencode-go/gpt-5.6-luna
 temperature: 0.2
 steps: 25
 permission:

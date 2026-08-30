@@ -2,7 +2,7 @@
 ---
 description: Пишет и отлаживает topvisor.py и collector.py по контракту
 mode: subagent
-model: opencode-go/kimi-k2.7-code
+model: opencode-go/gpt-5.6-luna
 temperature: 0.1
 permission:
   edit: allow

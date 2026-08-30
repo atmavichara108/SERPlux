@@ -1,7 +1,7 @@
 ---
 description: Acceptance verifier SERPlux. Запускает реальную acceptance command (python -m pytest -v), выносит PASS/FAIL, никогда не правит.
 mode: subagent
-model: opencode-go/glm-5.2
+model: opencode-go/deepseek-v4-flash
 temperature: 0.1
 permission:
   edit: deny

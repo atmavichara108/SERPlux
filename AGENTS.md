@@ -73,6 +73,13 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 
 ## Агенты и команды
 
+Обычная единственная входная команда — `/release vX.Y.Z: <описание>`. Она сама
+нормализует запрос, задаёт вопросы и создаёт ровно один authoritative local spec
+в `docs/specs/`; отдельные `/prompt` и `/spec` не обязательны. Это approved
+exception к общей Vault policy: SERPlux execution workflow полностью локален и
+не зависит от Vault. `/spec` только читает/перечисляет existing local specs,
+`/prompt` — optional read-only diagnostic helper.
+
 > Агенты определены в `.opencode/agents/*.md`, команды в `.opencode/command/*.md`.
 > Auto-discovery по имени файла (без .md).
 
@@ -84,6 +91,7 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 | **plan** | primary | opencode-go/glm-5.2 | Планирование, анализ | deny |
 | **collector-dev** | subagent | opencode-go/kimi-k2.7-code | Topvisor API + сбор данных | allow |
 | **reviewer** | subagent | opencode-go/glm-5.2 | PASS/FAIL верификация | deny |
+| **verifier** | subagent | opencode-go/deepseek-v4-flash | Acceptance-only PASS/FAIL по DoD | deny |
 | **ui-dev** | subagent | opencode-go/kimi-k2.7-code | Google Sheets UI (Apps Script) | allow |
 | **infra-dev** | subagent | opencode-go/qwen3.7-plus | Docker, deploy, серверная инфра | allow |
 
@@ -94,13 +102,45 @@ Row = dict: {date, searcher, query, geo, region_index, position, url, domain, sn
 | `/interface` | ui-dev | Google Sheets UI (Apps Script меню, лист Настройки). Web UI ⏸ ADR |
 | `/container` | infra-dev | Создать/обновить Dockerfile + docker-compose |
 | `/deploy` | infra-dev | Развернуть на сервере: проверка, обновление, proxy, SSL |
+| `/prompt` | plan | Экспериментальная локальная нормализация сырого запроса в execution brief; без edit/dispatch |
+| `/spec` | plan | Прочитать authoritative local spec из `docs/specs/`; без Vault fallback |
+| `/release` | plan | Единственный обычный feature/fix workflow: intake/questions → generated local spec/plan approval → build → tests → reviewer → verifier/fix loop (максимум 5) → ручной handoff |
 
 ### Как вызывать
 
 - **Через Tab** — переключение между primary-агентами (build, plan)
 - **Через @** — вызов subagent'а вручную: `@ui-dev сделай дашборд`
 - **Через команду** — `/interface` запустит ui-dev с готовым промптом
+- **Через команду** — `/prompt <сырой запрос>` опционально выдаст read-only diagnostic brief; обычно его не вызывают
+- **Через команду** — `/spec [selector]` прочитает/перечислит existing local specs; `/release` его заранее не требует
+- **Через команду** — `/release v1.0.2: <свободное описание>` запустит весь интерактивный workflow
 - **Автоматически** — build-агент может делегировать задачи subagent'ам через `task`
+
+### Обязательный release workflow
+
+`/release` выполняет intake/questions → generated local spec + plan → explicit
+plan approval → build → targeted tests → отдельные reviewer и verifier → максимум
+5 fix-итераций. После verifier PASS он показывает evidence и останавливается в
+`READY_FOR_USER_INTEGRATION`/`AWAITING_USER_REVIEW`; flush отложен. Verifier PASS
+означает acceptance gate по DoD, но не production readiness и не серверную
+проверку.
+
+`/release` не запускает автоматически `/dream`, flush, commit, tag, push или
+deploy и не добавляет approval gate для commit/push. После handoff пользователь
+сам запускает существующий `/commit`, доступный push workflow и `/deploy`, затем
+проверяет сервер. Эти команды и pre-commit/commit-guard применяют свои текущие
+проверки. Flush выполняется отдельно вручную через `/dream` или documented
+equivalent после решения пользователя. Pre-existing dirty changes остаются под
+scope safety и не должны затрагиваться или попадать в ручной commit.
+
+### Экспериментальный `/prompt`
+
+`/prompt` — optional read-only diagnostic helper; обычно пользователь даёт одно
+описание прямо в `/release`. Он не создаёт global runtime и не запускает dispatch.
+`/release` создаёт local spec сам; неясный scope или маршрут — `BLOCKED`/
+`UNROUTABLE`, без `general` fallback.
+
+Каноническая design note Vault: [`capability-routing-design-note`](file:///home/rudra/Projects/OpenCode-Vault/06-Audits/2026-08-25-capability-routing-design-note.md).
 
 ### Правило немедленного делегирования
 

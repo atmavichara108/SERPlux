@@ -43,7 +43,44 @@ webhook.py    — FastAPI сервис, принимает запросы из S
 main.py       — точка входа, полный пайплайн
 ```
 
-Подробнее — `AGENTS.md`, `docs/contracts.md`, `docs/decisions.md`.
+Подробнее — `AGENTS.md`, `docs/contracts.md`, `docs/decisions.md`. Единственная
+обычная входная команда для feature/fix — `/release`; пользователь обычно даёт
+одно свободное описание с версией, а workflow сам задаёт вопросы и создаёт
+authoritative spec в `docs/specs/`. SERPlux workflow не зависит от Vault.
+
+### Экспериментальный `/prompt`
+
+`/prompt <сырой запрос>` — optional read-only diagnostic helper, обычно не нужен:
+тот же слой нормализации работает внутри `/release`. Он выдаёт brief с Goal,
+контекстом, ограничениями, DoD, рисками, roster и evidence.
+Предположения помечаются `[HYPOTHESIS]`, неизвестное — `[UNKNOWN]`. Команда не
+редактирует код, не вызывает dispatch и не объявляет задачу выполненной; brief не
+является acceptance evidence. Это ограниченный design-only эксперимент, не
+глобальный runtime `prompt-engineer`/`task-compiler`; при неясном маршруте или
+spec результатом являются `UNROUTABLE`/`BLOCKED` без generic fallback.
+
+`/spec [selector]` только читает/перечисляет existing local specs и не создаёт их.
+`/release` сам создаёт один deterministic authoritative spec в `docs/specs/`; не
+требуется предварительный `/spec` или `/prompt`.
+
+### Release workflow OpenCode
+
+Для следующей оплаченной feature/fix используйте:
+
+```text
+/release v1.0.2: реализовать <feature/fix>
+```
+
+Команда ведёт intake/questions → local spec + plan → explicit plan approval →
+build → targeted tests → reviewer → verifier с максимум 5 fix-итерациями при FAIL
+→ `READY_FOR_USER_INTEGRATION`/`AWAITING_USER_REVIEW`. Verifier PASS означает
+acceptance gate по DoD, но не production readiness и не серверную проверку.
+
+После handoff пользователь вручную запускает `/commit`, затем push workflow и
+`/deploy`, после чего выполняет server check. `/release` не выполняет commit,
+tag, push, deploy или `/dream`/flush автоматически и не требует дополнительной
+фразы или approval для commit/push. Flush остаётся отдельным ручным действием
+через `/dream` или documented equivalent.
 
 ## Установка и деплой
 
