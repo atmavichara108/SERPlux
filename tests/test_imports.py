@@ -82,6 +82,10 @@ def test_apps_script_manual_etalon_commands_are_explicit():
     script = (Path(PROJECT_ROOT) / "apps_script.gs").read_text(encoding="utf-8")
     assert '"Зафиксировать исправления в эталон", "importLatestReportToEtalon"' in script
     assert "function importHistoricalEtalonsToDb()" in script
+    assert "function _normalizeHistoricalSheetName(name)" in script
+    assert ".replace(/google/g, \"гугл\")" in script
+    assert ".replace(/[—–]/g, \"-\")" in script
+    assert "_findHistoricalEtalonSheet(ss, names[i])" in script
     assert "function importLatestReportToEtalon()" in script
     assert "Google — посл эталон разметки" in script
     assert "Яндекс ру — посл эталон разметки" in script

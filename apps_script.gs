@@ -2724,6 +2724,27 @@ function _importReportLabels(labels, secret) {
  * Stage 1: разовый импорт трёх исторических report-листов.
  * Функция изолирована и намеренно не добавлена в меню.
  */
+function _normalizeHistoricalSheetName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[—–]/g, "-")
+    .replace(/google/g, "гугл")
+    .replace(/\s+/g, " ")
+    .replace(/\s*-\s*/g, " - ")
+    .trim();
+}
+
+function _findHistoricalEtalonSheet(spreadsheet, expectedName) {
+  var expected = _normalizeHistoricalSheetName(expectedName);
+  var sheets = spreadsheet.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    if (_normalizeHistoricalSheetName(sheets[i].getName()) === expected) {
+      return sheets[i];
+    }
+  }
+  return null;
+}
+
 function importHistoricalEtalonsToDb() {
   var ui = SpreadsheetApp.getUi();
   var secret = _getSecret();
@@ -2743,12 +2764,13 @@ function importHistoricalEtalonsToDb() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
   for (var i = 0; i < names.length; i++) {
-    var sheet = ss.getSheetByName(names[i]);
+    var sheet = _findHistoricalEtalonSheet(ss, names[i]);
     if (!sheet) {
       total.errors++;
       details.push(names[i] + ": лист не найден");
       continue;
     }
+    Logger.log("importHistoricalEtalonsToDb: найден лист «" + sheet.getName() + "»");
     try {
       var collected = _collectReportLabels(sheet, false);
       var imported = collected.labels.length ? _importReportLabels(collected.labels, secret) : { imported: 0, skipped: 0, errors: 0 };
