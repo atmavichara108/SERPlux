@@ -830,6 +830,31 @@ class TestLabelsImportEndpoint:
         finally:
             conn.close()
 
+    def test_import_labels_uses_domain_query_without_geo(self, client, client_db):
+        """Актуальный контракт принимает domain+query; geo и client_id не нужны."""
+        import storage
+
+        resp = client.post(
+            "/labels/import",
+            json=[{
+                "domain": "https://www.example.com/path",
+                "query": "Subject A",
+                "sentiment": "positive",
+                "source": "manual_l1",
+            }],
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["imported"] == 1
+        assert storage.get_domain_label("example.com", "subject a", client_db) == "positive"
+
+        conn = sqlite3.connect(client_db)
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(domain_labels)")}
+            assert columns == {"domain", "query", "sentiment", "source", "updated_at"}
+        finally:
+            conn.close()
+
     def test_import_labels_success_object_format(self, client, client_db):
         """Формат тела {labels: [...]} тоже работает."""
         import storage

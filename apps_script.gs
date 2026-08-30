@@ -90,6 +90,7 @@ function onOpen() {
       .addItem("▶ Запустить сбор", "runCollection")
       .addItem("⟳ Проверить статус", "checkStatus")
       .addItem("[>] Построить отчёт за дату...", "buildReportForDate")
+      .addItem("Зафиксировать исправления в эталон", "importLatestReportToEtalon")
       .addSeparator()
       .addItem("Разметить собранные данные", "labelOnly")
       .addItem("Разметить за дату...", "labelOnlyForDate")
@@ -2574,14 +2575,242 @@ function _colorToSentiment(bgColor) {
     b = parseInt(hex.substr(4, 2), 16);
   }
 
-  // Зелёный: G > R и G > B
+  // Legacy parser допускает оттенки, созданные в старом Лист1.
   if (g > r && g > b) return "positive";
-  // Красный: R > G и R > B
   if (r > g && r > b) return "negative";
-  // Жёлтый: R и G высокие, B низкий
   if (r > 200 && g > 200 && b < 150) return "neutral";
+  return null;
+}
+
+/** Принимает только канонические цвета, которыми reporter.py помечает отчёт. */
+function _reportColorToSentiment(bgColor) {
+  if (!bgColor) return null;
+  var color = String(bgColor).trim().toLowerCase();
+  var r, g, b;
+  var rgbMatch = color.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)$/);
+  if (rgbMatch) {
+    r = parseInt(rgbMatch[1], 10);
+    g = parseInt(rgbMatch[2], 10);
+    b = parseInt(rgbMatch[3], 10);
+  } else {
+    var hex = color.replace("#", "");
+    if (hex.length === 3) {
+      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+    } else if (hex.length === 8) {
+      hex = hex.substr(0, 6);
+    }
+    if (hex.length !== 6) return null;
+    r = parseInt(hex.substr(0, 2), 16);
+    g = parseInt(hex.substr(2, 2), 16);
+    b = parseInt(hex.substr(4, 2), 16);
+  }
+
+  // Эти значения соответствуют LABEL_COLORS в reporter.py.
+  var knownColors = [
+    { r: 217, g: 234, b: 211, label: "positive" }, // #d9ead3
+    { r: 244, g: 204, b: 204, label: "negative" }, // #f4cccc
+    { r: 255, g: 242, b: 204, label: "neutral" }   // #fff2cc
+  ];
+  for (var i = 0; i < knownColors.length; i++) {
+    var known = knownColors[i];
+    if (Math.abs(r - known.r) <= 3 && Math.abs(g - known.g) <= 3 &&
+        Math.abs(b - known.b) <= 3) {
+      return known.label;
+    }
+  }
 
   return null;
+}
+
+/**
+ * Собирает ручные метки из report-матрицы.
+ * latestOnly=true ограничивает чтение первым (верхним) заголовком версии.
+ * Возвращает URL, query и sentiment; geo намеренно не входит в контракт.
+ */
+function _collectReportLabels(sheet, latestOnly) {
+  var values = sheet.getDataRange().getValues();
+  var backgrounds = sheet.getDataRange().getBackgrounds();
+  var labels = [];
+  var processed = 0;
+  var skipped = 0;
+  var errors = 0;
+  var errorSamples = [];
+
+  if (!values || values.length < 5) {
+    return { labels: labels, processed: 0, skipped: 0, errors: 1,
+      errorSamples: ["лист пуст или содержит недостаточно строк"] };
+  }
+
+  var versionHeaders = [];
+  for (var hr = 0; hr < values.length; hr++) {
+    var first = String(values[hr][0] || "").trim();
+    if (/^Позиции\s+.+\s+на\s+.+/i.test(first)) versionHeaders.push(hr);
+  }
+  if (versionHeaders.length === 0) {
+    return { labels: labels, processed: 0, skipped: 0, errors: 1,
+      errorSamples: ["не найден заголовок версии отчёта"] };
+  }
+
+  var starts = latestOnly ? [versionHeaders[0]] : versionHeaders;
+  for (var v = 0; v < starts.length; v++) {
+    var start = starts[v];
+    var nextHeader = versionHeaders.indexOf(start) + 1;
+    var end = nextHeader < versionHeaders.length ? versionHeaders[nextHeader] : values.length;
+    var subjectRow = start + 2;
+    if (subjectRow >= end) {
+      errors++;
+      errorSamples.push("в версии отсутствует строка субъектов");
+      continue;
+    }
+
+    var subjects = [];
+    for (var c = 1; c < values[subjectRow].length; c++) {
+      var subject = String(values[subjectRow][c] || "").trim();
+      if (subject) subjects.push({ query: subject.toLowerCase(), posCol: c - 1, urlCol: c });
+    }
+
+    for (var s = 0; s < subjects.length; s++) {
+      var subj = subjects[s];
+      for (var r = start + 3; r < end; r++) {
+        var geoCell = String(values[r][subj.posCol] || "").trim();
+        if (!geoCell || /^\d+$/.test(geoCell)) continue;
+
+        for (var d = 1; d <= DEPTH && r + d < end; d++) {
+          var rowIndex = r + d;
+          var position = String(values[rowIndex][subj.posCol] || "").trim();
+          if (!/^\d+$/.test(position)) break;
+          processed++;
+          var url = String(values[rowIndex][subj.urlCol] || "").trim();
+          var sentiment = _reportColorToSentiment(backgrounds[rowIndex][subj.posCol] || "");
+          if (!url || !/^https?:\/\//i.test(url) || !sentiment) {
+            skipped++;
+            continue;
+          }
+          labels.push({ domain: url, query: subj.query, sentiment: sentiment, source: "manual_l1" });
+        }
+      }
+    }
+  }
+
+  return { labels: labels, processed: processed, skipped: skipped, errors: errors, errorSamples: [] };
+}
+
+/** Отправляет метки батчами, не прерываясь при ошибке отдельного батча. */
+function _importReportLabels(labels, secret) {
+  var totalImported = 0;
+  var totalSkipped = 0;
+  var totalErrors = 0;
+  var errorSamples = [];
+  var batchCount = Math.ceil(labels.length / IMPORT_BATCH_SIZE);
+
+  for (var b = 0; b < batchCount; b++) {
+    var batch = labels.slice(b * IMPORT_BATCH_SIZE, (b + 1) * IMPORT_BATCH_SIZE);
+    var result = _post("/labels/import", batch, secret);
+    if (result.ok && result.data) {
+      totalImported += result.data.imported || 0;
+      totalSkipped += result.data.skipped || 0;
+      totalErrors += result.data.errors || 0;
+      if (result.data.error_samples) errorSamples = errorSamples.concat(result.data.error_samples);
+    } else {
+      totalErrors += batch.length;
+      if (errorSamples.length < 5) errorSamples.push("батч " + (b + 1) + ": HTTP " + result.code);
+    }
+  }
+  return { imported: totalImported, skipped: totalSkipped, errors: totalErrors,
+    errorSamples: errorSamples.slice(0, 5) };
+}
+
+/**
+ * Stage 1: разовый импорт трёх исторических report-листов.
+ * Функция изолирована и намеренно не добавлена в меню.
+ */
+function importHistoricalEtalonsToDb() {
+  var ui = SpreadsheetApp.getUi();
+  var secret = _getSecret();
+  var webhookUrl = _getWebhookUrl();
+  if (!secret || !webhookUrl) {
+    ui.alert("Ошибка", "Задайте секрет и URL сервера в SERPlux → Настройки.", ui.ButtonSet.OK);
+    return;
+  }
+
+  var names = [
+    "Google — посл эталон разметки",
+    "Яндекс ру — посл эталон разметки",
+    "Яндекс ком — посл эталон разметки"
+  ];
+  var total = { processed: 0, imported: 0, skipped: 0, errors: 0 };
+  var details = [];
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  for (var i = 0; i < names.length; i++) {
+    var sheet = ss.getSheetByName(names[i]);
+    if (!sheet) {
+      total.errors++;
+      details.push(names[i] + ": лист не найден");
+      continue;
+    }
+    try {
+      var collected = _collectReportLabels(sheet, false);
+      var imported = collected.labels.length ? _importReportLabels(collected.labels, secret) : { imported: 0, skipped: 0, errors: 0 };
+      total.processed += collected.processed;
+      total.skipped += collected.skipped + (imported.skipped || 0);
+      total.imported += imported.imported || 0;
+      total.errors += collected.errors + (imported.errors || 0);
+      details.push(names[i] + ": обработано=" + collected.processed + ", импортировано=" + (imported.imported || 0));
+    } catch (e) {
+      total.errors++;
+      details.push(names[i] + ": ошибка " + e.message);
+    }
+  }
+
+  var summary = "Исторический импорт завершён.\n\n" + details.join("\n") +
+    "\n\nОбработано: " + total.processed +
+    "\nИмпортировано: " + total.imported +
+    "\nПропущено: " + total.skipped +
+    "\nОшибок: " + total.errors;
+  Logger.log("importHistoricalEtalonsToDb: " + summary.replace(/\n/g, " | "));
+  ui.alert("Готово", summary, ui.ButtonSet.OK);
+}
+
+/** Stage 2: подтверждаемый импорт исправлений из последней версии «Отчёт». */
+function importLatestReportToEtalon() {
+  var ui = SpreadsheetApp.getUi();
+  var secret = _getSecret();
+  var webhookUrl = _getWebhookUrl();
+  if (!secret || !webhookUrl) {
+    ui.alert("Ошибка", "Задайте секрет и URL сервера в SERPlux → Настройки.", ui.ButtonSet.OK);
+    return;
+  }
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(REPORT_SHEET_NAME);
+  if (!sheet) {
+    ui.alert("Ошибка", "Лист «" + REPORT_SHEET_NAME + "» не найден.", ui.ButtonSet.OK);
+    return;
+  }
+  var collected = _collectReportLabels(sheet, true);
+  if (collected.errors && !collected.labels.length) {
+    ui.alert("Ошибка", collected.errorSamples.join("\n"), ui.ButtonSet.OK);
+    return;
+  }
+  if (!collected.labels.length) {
+    ui.alert("Нет данных", "В последней версии нет валидных URL с распознанным цветом.", ui.ButtonSet.OK);
+    return;
+  }
+  var confirm = ui.alert(
+    "Зафиксировать исправления в эталон?",
+    "Будет импортировано " + collected.labels.length + " записей из последней версии «Отчёт»\n" +
+      "source=manual_l1, ключ domain + query, без geo.\n\nПродолжить?",
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  var imported = _importReportLabels(collected.labels, secret);
+  var summary = "Фиксация исправлений завершена.\n\n" +
+    "Валидных URL: " + collected.labels.length +
+    "\nИмпортировано: " + imported.imported +
+    "\nПропущено: " + (collected.skipped + imported.skipped) +
+    "\nОшибок: " + (collected.errors + imported.errors);
+  Logger.log("importLatestReportToEtalon: " + summary.replace(/\n/g, " | "));
+  ui.alert("Готово", summary, ui.ButtonSet.OK);
 }
 
 // ─── Разовый импорт эталона (НЕ в меню, запускать вручную через Run) ─────────

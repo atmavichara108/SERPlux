@@ -75,6 +75,33 @@ docker compose restart serplux
 10. curl http://localhost:8000/health — {"status":"ok","service":"serplux-webhook"}
 11. source .env && curl -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:8000/status — idle
 
+## После обновления эталона
+
+Этот раздел выполняется только после ручных действий:
+
+1. Проверить diff и тесты локально.
+2. Выполнить `/commit` через проектный workflow.
+3. Выполнить push в `origin/main`.
+4. Убедиться, что GitHub содержит нужный commit.
+
+После публикации кода на сервере:
+
+5. Сделать бэкап БД:
+   ```bash
+   ./backup_db.sh
+   ```
+6. Обновить код стандартным способом:
+   ```bash
+   ./deploy.sh
+   ```
+7. В Google Sheets обновить код Apps Script из `apps_script.gs`.
+8. Один раз вручную запустить `importHistoricalEtalonsToDb()` для трёх старых листов.
+9. В обычной работе после проверки цветов на листе «Отчёт» нажимать:
+   `SERPlux → Зафиксировать исправления в эталон`.
+10. Подтвердить импорт и проверить итоговое сообщение `imported/skipped/errors`.
+
+Автоматический импорт при редактировании или запуске сбора не выполняется.
+
 ## Миграция БД (если старая схема с таблицей results)
 
 После up -d, до первого прогона:

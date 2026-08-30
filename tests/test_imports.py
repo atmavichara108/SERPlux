@@ -12,6 +12,7 @@ test_imports.py — smoke-тест: все модули проекта импо�
 import importlib
 import sys
 import os
+from pathlib import Path
 
 import pytest
 
@@ -74,3 +75,19 @@ def test_all_modules_have_no_top_level_api_calls():
     """
     for name in MODULES:
         assert name in sys.modules or importlib.import_module(name) is not None
+
+
+def test_apps_script_manual_etalon_commands_are_explicit():
+    """Apps Script keeps both imports manual and out of the collection hook."""
+    script = (Path(PROJECT_ROOT) / "apps_script.gs").read_text(encoding="utf-8")
+    assert '"Зафиксировать исправления в эталон", "importLatestReportToEtalon"' in script
+    assert "function importHistoricalEtalonsToDb()" in script
+    assert "function importLatestReportToEtalon()" in script
+    assert "Google — посл эталон разметки" in script
+    assert "Яндекс ру — посл эталон разметки" in script
+    assert "Яндекс ком — посл эталон разметки" in script
+    assert "_collectReportLabels(sheet, true)" in script
+    assert "_reportColorToSentiment" in script
+    assert "source: \"manual_l1\"" in script
+    assert "onEdit" not in script
+    assert "importLatestReportToEtalon();" not in script
