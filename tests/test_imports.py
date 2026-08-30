@@ -79,7 +79,10 @@ def test_all_modules_have_no_top_level_api_calls():
 
 def test_apps_script_manual_etalon_commands_are_explicit():
     """Apps Script keeps both imports manual and out of the collection hook."""
-    script = (Path(PROJECT_ROOT) / "apps_script.gs").read_text(encoding="utf-8")
+    script_path = Path(PROJECT_ROOT) / "apps_script.gs"
+    if not script_path.exists():
+        pytest.skip("apps_script.gs is a client-side artifact and is not copied into the server image")
+    script = script_path.read_text(encoding="utf-8")
     assert '"Зафиксировать исправления в эталон", "importLatestReportToEtalon"' in script
     assert "function importHistoricalEtalonsToDb()" in script
     assert "function _normalizeHistoricalSheetName(name)" in script
