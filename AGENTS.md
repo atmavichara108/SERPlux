@@ -87,12 +87,12 @@ exception к общей Vault policy: SERPlux execution workflow полност�
 
 | Агент | Mode | Модель | Назначение | edit |
 |-------|------|--------|-----------|------|
-| **build** | primary | opencode-go/kimi-k2.7-code | Основная разработка | allow |
-| **plan** | primary | opencode-go/glm-5.2 | Планирование, анализ | deny |
-| **collector-dev** | subagent | opencode-go/kimi-k2.7-code | Topvisor API + сбор данных | allow |
-| **reviewer** | subagent | opencode-go/glm-5.2 | PASS/FAIL верификация | deny |
+| **build** | primary | opencode-go/gpt-5.6-luna | Основная разработка | allow |
+| **plan** | primary | opencode-go/gpt-5.6-luna | Планирование, анализ | deny |
+| **collector-dev** | subagent | opencode-go/gpt-5.6-luna | Topvisor API + сбор данных | allow |
+| **reviewer** | subagent | opencode-go/deepseek-v4-flash | PASS/FAIL верификация | deny |
 | **verifier** | subagent | opencode-go/deepseek-v4-flash | Acceptance-only PASS/FAIL по DoD | deny |
-| **ui-dev** | subagent | opencode-go/kimi-k2.7-code | Google Sheets UI (Apps Script) | allow |
+| **ui-dev** | subagent | opencode-go/gpt-5.6-luna | Google Sheets UI (Apps Script) | allow |
 | **infra-dev** | subagent | opencode-go/qwen3.7-plus | Docker, deploy, серверная инфра | allow |
 
 ### Команды-пайплайны

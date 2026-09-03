@@ -682,6 +682,41 @@ class TestRunStatusPersistence:
         assert "boom" in status["message"]
         assert status["finished_at"] is not None
 
+    def test_run_pipeline_persists_main_error_message(self, monkeypatch, client_db):
+        """Сообщение об ошибке из main.run() попадает в /status."""
+        import main
+
+        storage.create_client("acme", "Acme Corp", db_path=client_db)
+        monkeypatch.setattr(storage, "DB_PATH", client_db)
+        monkeypatch.setattr(
+            main,
+            "run",
+            lambda config: {
+                "exit_code": 1,
+                "stats": {"collected": 0},
+                "message": "Сбор не вернул строк: отчёт не построен",
+            },
+        )
+
+        webhook._run_lock.acquire()
+        try:
+            webhook._run_pipeline(
+                regions_map="map.json",
+                with_labels=True,
+                depth=10,
+                client_id="acme",
+                label_mode="auto",
+                force_relabel=False,
+            )
+        finally:
+            if webhook._run_lock.locked():
+                webhook._run_lock.release()
+
+        status = storage.get_run_status(db_path=client_db)
+        assert status["status"] == "error"
+        assert status["message"] == "Сбор не вернул строк: отчёт не построен"
+        assert status["stats"] == {"collected": 0}
+
 
 class TestClientProfilePipeline:
     """Тесты сборки config из профиля клиента в webhook.py."""

@@ -64,6 +64,15 @@ class TestMainPipelineParams:
         save_spy.assert_called_once()
         assert save_spy.call_args.kwargs["client_id"] == "client-a"
 
+    def test_empty_collection_is_reported_as_error(self, monkeypatch):
+        """Пустой сбор не должен маскироваться успешным статусом."""
+        monkeypatch.setattr(main_module, "collect", lambda config: [])
+
+        result = main_module.run({"client_id": "acme"})
+
+        assert result["exit_code"] == 1
+        assert result["message"] == "Сбор не вернул строк: отчёт не построен"
+
     def test_run_passes_label_params_to_labeler(self, mock_pipeline, sample_rows):
         """label_mode, force_relabel, client_id и provider_chain пробрасываются в labeler.label()."""
         label_spy = mock_pipeline

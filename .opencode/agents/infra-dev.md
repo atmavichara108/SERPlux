@@ -2,7 +2,7 @@
 ---
 description: Docker, docker-compose, deploy, CI/CD, серверная инфраструктура SERPlux. Не трогает код приложения.
 mode: subagent
-model: opencode-go/gpt-5.6-luna
+model: opencode-go/qwen3.7-plus
 temperature: 0.1
 steps: 15
 permission:

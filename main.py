@@ -42,7 +42,8 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
                 "saved_new": int,
                 "labeled": int,
                 "exported": int,
-            }
+            },
+            "message": str,  # присутствует при ошибке
         }
     """
     log.info("=== Старт прогона ===")
@@ -80,11 +81,12 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         rows = collect(runtime_config)
     except Exception as e:
         log.error("Сбой collect: %s", e)
-        return {"exit_code": 1, "stats": stats}
+        return {"exit_code": 1, "stats": stats, "message": f"Сбой collect: {e}"}
 
     if not rows:
-        log.warning("Нет данных для обработки")
-        return {"exit_code": 0, "stats": stats}
+        message = "Сбор не вернул строк: отчёт не построен"
+        log.error(message)
+        return {"exit_code": 1, "stats": stats, "message": message}
 
     log.info("Собрано строк: %s", len(rows))
     stats["collected"] = len(rows)

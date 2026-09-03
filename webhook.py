@@ -315,7 +315,10 @@ def _run_pipeline(
             _set_status("ok", "Прогон завершён успешно", stats=stats)
             log.info("Прогон завершён успешно")
         else:
-            _set_status("error", "Прогон завершился с ошибкой (exit_code=%d)" % exit_code, stats=stats)
+            message = (result.get("message") if isinstance(result, dict) else None) or (
+                "Прогон завершился с ошибкой (exit_code=%d)" % exit_code
+            )
+            _set_status("error", message, stats=stats)
             log.error("Прогон завершился с ошибкой: exit_code=%d", exit_code)
     except Exception as e:
         _set_status("error", str(e))
