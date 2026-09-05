@@ -108,3 +108,24 @@ def test_geo_display_values_nonempty():
         assert isinstance(display, str) and display.strip(), (
             f"GEO_DISPLAY['{geo_key}'] пустое или не строка: {display!r}"
         )
+
+
+def test_known_endpoints_contains_three_entries():
+    """KNOWN_ENDPOINTS содержит 3 известных OpenAI-совместимых endpoint'а."""
+    assert isinstance(config.KNOWN_ENDPOINTS, dict)
+    assert len(config.KNOWN_ENDPOINTS) == 3
+    assert set(config.KNOWN_ENDPOINTS) == {"opencode-zen", "openrouter", "openai"}
+    assert config.KNOWN_ENDPOINTS["opencode-zen"] == "https://opencode.ai/zen/v1/chat/completions"
+    assert config.KNOWN_ENDPOINTS["openrouter"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert config.KNOWN_ENDPOINTS["openai"] == "https://api.openai.com/v1/chat/completions"
+
+
+def test_zen_provider_models_are_free_only():
+    """Модели opencode-zen — только бесплатные (literal *-free или big-pickle)."""
+    zen = config.PROVIDERS["opencode-zen"]
+    for model in zen["models"]:
+        assert "-free" in model or model == "big-pickle", (
+            f"Модель '{model}' не является бесплатной (нет '-free' и не big-pickle)"
+        )
+    # default_model — одна из доступных моделей
+    assert zen["default_model"] in zen["models"]

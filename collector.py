@@ -52,7 +52,11 @@ def collect(config: dict[str, Any]) -> list[Row]:
     Собирает снимки выдачи по всем связкам searcher×geo из config.
 
     config:
-        depth: int — глубина проверки (зарезервировано)
+        depth: int — запрошенная глубина выдачи (10/20/50/100).
+            ВАЖНО: Topvisor API не принимает depth на уровне запроса
+            (ни checker/go, ни snapshots_2/history). Фактическая глубина снимка
+            = настройка проекта (глубина сбора позиций). depth пробрасывается
+            в topvisor.py только для диагностики; при расхождении логируется WARNING.
         searchers: list[str] — ["google", "yandex_ru", "yandex_com"]
         geos: list[str] — ["Литва", "Германия", ...]
 

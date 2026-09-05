@@ -6,6 +6,24 @@
 
 ## Сделано
 
+- **Session: 2026-09-05 — Provider UI backend v1.0.2 (backend-часть):**
+  - `config.py`: добавлен `KNOWN_ENDPOINTS` (opencode-zen, openrouter, openai);
+    модели opencode-zen актуализированы до free-моделей каталога Zen
+    (mimo-v2.5-free, ling-3.0-flash-fin-free, nemotron-3-ultra-free,
+    nemotron-3.5-lightning-free, muse-spark-1.3-contributor-free, big-pickle);
+    `default_model` = `mimo-v2.5-free`. `deepseek-v4-flash-free` и
+    `north-mini-code-free` отсутствуют в каталоге Zen — исключены.
+  - `webhook.py`: новый `POST /providers/discover` (Bearer auth, ключ из env
+    по имени переменной, GET /models, фильтр *-free, тест каждой модели,
+    статусы ok/error/timeout, 400 при пустом ключе, 502 при сетевых ошибках);
+    `POST /providers/register` — endpoint опционален (fallback на
+    KNOWN_ENDPOINTS, 422 при неизвестном provider_id).
+  - `deploy.sh`: `docker compose up -d --force-recreate` (env reload после
+    смены ключей); `docs/deploy.md`: раздел про env reload.
+  - Тесты: 10 новых (discover 6, register KNOWN_ENDPOINTS 3, config 2),
+    обновлён тест списка моделей opencode-zen. Targeted 91 passed,
+    полный набор 277 passed.
+
 - **Session: 2026-08-30 — Dynamic etalon v1.0.2:** добавлены изолированный
   импорт трёх исторических report-листов и явная menu-команда для фиксации
   исправлений из последней версии `Отчёт`. Сохранён контракт `domain + query`

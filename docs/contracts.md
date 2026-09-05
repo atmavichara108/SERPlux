@@ -165,8 +165,7 @@ DEFAULT_PROVIDER: str = "opencode-zen"
 
 **Метод:** `GET /providers`
 **Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
-**Ответ:** список провайдеров с полями `id`, `enabled`, `priority`, `default_model`, `models`.
-Только чтение — POST/PUT/DELETE не предусмотрены.
+**Ответ:** список провайдеров с полями `id`, `enabled`, `priority`, `default_model`, `models`, `endpoint`, `api_key_env_var`.
 
 ```json
 [
@@ -174,11 +173,73 @@ DEFAULT_PROVIDER: str = "opencode-zen"
     "id": "opencode-zen",
     "enabled": true,
     "priority": 1,
-    "default_model": "qwen3.6-plus",
-    "models": ["qwen3.6-plus"]
+    "default_model": "mimo-v2.5-free",
+    "models": ["mimo-v2.5-free", "nemotron-3-ultra-free"],
+    "endpoint": "https://opencode.ai/zen/v1/chat/completions",
+    "api_key_env_var": "OPENCODE_API_KEY"
   }
 ]
 ```
+
+## webhook.py — POST /providers/register
+
+**Метод:** `POST /providers/register`
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Тело:**
+```python
+{
+    "provider_id": str,              # slug, например "openrouter"
+    "enabled": bool = True,
+    "priority": int = 999,
+    "default_model": str,            # одна из models
+    "models": list[str],             # рабочие модели (после discover)
+    "endpoint": str | None = None,   # если не передан — берётся из config.KNOWN_ENDPOINTS
+    "api_key_env_var": str,          # имя env-переменной, НЕ сам ключ
+}
+```
+
+**Поведение:**
+- Сам API-ключ не принимается и не хранится — сервер читает его из env по `api_key_env_var`.
+- `endpoint` валидируется (`_validate_endpoint`: только https, без localhost/private/link-local).
+- Провайдер хранится в памяти (`config.PROVIDERS`) — после перезапуска контейнера нужно добавить в `config.py` или `.env`.
+- 409 при существующем provider_id, 422 при неизвестном provider_id без endpoint или невалидном endpoint.
+
+## webhook.py — POST /providers/discover
+
+**Метод:** `POST /providers/discover`
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Тело:**
+```python
+{
+    "provider_id": str,
+    "endpoint": str,          # OpenAI-совместимый, валидируется (https, не private)
+    "api_key_env_var": str,   # имя env-переменной, НЕ сам ключ
+}
+```
+
+**Поведение:**
+- Сервер читает ключ из env по имени переменной (пусто → 400).
+- `GET {base}/models` (суффикс `/chat/completions` автоматически убирается).
+- Фильтрует модели: только id с literal `-free`, лимит `MAX_DISCOVER_MODELS = 20`.
+- Каждую free-модель тестирует `POST {endpoint}` с `max_tokens=1` (timeout 10s).
+- Ошибки сети/парсинга → 502.
+
+**Ответ:**
+```json
+{
+  "provider_id": "openrouter",
+  "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+  "models": [{"id": "model-free", "status": "ok"}],
+  "working": ["model-free"]
+}
+```
+
+## webhook.py — PUT/DELETE /providers/{provider_id}
+
+- `PUT /providers/{provider_id}` — обновляет `enabled`, `priority`, `default_model`, `models`, `endpoint`, `api_key_env_var` (только переданные поля). 404 если провайдер не найден.
+- `DELETE /providers/{provider_id}` — удаляет провайдера. Нельзя удалить последнего включённого (400).
 
 ## labeler.py
 
@@ -270,6 +331,7 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
     "label_only": bool = False,                       # если True — только разметить существующие данные
     "force_rebuild_report": bool = False,             # перестроить отчёт с нуля
     "provider_chain": str | None = None,              # фильтр провайдеров LLM (через запятую)
+    "searchers": list[str] | None = None,             # поисковики текущего прогона: ["google","yandex_ru","yandex_com"]; пустой список/неизвестные значения → 422
 }
 ```
 

@@ -55,6 +55,20 @@ class RunRequest(BaseModel):
     provider_chain: str | None = None  # цепочка провайдеров (через запятую)
     model: str | None = None  # конкретная модель LLM (override default_model)
     label_only: bool = False  # только разметка существующих данных
+    searchers: list[str] | None = None  # поисковики для текущего прогона (google/yandex_ru/yandex_com)
+
+    @field_validator("searchers")
+    @classmethod
+    def _validate_searchers(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        allowed = {"google", "yandex_ru", "yandex_com"}
+        if not v:
+            raise ValueError("searchers не может быть пустым списком")
+        unknown = set(v) - allowed
+        if unknown:
+            raise ValueError(f"searchers содержит неизвестные значения: {sorted(unknown)}")
+        return v
 
     @field_validator("label_mode")
     @classmethod
@@ -141,6 +155,7 @@ def _build_client_config(
         "depth",
         "label_mode",
         "force_relabel",
+        "searchers",
     }
 
     config = dict(DEFAULT_CONFIG)
@@ -187,6 +202,7 @@ def _run_pipeline(
     provider_chain: str | None = None,
     model: str | None = None,
     label_only: bool = False,
+    searchers: list[str] | None = None,
 ) -> None:
     """Запускает полный пайплайн или только построение/разметку/сбор в фоновом потоке."""
     started_at = datetime.now(timezone.utc).isoformat()
@@ -294,6 +310,8 @@ def _run_pipeline(
             request_params["provider_chain"] = provider_chain
         if model:
             request_params["model"] = model
+        if searchers:
+            request_params["searchers"] = searchers
         # regions_map из тела запроса пока сохраняем для обратной совместимости,
         # но профиль клиента может его перекрыть
         if regions_map:
@@ -392,6 +410,7 @@ def trigger_run(
             body.provider_chain,
             body.model,
             body.label_only,
+            body.searchers,
         ),
         daemon=True,
     )
@@ -574,8 +593,63 @@ class ProviderRegisterRequest(BaseModel):
     priority: int = 999
     default_model: str
     models: list[str]
-    endpoint: str
+    endpoint: str | None = None  # если не передан — берётся из config.KNOWN_ENDPOINTS
     api_key_env_var: str
+
+
+class ProviderDiscoverRequest(BaseModel):
+    """Тело запроса на auto-discovery бесплатных моделей провайдера."""
+    provider_id: str
+    endpoint: str
+    api_key_env_var: str  # имя переменной окружения, НЕ сам ключ
+
+
+MAX_DISCOVER_MODELS = 20  # лимит тестируемых free-моделей за один discover
+
+
+def _models_url(endpoint: str) -> str:
+    """Возвращает URL списка моделей для OpenAI-совместимого endpoint.
+
+    Если endpoint заканчивается на /chat/completions — убираем суффикс
+    (список моделей живёт на /models базового пути).
+    """
+    suffix = "/chat/completions"
+    if endpoint.endswith(suffix):
+        return endpoint[: -len(suffix)] + "/models"
+    return endpoint.rstrip("/") + "/models"
+
+
+def _validate_endpoint(endpoint: str) -> None:
+    """Защита от SSRF: только https, публичный хост, без localhost/private/link-local."""
+    from urllib.parse import urlparse
+    import ipaddress
+
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="endpoint должен использовать https",
+        )
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="endpoint не содержит host",
+        )
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"endpoint указывает на недопустимый адрес: {host}",
+        )
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"endpoint указывает на недопустимый хост: {host}",
+        )
 
 
 @app.post("/providers/register", status_code=status.HTTP_201_CREATED)
@@ -584,22 +658,40 @@ def register_provider(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     """Регистрирует нового LLM-провайдера в runtime.
-    
+
     Провайдер добавляется в память (config.PROVIDERS) и доступен для разметки.
     При перезапуске контейнера нужно добавить провайдер в config.py или .env.
     Возвращает 409, если provider_id уже существует.
+
+    endpoint опционален: если не передан, берётся из config.KNOWN_ENDPOINTS
+    по provider_id; если там нет — 422. api_key_env_var обязателен; сам ключ
+    не принимается и не хранится.
     """
     _verify_token(authorization)
-    
+
     if not body.api_key_env_var.startswith(("OPENCODE_", "OPENAI_", "ANTHROPIC_", "GOOGLE_", "AZURE_")):
         log.warning("register_provider: подозрительное имя переменной %s", body.api_key_env_var)
-    
+
+    endpoint = body.endpoint
+    if not endpoint:
+        endpoint = config.KNOWN_ENDPOINTS.get(body.provider_id)
+        if not endpoint:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"endpoint не передан и неизвестен для provider_id '{body.provider_id}'. "
+                    "Передайте endpoint явно или используйте известный provider_id "
+                    f"({', '.join(sorted(config.KNOWN_ENDPOINTS))})"
+                ),
+            )
+    _validate_endpoint(endpoint)
+
     success = config.register_provider(body.provider_id, {
         "enabled": body.enabled,
         "priority": body.priority,
         "default_model": body.default_model,
         "models": body.models,
-        "endpoint": body.endpoint,
+        "endpoint": endpoint,
         "api_key_env_var": body.api_key_env_var,
     })
     
@@ -614,6 +706,129 @@ def register_provider(
         "provider_id": body.provider_id,
         "message": f"Провайдер '{body.provider_id}' зарегистрирован",
     }, status_code=status.HTTP_201_CREATED)
+
+
+@app.post("/providers/discover")
+def discover_provider_models(
+    body: ProviderDiscoverRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Auto-discovery бесплатных моделей провайдера.
+
+    - Читает API-ключ сервером из env по имени переменной api_key_env_var
+      (сам ключ в теле не передаётся).
+    - Делает GET {endpoint}/models с Authorization: Bearer <key>.
+    - Фильтрует модели: только id, содержащие literal "-free".
+    - Для каждой free-модели делает тестовый POST {endpoint} с минимальным
+      payload и собирает статус ok/error/timeout.
+    - Возвращает {provider_id, endpoint, models: [{id, status}], working: [...]}.
+
+    Ошибки сети/парсинга — 502 с detail, без падения.
+    """
+    _verify_token(authorization)
+    _validate_endpoint(body.endpoint)
+
+    api_key = os.environ.get(body.api_key_env_var, "")
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Переменная окружения '{body.api_key_env_var}' пуста или не задана. "
+                "Укажите имя переменной, в которой лежит API-ключ провайдера."
+            ),
+        )
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    # 1. Получаем список моделей
+    models_url = _models_url(body.endpoint)
+    try:
+        resp = requests.get(
+            models_url,
+            headers=headers,
+            timeout=(10, 15),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.Timeout:
+        log.error("discover: timeout при GET %s", models_url)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Таймаут при запросе моделей {models_url}",
+        ) from None
+    except requests.exceptions.RequestException as exc:
+        log.error("discover: ошибка сети при GET %s: %s", models_url, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Не удалось получить модели от {models_url}: {exc}",
+        ) from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        log.error("discover: ошибка парсинга ответа %s: %s", models_url, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Некорректный ответ от {models_url}: {exc}",
+        ) from exc
+
+    # 2. Извлекаем id моделей (поддерживаем data: [...] и data.models: [...])
+    try:
+        if isinstance(data, list):
+            raw_models = data
+        else:
+            raw_models = data.get("data", [])
+        model_ids = []
+        for m in raw_models:
+            if isinstance(m, dict) and m.get("id"):
+                model_ids.append(str(m["id"]))
+            elif isinstance(m, str):
+                model_ids.append(m)
+    except Exception as exc:  # noqa: BLE001
+        log.error("discover: ошибка извлечения id моделей: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Некорректная структура моделей от {body.endpoint}: {exc}",
+        ) from exc
+
+    # 3. Фильтруем только free-модели (literal "-free"), лимит MAX_DISCOVER_MODELS
+    free_ids = [mid for mid in model_ids if "-free" in mid][:MAX_DISCOVER_MODELS]
+
+    # 4. Тестируем каждую free-модель
+    models_status: list[dict] = []
+    working: list[str] = []
+    for mid in free_ids:
+        status_val = "error"
+        try:
+            test_resp = requests.post(
+                body.endpoint,
+                headers=headers,
+                json={
+                    "model": mid,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                },
+                timeout=(10, 10),
+            )
+            if test_resp.status_code < 400:
+                status_val = "ok"
+                working.append(mid)
+            else:
+                status_val = "error"
+        except requests.exceptions.Timeout:
+            status_val = "timeout"
+        except requests.exceptions.RequestException:
+            status_val = "error"
+        models_status.append({"id": mid, "status": status_val})
+
+    log.info(
+        "discover: provider=%s endpoint=%s free_models=%s working=%s",
+        body.provider_id, body.endpoint, len(free_ids), working,
+    )
+
+    return JSONResponse({
+        "provider_id": body.provider_id,
+        "endpoint": body.endpoint,
+        "models": models_status,
+        "working": working,
+    })
 
 
 class ProviderUpdateRequest(BaseModel):

@@ -9,7 +9,7 @@
 # 2. git pull origin main
 # 3. Бэкап БД (serplux.db.bak.YYYY-MM-DD-HHMMSS)
 # 4. docker compose build
-# 5. docker compose up -d
+# 5. docker compose up -d --force-recreate (пересоздание, чтобы env из .env подтянулся)
 # 6. Health-check (поллинг до 3 раз)
 # 7. Миграция БД (migrate.py — идемпотентный)
 # 8. Финальный health-check
@@ -98,10 +98,12 @@ else
 fi
 echo ""
 
-# Шаг 4: docker compose up -d
-log_info "Шаг 4/8: docker compose up -d"
-if docker compose up -d; then
-    log_info "Контейнер запущен"
+# Шаг 4: docker compose up -d --force-recreate
+# --force-recreate пересоздаёт контейнер, чтобы env из .env подтянулся после
+# смены API-ключей. Обычный `docker compose restart` НЕ перечитывает .env.
+log_info "Шаг 4/8: docker compose up -d --force-recreate"
+if docker compose up -d --force-recreate; then
+    log_info "Контейнер пересоздан и запущен (env из .env подтянут)"
 else
     log_error "Ошибка при запуске контейнера"
     exit 1

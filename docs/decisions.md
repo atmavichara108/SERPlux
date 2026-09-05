@@ -1,6 +1,47 @@
 
 # Лог архитектурных решений (ADR)
 
+## 2026-09-05 — ADR: Provider auto-discovery, KNOWN_ENDPOINTS и free-модели Zen
+
+**Контекст:** Пользователь добавлял провайдера вручную (endpoint, модели, ключ).
+Нужно упростить: встроенные endpoint'ы, безопасное добавление ключа (по имени
+env-переменной, без передачи самого ключа), auto-discovery бесплатных моделей.
+Параллельно актуализирован список моделей opencode-zen: только бесплатные.
+
+**Решение:**
+1. **`config.KNOWN_ENDPOINTS`** — dict известных OpenAI-совместимых endpoint'ов:
+   `opencode-zen`, `openrouter`, `openai` (chat/completions).
+2. **`POST /providers/discover`** (Bearer auth):
+   - Тело `{provider_id, endpoint, api_key_env_var}` — ключ НЕ передаётся,
+     сервер читает его из env по имени переменной (пусто → 400).
+   - `GET {endpoint}/models` с Bearer-ключом, timeout (10, 15).
+   - Фильтр только literal `*-free` моделей.
+   - Тестовый `POST {endpoint}` с `{"model": id, "messages": [{"role":"user","content":"ping"}], "max_tokens": 1}`,
+     timeout (10, 10); статусы ok/error/timeout.
+   - Ответ `{provider_id, endpoint, models: [{id, status}], working: [id,...]}`.
+   - Сетевые/парсинг-ошибки → 502 с detail, без падения.
+3. **`POST /providers/register`**: `endpoint` опционален — берётся из
+   `KNOWN_ENDPOINTS` по provider_id; неизвестный provider_id без endpoint → 422.
+   Сам ключ не принимается и не хранится.
+4. **Free-модели opencode-zen** (актуальный каталог Zen на 2026-09-05):
+   `mimo-v2.5-free`, `ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`,
+   `nemotron-3.5-lightning-free`, `muse-spark-1.3-contributor-free`, `big-pickle`.
+   - `deepseek-v4-flash-free` и `north-mini-code-free` **отсутствуют** в каталоге
+     Zen (есть только платный `deepseek-v4-flash`) — исключены.
+   - `big-pickle` — free, но id без literal `-free`; включён явно (спека v1.0.2).
+   - `default_model` = `mimo-v2.5-free` (была в прежнем списке, стабильная).
+5. **`deploy.sh`**: `docker compose up -d --force-recreate` — env из `.env`
+   подтягивается после смены ключей (restart не пересоздаёт контейнер).
+   Задокументировано в `docs/deploy.md`.
+
+**Следствия:** UI (Apps Script) может вызывать `/providers/discover` для
+автоподбора free-моделей без знания endpoint'а и без передачи ключа.
+`GET /providers` уже возвращал `endpoint` — контракт не менялся.
+
+**Статус:** Принято и реализовано (backend-часть v1.0.2)
+
+---
+
 ## 2026-08-30 — ADR: Явная фиксация исправлений в эталон
 
 **Контекст:** Цвета в накопительном отчёте являются ручной проверкой заказчика.

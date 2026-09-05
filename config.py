@@ -92,20 +92,34 @@ def setup_logging(name: str | None = None) -> logging.Logger:
 
 # ─── Провайдеры LLM ───────────────────────────────────────────────────────────
 
+# Известные OpenAI-совместимые endpoint'ы (chat/completions).
+# Используются в POST /providers/register, когда endpoint не передан явно.
+KNOWN_ENDPOINTS: dict[str, str] = {
+    "opencode-zen": "https://opencode.ai/zen/v1/chat/completions",
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+    "openai": "https://api.openai.com/v1/chat/completions",
+}
+
+# Бесплатные модели OpenCode Zen (актуальный каталог на 2026-09-05).
+# Только free-модели: literal `*-free` в id + big-pickle (free, но без суффикса).
+# Примечание: deepseek-v4-flash-free и north-mini-code-free отсутствуют в каталоге
+# Zen (см. docs/decisions.md / отчёт build), поэтому не включены.
+ZEN_FREE_MODELS: list[str] = [
+    "mimo-v2.5-free",
+    "ling-3.0-flash-fin-free",
+    "nemotron-3-ultra-free",
+    "nemotron-3.5-lightning-free",
+    "muse-spark-1.3-contributor-free",
+    "big-pickle",
+]
+
 PROVIDERS: dict[str, dict] = {
     "opencode-zen": {
         "enabled": True,
         "priority": 1,
-        "default_model": os.environ.get("OPENCODE_MODEL", "qwen3.6-plus"),
-        "models": [
-            "qwen3.6-plus",
-            "big-pickle",
-            "deepseek-v4-flash-free",
-            "mimo-v2.5-free",
-            "north-mini-code-free",
-            "nemotron-3-ultra-free",
-        ],
-        "endpoint": "https://opencode.ai/zen/v1/chat/completions",
+        "default_model": os.environ.get("OPENCODE_MODEL", "mimo-v2.5-free"),
+        "models": list(ZEN_FREE_MODELS),
+        "endpoint": KNOWN_ENDPOINTS["opencode-zen"],
         "api_key_env_var": "OPENCODE_API_KEY",
     },
 }

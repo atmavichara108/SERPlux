@@ -98,3 +98,57 @@ def test_apps_script_manual_etalon_commands_are_explicit():
     assert "source: \"manual_l1\"" in script
     assert "onEdit" not in script
     assert "importLatestReportToEtalon();" not in script
+
+
+def test_apps_script_searcher_checkboxes_in_settings_template():
+    """Searcher checkboxes присутствуют в SETTINGS_TEMPLATE листа «Настройки»."""
+    script_path = Path(PROJECT_ROOT) / "apps_script.gs"
+    if not script_path.exists():
+        pytest.skip("apps_script.gs is a client-side artifact and is not copied into the server image")
+    script = script_path.read_text(encoding="utf-8")
+
+    # Проверяем именно блок SETTINGS_TEMPLATE, а не просто наличие строк в файле
+    template_start = script.index("var SETTINGS_TEMPLATE = [")
+    template_end = script.index("];", template_start)
+    template_block = script[template_start:template_end]
+
+    assert '"searcher_google"' in template_block
+    assert '"searcher_yandex_ru"' in template_block
+    assert '"searcher_yandex_com"' in template_block
+    # По умолчанию все три поисковика выбраны
+    assert '"true"' in template_block
+
+    # _readSettings должен читать их в settings.searchers
+    assert "settings.searchers.google" in script
+    assert "settings.searchers.yandex_ru" in script
+    assert "settings.searchers.yandex_com" in script
+
+    # runCollection должен передавать searchers в /run и валидировать пустой выбор
+    assert "payload.searchers = selectedSearchers" in script
+    assert "Не выбран ни один поисковик" in script
+
+
+def test_apps_script_provider_discover_ui_does_not_ask_for_api_key():
+    """_addProviderDialog использует preset endpoint'ы и не запрашивает сам API-ключ."""
+    script_path = Path(PROJECT_ROOT) / "apps_script.gs"
+    if not script_path.exists():
+        pytest.skip("apps_script.gs is a client-side artifact and is not copied into the server image")
+    script = script_path.read_text(encoding="utf-8")
+
+    # UI вызывает auto-discovery моделей
+    assert '"/providers/discover"' in script
+    assert "api_key_env_var" in script
+
+    # Preset endpoint'ы: выбор из списка, а не ручной ввод
+    assert "PROVIDER_ENDPOINT_PRESETS" in script
+    assert "https://opencode.ai/zen/v1/chat/completions" in script
+    assert "https://openrouter.ai/api/v1/chat/completions" in script
+    assert "https://api.openai.com/v1/chat/completions" in script
+    assert "Введите endpoint" not in script
+
+    # Сам ключ не запрашивается: только имя env-переменной
+    assert "Введите API ключ" not in script
+
+    # Пустой working из discover -> провайдер не регистрируется
+    assert "Нет рабочих моделей" in script
+    assert "провайдер НЕ зарегистрирован".lower() in script.lower()

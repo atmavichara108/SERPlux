@@ -55,7 +55,21 @@ var SETTINGS_TEMPLATE = [
   ["report_date",          "latest",   "Дата отчёта: latest или YYYY-MM-DD"],
   ["provider_chain",       "opencode-zen", "Цепочка провайдеров LLM (через запятую)"],
   ["model",                "",             "Модель LLM (пусто = default_model провайдера)"],
-  ["status",               "idle",     "Статус последнего прогона (обновляется автоматически)"]
+  ["status",               "idle",     "Статус последнего прогона (обновляется автоматически)"],
+  ["searcher_google",      "true",     "Поисковик Google: true или false (применяется к текущему прогону)"],
+  ["searcher_yandex_ru",   "true",     "Поисковик Яндекс (ru): true или false (применяется к текущему прогону)"],
+  ["searcher_yandex_com",  "true",     "Поисковик Яндекс (com): true или false (применяется к текущему прогону)"]
+];
+
+/**
+ * Известные endpoint'ы LLM-провайдеров (зеркалит config.KNOWN_ENDPOINTS на сервере).
+ * Пользователь выбирает из списка, ручной ввод endpoint не поддерживается.
+ * Формат: [id провайдера, URL endpoint].
+ */
+var PROVIDER_ENDPOINT_PRESETS = [
+  ["opencode-zen", "https://opencode.ai/zen/v1/chat/completions"],
+  ["openrouter",   "https://openrouter.ai/api/v1/chat/completions"],
+  ["openai",       "https://api.openai.com/v1/chat/completions"]
 ];
 
 // ─── Модуль 1: Меню (§4.3) ───────────────────────────────────────────────────
@@ -224,6 +238,25 @@ function deleteAndRecreateSettingsSheet() {
 }
 
 /**
+ * Находит номер строки (1-indexed) по ключу в колонке A листа «Настройки».
+ * Устойчив к сдвигам строк в шаблоне (в отличие от хардкодированных номеров).
+ *
+ * @param {Sheet} sheet — лист «Настройки»
+ * @param {string} key — ключ параметра (например "searcher_google")
+ * @return {number} номер строки или -1, если ключ не найден
+ */
+function _findSettingsRow(sheet, key) {
+  var data = sheet.getDataRange().getValues();
+  var needle = String(key).toLowerCase();
+  for (var i = 0; i < data.length; i++) {
+    if (String(data[i][0]).trim().toLowerCase() === needle) {
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+/**
  * Создаёт или пересоздаёт лист «Настройки» с шаблоном ключей и Data Validation.
  * Рабочая замена initSettingsSheet: минимальный набор операций, который не падает
  * с «Сервису Таблицы недоступен» на боевом документе.
@@ -301,6 +334,26 @@ function initSettingsSheetSafe() {
     );
   } catch (e) {
     Logger.log("initSettingsSheetSafe: ошибка валидации label_mode: %s", e.message);
+  }
+
+  // searcher_* — checkbox поисковиков: только true/false.
+  // Строки ищем по ключу, т.к. их номер меняется при расширении шаблона.
+  var searcherKeys = ["searcher_google", "searcher_yandex_ru", "searcher_yandex_com"];
+  for (var s = 0; s < searcherKeys.length; s++) {
+    try {
+      var sRow = _findSettingsRow(sheet, searcherKeys[s]);
+      if (sRow !== -1) {
+        sheet.getRange(sRow, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .requireValueInList(["true", "false"], true)
+            .setAllowInvalid(false)
+            .setHelpText("true — использовать поисковик в прогоне, false — пропустить")
+            .build()
+        );
+      }
+    } catch (e) {
+      Logger.log("initSettingsSheetSafe: ошибка валидации " + searcherKeys[s] + ": %s", e.message);
+    }
   }
 
   // Косметика — каждая операция отдельно, не критична
@@ -469,6 +522,26 @@ function initSettingsSheet() {
     Logger.log("initSettingsSheet: ошибка валидации provider_chain: %s", e.message);
   }
 
+  // searcher_* — checkbox поисковиков: только true/false.
+  // Строки ищем по ключу, т.к. их номер меняется при расширении шаблона.
+  var searcherKeys = ["searcher_google", "searcher_yandex_ru", "searcher_yandex_com"];
+  for (var s = 0; s < searcherKeys.length; s++) {
+    try {
+      var sRow = _findSettingsRow(sheet, searcherKeys[s]);
+      if (sRow !== -1) {
+        sheet.getRange(sRow, 2).setDataValidation(
+          SpreadsheetApp.newDataValidation()
+            .requireValueInList(["true", "false"], true)
+            .setAllowInvalid(false)
+            .setHelpText("true — использовать поисковик в прогоне, false — пропустить")
+            .build()
+        );
+      }
+    } catch (e) {
+      Logger.log("initSettingsSheet: ошибка валидации " + searcherKeys[s] + ": %s", e.message);
+    }
+  }
+
   // client_id (строка 1) — последний, потому что может потребовать сетевой запрос к серверу.
   // Сетевой сбой не должен мешать остальному листу.
   try {
@@ -497,7 +570,7 @@ function initSettingsSheet() {
  *
  * @return {object} {clientId, depth, withLabels, labelMode, date,
  *                   forceRelabel, forceRebuildReport, reportDate,
- *                   providerChain, status}
+ *                   providerChain, status, searchers}
  */
 function _readSettings() {
   var defaults = {
@@ -511,7 +584,8 @@ function _readSettings() {
     reportDate: DEFAULT_REPORT_DATE,
     providerChain: "",
     model: "",
-    status: "idle"
+    status: "idle",
+    searchers: { google: true, yandex_ru: true, yandex_com: true }
   };
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -566,6 +640,18 @@ function _readSettings() {
         break;
       case "status":
         settings.status = String(val).trim();
+        break;
+      case "searcher_google":
+        if (!settings.searchers) settings.searchers = {};
+        settings.searchers.google = String(val).trim().toLowerCase() !== "false";
+        break;
+      case "searcher_yandex_ru":
+        if (!settings.searchers) settings.searchers = {};
+        settings.searchers.yandex_ru = String(val).trim().toLowerCase() !== "false";
+        break;
+      case "searcher_yandex_com":
+        if (!settings.searchers) settings.searchers = {};
+        settings.searchers.yandex_com = String(val).trim().toLowerCase() !== "false";
         break;
     }
   }
@@ -631,6 +717,24 @@ function runCollection() {
     return;
   }
 
+  // Собираем выбранные поисковики со строк searcher_* листа «Настройки».
+  // Отсутствие строки на старом листе трактуется как «выбран» (обратная совместимость).
+  var searchers = settings.searchers || {};
+  var selectedSearchers = [];
+  if (searchers.google !== false) selectedSearchers.push("google");
+  if (searchers.yandex_ru !== false) selectedSearchers.push("yandex_ru");
+  if (searchers.yandex_com !== false) selectedSearchers.push("yandex_com");
+
+  if (selectedSearchers.length === 0) {
+    ui.alert(
+      "Ошибка",
+      "Не выбран ни один поисковик.\nОтметьте хотя бы один на листе «Настройки»:\n" +
+      "  searcher_google / searcher_yandex_ru / searcher_yandex_com",
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
   // 3. Диалог подтверждения
   var labelText = settings.withLabels
     ? "вкл (" + settings.labelMode + ")"
@@ -640,6 +744,7 @@ function runCollection() {
     "Глубина: " + settings.depth + "\n" +
     "Разметка: " + labelText + "\n" +
     "Дата: " + settings.date + "\n" +
+    "Поисковики: " + selectedSearchers.join(", ") + "\n" +
     "Переразметка: " + (settings.forceRelabel ? "да" : "нет") + "\n" +
     "Перестроить отчёт: " + (settings.forceRebuildReport ? "да" : "нет") + "\n" +
     "Провайдер: " + (settings.providerChain || "по умолчанию");
@@ -659,7 +764,8 @@ function runCollection() {
     label_mode: settings.labelMode,
     force_relabel: settings.forceRelabel,
     date: settings.date,
-    force_rebuild_report: settings.forceRebuildReport
+    force_rebuild_report: settings.forceRebuildReport,
+    searchers: selectedSearchers
   };
   if (settings.providerChain) {
     payload.provider_chain = settings.providerChain;
@@ -1306,69 +1412,181 @@ function manageProviders() {
 
 /**
  * Диалог добавления нового провайдера.
+ *
+ * Шаг 1: ID провайдера (slug).
+ * Шаг 2: выбор endpoint из preset'ов (opencode-zen / openrouter / openai) — без ручного ввода.
+ * Шаг 3: имя env-переменной для API-ключа (сам ключ НЕ запрашивается и не хранится).
+ * Шаг 4: тест free-моделей через POST /providers/discover, выбор default_model из рабочих.
+ * Шаг 5: приоритет (число, по умолчанию 999).
+ *
+ * Затем POST /providers/register. Если discover вернул пустой список рабочих моделей —
+ * провайдер не регистрируется.
  */
 function _addProviderDialog(ui, secret) {
+  // Шаг 1: ID провайдера (slug)
   var idPrompt = ui.prompt(
-    "Добавить провайдера",
-    "Введите ID провайдера (например: openrouter):",
+    "Добавить провайдера (шаг 1/5)",
+    "Введите ID провайдера (slug, латиница).\nНапример: openrouter",
     ui.ButtonSet.OK_CANCEL
   );
-  if (idPrompt.getResponseText() === "") return;
-  var providerId = String(idPrompt.getResponseText()).trim();
+  if (idPrompt.getSelectedButton() !== ui.Button.OK) return;
+  var providerId = String(idPrompt.getResponseText()).trim().toLowerCase();
 
+  if (!providerId) {
+    ui.alert("Ошибка", "ID провайдера не может быть пустым.", ui.ButtonSet.OK);
+    return;
+  }
+  if (!/^[a-z0-9_-]+$/.test(providerId)) {
+    ui.alert(
+      "Ошибка",
+      "ID провайдера должен содержать только латинские буквы, цифры, дефис и подчёркивание.\nПолучено: «" + providerId + "»",
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // Шаг 2: выбор endpoint из preset'ов (без ручного ввода, URL — справочно)
+  var presetText = "";
+  for (var p = 0; p < PROVIDER_ENDPOINT_PRESETS.length; p++) {
+    presetText += (p + 1) + ". " + PROVIDER_ENDPOINT_PRESETS[p][0] +
+      "\n   " + PROVIDER_ENDPOINT_PRESETS[p][1] + "\n";
+  }
   var endpointPrompt = ui.prompt(
-    "Добавить провайдера",
-    "Введите endpoint (например: https://openrouter.ai/api/v1/chat/completions):",
+    "Добавить провайдера (шаг 2/5) — Endpoint",
+    "Выберите endpoint из списка (введите номер):\n\n" + presetText +
+    "\nВведите номер endpoint (1-" + PROVIDER_ENDPOINT_PRESETS.length + "):",
     ui.ButtonSet.OK_CANCEL
   );
-  if (endpointPrompt.getResponseText() === "") return;
-  var endpoint = String(endpointPrompt.getResponseText()).trim();
+  if (endpointPrompt.getSelectedButton() !== ui.Button.OK) return;
+  var endpointNum = parseInt(String(endpointPrompt.getResponseText()).trim(), 10);
+  if (isNaN(endpointNum) || endpointNum < 1 || endpointNum > PROVIDER_ENDPOINT_PRESETS.length) {
+    ui.alert("Ошибка", "Недопустимый номер endpoint. Выберите число от 1 до " + PROVIDER_ENDPOINT_PRESETS.length + ".\nПровайдер не зарегистрирован.", ui.ButtonSet.OK);
+    return;
+  }
+  var endpoint = PROVIDER_ENDPOINT_PRESETS[endpointNum - 1][1];
+
+  // Шаг 3: имя env-переменной для API-ключа (сам ключ НЕ запрашиваем)
+  var keyPrompt = ui.prompt(
+    "Добавить провайдера (шаг 3/5) — API-ключ",
+    "Введите имя переменной окружения, в которой лежит API-ключ.\nНапример: OPENROUTER_API_KEY\n\n" +
+    "Сам ключ вводить НЕ нужно — только имя переменной.\n" +
+    "Ключ добавляется в .env на сервере, после чего нужен docker compose up -d --force-recreate.",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (keyPrompt.getSelectedButton() !== ui.Button.OK) return;
+  var apiKeyEnvVar = String(keyPrompt.getResponseText()).trim();
+
+  if (!apiKeyEnvVar) {
+    ui.alert("Ошибка", "Имя переменной окружения не может быть пустым.", ui.ButtonSet.OK);
+    return;
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(apiKeyEnvVar)) {
+    ui.alert(
+      "Предупреждение",
+      "«" + apiKeyEnvVar + "» не похоже на имя переменной окружения.\n" +
+      "Обычно это имя в верхнем регистре, например: OPENROUTER_API_KEY.\n\n" +
+      "Продолжаем с введённым значением.",
+      ui.ButtonSet.OK
+    );
+  }
+
+  // Шаг 4: тест бесплатных моделей (POST /providers/discover)
+  // Ключ не передаётся — сервер читает его из env по имени переменной.
+  var discoverResult = _post("/providers/discover", {
+    provider_id: providerId,
+    endpoint: endpoint,
+    api_key_env_var: apiKeyEnvVar
+  }, secret);
+
+  if (!discoverResult.ok) {
+    ui.alert("Ошибка тестирования моделей", _friendlyError(discoverResult), ui.ButtonSet.OK);
+    return;
+  }
+
+  var discovered = discoverResult.data || {};
+  var modelsStatus = Array.isArray(discovered.models) ? discovered.models : [];
+  var working = Array.isArray(discovered.working) ? discovered.working : [];
+
+  // Список free-моделей со статусами (ok/error/timeout)
+  var statusLines = "";
+  for (var m = 0; m < modelsStatus.length; m++) {
+    statusLines += (m + 1) + ". " + modelsStatus[m].id + " — " + modelsStatus[m].status + "\n";
+  }
+
+  if (working.length === 0) {
+    var emptyMsg = "Не найдено рабочих бесплатных моделей у провайдера «" + providerId + "».\n\n" +
+      (statusLines ? "Результаты тестирования:\n" + statusLines : "Free-модели не обнаружены.") +
+      "\nПровайдер НЕ зарегистрирован.\n" +
+      "Проверьте, что API-ключ добавлен в .env на сервере\n" +
+      "(после добавления нужен docker compose up -d --force-recreate).";
+    ui.alert("Нет рабочих моделей", emptyMsg, ui.ButtonSet.OK);
+    return;
+  }
+
+  var workLines = "";
+  for (var w = 0; w < working.length; w++) {
+    workLines += (w + 1) + ". " + working[w] + "\n";
+  }
 
   var modelPrompt = ui.prompt(
-    "Добавить провайдера",
-    "Введите default_model (например: anthropic/claude-sonnet-4):",
+    "Добавить провайдера (шаг 4/5) — Тест моделей",
+    "Free-модели провайдера «" + providerId + "»:\n" + statusLines +
+    "\nРабочие модели (ok):\n" + workLines +
+    "Введите номер модели для default_model (1-" + working.length + "):",
     ui.ButtonSet.OK_CANCEL
   );
-  if (modelPrompt.getResponseText() === "") return;
-  var defaultModel = String(modelPrompt.getResponseText()).trim();
+  if (modelPrompt.getSelectedButton() !== ui.Button.OK) return;
 
-  var modelsPrompt = ui.prompt(
-    "Добавить провайдера",
-    "Введите доступные модели через запятую (например: model1,model2):",
-    ui.ButtonSet.OK_CANCEL
-  );
-  var modelsStr = String(modelsPrompt.getResponseText()).trim();
-  var models = modelsStr ? modelsStr.split(",").map(function(m) { return m.trim(); }).filter(function(m) { return m; }) : [defaultModel];
+  var modelNumStr = String(modelPrompt.getResponseText()).trim();
+  var defaultModel;
+  if (!modelNumStr) {
+    // Пустой ввод — берём первую рабочую модель
+    defaultModel = working[0];
+  } else {
+    var modelNum = parseInt(modelNumStr, 10);
+    if (isNaN(modelNum) || modelNum < 1 || modelNum > working.length) {
+      ui.alert("Ошибка", "Недопустимый номер модели. Выберите число от 1 до " + working.length + ".\nПровайдер не зарегистрирован.", ui.ButtonSet.OK);
+      return;
+    }
+    defaultModel = working[modelNum - 1];
+  }
 
-  var apiKeyPrompt = ui.prompt(
-    "Добавить провайдера",
-    "Введите имя переменной окружения для API ключа (например: OPENROUTER_API_KEY):",
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (apiKeyPrompt.getResponseText() === "") return;
-  var apiKeyEnvVar = String(apiKeyPrompt.getResponseText()).trim();
-
+  // Шаг 5: приоритет (число, по умолчанию 999)
   var priorityPrompt = ui.prompt(
-    "Добавить провайдера",
+    "Добавить провайдера (шаг 5/5) — Приоритет",
     "Введите приоритет (число, меньше = выше приоритет, по умолчанию 999):",
     ui.ButtonSet.OK_CANCEL
   );
+  if (priorityPrompt.getSelectedButton() !== ui.Button.OK) return;
   var priorityStr = String(priorityPrompt.getResponseText()).trim();
   var priority = priorityStr ? parseInt(priorityStr, 10) : 999;
+  if (isNaN(priority)) {
+    ui.alert("Ошибка", "Приоритет должен быть числом. Провайдер не зарегистрирован.", ui.ButtonSet.OK);
+    return;
+  }
 
+  // Регистрируем провайдера: models = только рабочие модели; ключ не передаётся
   var payload = {
     provider_id: providerId,
     enabled: true,
     priority: priority,
     default_model: defaultModel,
-    models: models,
+    models: working,
     endpoint: endpoint,
     api_key_env_var: apiKeyEnvVar
   };
 
   var result = _post("/providers/register", payload, secret);
   if (result.ok && result.code === 201) {
-    ui.alert("Успех", "Провайдер '" + providerId + "' зарегистрирован.\n\nНе забудьте добавить " + apiKeyEnvVar + " в .env на сервере!", ui.ButtonSet.OK);
+    ui.alert(
+      "Успех",
+      "Провайдер '" + providerId + "' зарегистрирован.\n\n" +
+      "Модель по умолчанию: " + defaultModel + "\n" +
+      "Endpoint: " + endpoint + "\n" +
+      "Ключ: " + apiKeyEnvVar + " в .env на сервере.\n" +
+      "После добавления ключа нужен docker compose up -d --force-recreate.",
+      ui.ButtonSet.OK
+    );
     refreshProviderChain();
     refreshModelDropdown();
   } else {

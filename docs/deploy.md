@@ -102,6 +102,26 @@ docker compose restart serplux
 
 Автоматический импорт при редактировании или запуске сбора не выполняется.
 
+## Смена API-ключа в .env (env reload)
+
+После изменения любого API-ключа (например, `OPENCODE_API_KEY`) в `.env`
+**недостаточно** `docker compose restart` — он не пересоздаёт контейнер и
+env остаётся старым. Нужно пересоздать контейнер:
+
+```bash
+docker compose up -d --force-recreate
+```
+
+или эквивалентно:
+
+```bash
+docker compose down
+docker compose up -d
+```
+
+`deploy.sh` уже использует `docker compose up -d --force-recreate`, поэтому
+обычный деплой подтягивает новые ключи автоматически.
+
 ## Миграция БД (если старая схема с таблицей results)
 
 После up -d, до первого прогона:

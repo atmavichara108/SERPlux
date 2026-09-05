@@ -134,15 +134,36 @@ def list_regions_for_project(project_id: int) -> list[dict[str, Any]]:
     return list_regions(project_id=project_id)
 
 
+def _warn_depth_not_supported(depth: int, api_method: str) -> None:
+    """
+    Явный WARNING: Topvisor API не принимает глубину на уровне запроса.
+    Метод вызывается при depth > 10 (дефолтная глубина), когда пользователь
+    явно запросил более глубокую выдачу, которую этим вызовом не получить.
+    """
+    if depth <= 10:
+        return
+    log.warning(
+        "Topvisor API не поддерживает глубину на уровне запроса: "
+        "метод %s не имеет параметра depth/limit. Запрошено depth=%s, но "
+        "фактическая глубина снимка определяется настройкой проекта "
+        "(глубина сбора позиций в кабинете Topvisor), а не этим вызовом.",
+        api_method, depth,
+    )
+
+
 def run_check(project_id: int, depth: int, region_indexes: list[int]) -> list[int]:
     """
     Запускает проверку позиций со сбором снимка.
     Вызывает edit/positions_2/checker/go с do_snapshots=1.
-    Параметр depth зарезервирован для будущего использования.
+
+    ВАЖНО: глубина НЕ задаётся этим вызовом — Topvisor API не имеет параметра
+    depth/limit у checker/go. Фактическая глубина снимка = глубина сбора
+    позиций проекта (настройка в кабинете). При depth > 10 логируется WARNING.
     Возвращает projectsIds, отправленные на проверку.
     """
     log.info("Запуск проверки: project=%s, regions=%s, depth=%s", 
              project_id, region_indexes, depth)
+    _warn_depth_not_supported(depth, "edit/positions_2/checker/go")
     result = _post("edit", "positions_2/checker/go", {
         "filters": [{"name": "id", "operator": "EQUALS", "values": [project_id]}],
         "regions_indexes": region_indexes,
@@ -190,7 +211,12 @@ def get_snapshot(project_id: int, region_index: int, date: str,
     
     Параметры региона (searcher_key, region_key, region_lang, region_device)
     должны соответствовать настройкам проекта в topvisor.
-    Параметр depth зарезервирован для будущего использования.
+
+    ВАЖНО: глубина НЕ задаётся этим вызовом — get/snapshots_2/history не имеет
+    параметра depth (limit/offset там — пагинация списка ключевых слов).
+    Количество позиций в снимке = настройка проекта. Параметр depth используется
+    только для диагностики: если фактическая глубина меньше запрошенной,
+    логируется WARNING с evidence.
     """
     log.info("Получение снимка: project=%s, region=%s, date=%s, searcher_key=%s",
              project_id, region_index, date, searcher_key)
@@ -244,6 +270,16 @@ def get_snapshot(project_id: int, region_index: int, date: str,
                 "label": None,
             })
     rows.sort(key=lambda r: (r["query"], r["position"]))
+    if rows:
+        max_pos = max(r["position"] for r in rows)
+        if depth > max_pos:
+            log.warning(
+                "Глубина выдачи меньше запрошенной: depth=%s, фактически позиций=%s "
+                "(max position). Topvisor не принимает depth на уровне запроса — "
+                "глубина снимка определяется настройкой проекта (глубина сбора "
+                "позиций в кабинете Topvisor), а не запросом снимка.",
+                depth, max_pos,
+            )
     log.info("Получено %s строк из снимка", len(rows))
     return rows
 

@@ -11,6 +11,7 @@ T-00Y — тесты webhook.py: POST /run.
 import sqlite3
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
 
 import storage
@@ -58,7 +59,7 @@ class TestRunEndpoint:
         assert resp.status_code == 202
         assert pipeline_spy["args"] == (
             "map.json", True, 10, "default", "auto", False, False, "latest",
-            "today", False, None, None, False,
+            "today", False, None, None, False, None,
         )
 
     def test_run_new_fields_passed(self, client, pipeline_spy):
@@ -74,14 +75,33 @@ class TestRunEndpoint:
                 "force_rebuild_report": True,
                 "provider_chain": "zen",
                 "label_only": True,
+                "searchers": ["google"],
             },
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 202
         assert pipeline_spy["args"] == (
             "map.json", True, 10, "acme", "deep", True, False, "latest",
-            "2026-07-01", True, "zen", None, True,
+            "2026-07-01", True, "zen", None, True, ["google"],
         )
+
+    def test_run_searchers_invalid_returns_422(self, client):
+        """Неизвестный поисковик в searchers возвращает 422."""
+        resp = client.post(
+            "/run",
+            json={"searchers": ["bing"]},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 422
+
+    def test_run_searchers_empty_returns_422(self, client):
+        """Пустой список searchers возвращает 422."""
+        resp = client.post(
+            "/run",
+            json={"searchers": []},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 422
 
     def test_run_default_label_mode_is_auto(self, client, pipeline_spy):
         """Если label_mode не передан, дефолт — auto."""
@@ -453,17 +473,18 @@ class TestProvidersEndpoint:
         assert zen is not None
         assert zen["enabled"] is True
         assert zen["priority"] == 1
-        assert zen["default_model"] == "qwen3.6-plus"
-        # Проверяем все модели: текущая + бесплатные
+        assert zen["default_model"] == "mimo-v2.5-free"
+        # Проверяем все модели: только бесплатные из актуального каталога Zen
         expected_models = {
-            "qwen3.6-plus",
-            "big-pickle",
-            "deepseek-v4-flash-free",
             "mimo-v2.5-free",
-            "north-mini-code-free",
+            "ling-3.0-flash-fin-free",
             "nemotron-3-ultra-free",
+            "nemotron-3.5-lightning-free",
+            "muse-spark-1.3-contributor-free",
+            "big-pickle",
         }
         assert set(zen["models"]) == expected_models
+        assert zen["endpoint"] == "https://opencode.ai/zen/v1/chat/completions"
 
     def test_list_providers_missing_auth_returns_401(self, client):
         """GET /providers без Bearer возвращает 401."""
@@ -1328,3 +1349,311 @@ class TestConfigRegisterProvider:
 
         assert result is False
         assert "incomplete" not in cfg_mod.PROVIDERS
+
+
+class TestProviderRegisterKnownEndpoints:
+    """Тесты POST /providers/register с endpoint из KNOWN_ENDPOINTS."""
+
+    def test_register_without_endpoint_uses_known_endpoint(self, client, monkeypatch):
+        """Если endpoint не передан, берётся из config.KNOWN_ENDPOINTS по provider_id."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {"opencode-zen": cfg_mod.PROVIDERS.get("opencode-zen", {})})
+
+        resp = client.post(
+            "/providers/register",
+            json={
+                "provider_id": "openrouter",
+                "enabled": True,
+                "priority": 2,
+                "default_model": "some-model",
+                "models": ["some-model"],
+                "api_key_env_var": "OPENROUTER_API_KEY",
+                # endpoint НЕ передан
+            },
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 201
+        assert cfg_mod.PROVIDERS["openrouter"]["endpoint"] == "https://openrouter.ai/api/v1/chat/completions"
+
+    def test_register_without_endpoint_unknown_provider_returns_422(self, client):
+        """Неизвестный provider_id без endpoint возвращает 422."""
+        resp = client.post(
+            "/providers/register",
+            json={
+                "provider_id": "unknown-provider",
+                "enabled": True,
+                "priority": 2,
+                "default_model": "m",
+                "models": ["m"],
+                "api_key_env_var": "SOME_KEY",
+                # endpoint НЕ передан и provider_id неизвестен
+            },
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 422
+
+    def test_register_with_explicit_endpoint_still_works(self, client, monkeypatch):
+        """Явно переданный endpoint сохраняется (не перекрывается KNOWN_ENDPOINTS)."""
+        import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "PROVIDERS", {"opencode-zen": cfg_mod.PROVIDERS.get("opencode-zen", {})})
+
+        resp = client.post(
+            "/providers/register",
+            json={
+                "provider_id": "custom",
+                "enabled": True,
+                "priority": 3,
+                "default_model": "m",
+                "models": ["m"],
+                "endpoint": "https://custom.example.com/v1/chat/completions",
+                "api_key_env_var": "CUSTOM_KEY",
+            },
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 201
+        assert cfg_mod.PROVIDERS["custom"]["endpoint"] == "https://custom.example.com/v1/chat/completions"
+
+
+class TestProviderDiscover:
+    """Тесты POST /providers/discover — auto-discovery бесплатных моделей."""
+
+    def _auth(self):
+        return {"Authorization": "Bearer test-secret"}
+
+    def test_discover_success_filters_free_and_tests(self, client, monkeypatch):
+        """Успешный discover: фильтрация только *-free, статусы моделей, working."""
+        import webhook as wh
+
+        monkeypatch.setenv("TEST_PROVIDER_KEY", "secret-key")
+
+        def fake_get(url, headers=None, timeout=None):
+            assert url == "https://example.com/v1/models"
+            assert headers["Authorization"] == "Bearer secret-key"
+            return _FakeResp(200, {
+                "data": [
+                    {"id": "model-free"},
+                    {"id": "model-paid"},
+                    {"id": "another-free"},
+                ]
+            })
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            assert url == "https://example.com/v1/chat/completions"
+            assert headers["Authorization"] == "Bearer secret-key"
+            assert json["max_tokens"] == 1
+            assert json["messages"] == [{"role": "user", "content": "ping"}]
+            if json["model"] == "model-free":
+                return _FakeResp(200, {})
+            return _FakeResp(500, {})  # another-free -> error
+
+        monkeypatch.setattr(wh.requests, "get", fake_get)
+        monkeypatch.setattr(wh.requests, "post", fake_post)
+
+        resp = client.post(
+            "/providers/discover",
+            json={
+                "provider_id": "test",
+                "endpoint": "https://example.com/v1/chat/completions",
+                "api_key_env_var": "TEST_PROVIDER_KEY",
+            },
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider_id"] == "test"
+        assert body["endpoint"] == "https://example.com/v1/chat/completions"
+        # Только free-модели (paid отфильтрован)
+        ids = {m["id"] for m in body["models"]}
+        assert ids == {"model-free", "another-free"}
+        status_by_id = {m["id"]: m["status"] for m in body["models"]}
+        assert status_by_id["model-free"] == "ok"
+        assert status_by_id["another-free"] == "error"
+        assert body["working"] == ["model-free"]
+
+    def test_discover_empty_key_returns_400(self, client, monkeypatch):
+        """Пустой/отсутствующий ключ в env возвращает 400 с понятным сообщением."""
+        monkeypatch.delenv("MISSING_KEY", raising=False)
+        resp = client.post(
+            "/providers/discover",
+            json={
+                "provider_id": "test",
+                "endpoint": "https://example.com/v1/chat/completions",
+                "api_key_env_var": "MISSING_KEY",
+            },
+            headers=self._auth(),
+        )
+        assert resp.status_code == 400
+        assert "MISSING_KEY" in resp.json()["detail"]
+
+    def test_discover_network_error_returns_502(self, client, monkeypatch):
+        """Сетевая ошибка при GET /models возвращает 502, без падения."""
+        import webhook as wh
+
+        monkeypatch.setenv("TEST_PROVIDER_KEY", "secret-key")
+
+        def fake_get(url, headers=None, timeout=None):
+            raise requests.exceptions.ConnectionError("boom")
+
+        monkeypatch.setattr(wh.requests, "get", fake_get)
+
+        resp = client.post(
+            "/providers/discover",
+            json={
+                "provider_id": "test",
+                "endpoint": "https://example.com/v1/chat/completions",
+                "api_key_env_var": "TEST_PROVIDER_KEY",
+            },
+            headers=self._auth(),
+        )
+        assert resp.status_code == 502
+        assert "detail" in resp.json()
+
+    def test_discover_parse_error_returns_502(self, client, monkeypatch):
+        """Ошибка парсинга ответа /models возвращает 502."""
+        import webhook as wh
+
+        monkeypatch.setenv("TEST_PROVIDER_KEY", "secret-key")
+
+        def fake_get(url, headers=None, timeout=None):
+            return _FakeResp(200, "not-json")
+
+        monkeypatch.setattr(wh.requests, "get", fake_get)
+
+        resp = client.post(
+            "/providers/discover",
+            json={
+                "provider_id": "test",
+                "endpoint": "https://example.com/v1/chat/completions",
+                "api_key_env_var": "TEST_PROVIDER_KEY",
+            },
+            headers=self._auth(),
+        )
+        assert resp.status_code == 502
+
+    def test_discover_missing_auth_returns_401(self, client):
+        """POST /providers/discover без Bearer возвращает 401."""
+        resp = client.post(
+            "/providers/discover",
+            json={
+                "provider_id": "test",
+                "endpoint": "https://example.com/v1/chat/completions",
+                "api_key_env_var": "TEST_PROVIDER_KEY",
+            },
+        )
+        assert resp.status_code == 401
+
+    def test_discover_invalid_auth_returns_403(self, client):
+        """POST /providers/discover с неверным Bearer возвращает 403."""
+        resp = client.post(
+            "/providers/discover",
+            json={
+                "provider_id": "test",
+                "endpoint": "https://example.com/v1/chat/completions",
+                "api_key_env_var": "TEST_PROVIDER_KEY",
+            },
+            headers={"Authorization": "Bearer wrong-secret"},
+        )
+        assert resp.status_code == 403
+
+    def test_discover_rejects_http_endpoint(self, client):
+        """SSRF-защита: http endpoint отклоняется."""
+        resp = client.post(
+            "/providers/discover",
+            json={
+                "provider_id": "test",
+                "endpoint": "http://example.com/v1/chat/completions",
+                "api_key_env_var": "TEST_PROVIDER_KEY",
+            },
+            headers=self._auth(),
+        )
+        assert resp.status_code == 422
+
+    def test_discover_rejects_localhost_endpoint(self, client):
+        """SSRF-защита: localhost/private endpoint отклоняется."""
+        for bad in ("https://localhost/v1", "https://127.0.0.1/v1", "https://169.254.169.254/v1"):
+            resp = client.post(
+                "/providers/discover",
+                json={
+                    "provider_id": "test",
+                    "endpoint": bad,
+                    "api_key_env_var": "TEST_PROVIDER_KEY",
+                },
+                headers=self._auth(),
+            )
+            assert resp.status_code == 422, bad
+
+    def test_discover_limits_free_models(self, client, monkeypatch):
+        """Лимит MAX_DISCOVER_MODELS: тестируются не все free-модели."""
+        import webhook as wh
+
+        monkeypatch.setenv("TEST_PROVIDER_KEY", "secret-key")
+        many_free = [{"id": f"model-{i}-free"} for i in range(30)]
+
+        def fake_get(url, headers=None, timeout=None):
+            return _FakeResp(200, {"data": many_free})
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            return _FakeResp(200, {})
+
+        monkeypatch.setattr(wh.requests, "get", fake_get)
+        monkeypatch.setattr(wh.requests, "post", fake_post)
+
+        resp = client.post(
+            "/providers/discover",
+            json={
+                "provider_id": "test",
+                "endpoint": "https://example.com/v1/chat/completions",
+                "api_key_env_var": "TEST_PROVIDER_KEY",
+            },
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["models"]) == wh.MAX_DISCOVER_MODELS
+        assert len(body["working"]) == wh.MAX_DISCOVER_MODELS
+
+    def test_models_url_strips_chat_completions(self):
+        """_models_url: /chat/completions убирается, /models добавляется к базе."""
+        import webhook as wh
+
+        assert wh._models_url("https://opencode.ai/zen/v1/chat/completions") == "https://opencode.ai/zen/v1/models"
+        assert wh._models_url("https://openrouter.ai/api/v1/chat/completions") == "https://openrouter.ai/api/v1/models"
+        assert wh._models_url("https://api.openai.com/v1/chat/completions") == "https://api.openai.com/v1/models"
+        assert wh._models_url("https://example.com/v1") == "https://example.com/v1/models"
+
+    def test_register_rejects_http_endpoint(self, client):
+        """SSRF-защита в register: http/localhost endpoint отклоняется."""
+        resp = client.post(
+            "/providers/register",
+            json={
+                "provider_id": "evil",
+                "enabled": True,
+                "priority": 999,
+                "default_model": "m",
+                "models": ["m"],
+                "endpoint": "http://localhost:8000/v1/chat/completions",
+                "api_key_env_var": "OPENAI_API_KEY",
+            },
+            headers=self._auth(),
+        )
+        assert resp.status_code == 422
+
+
+class _FakeResp:
+    """Минимальный фейковый ответ requests для моков discover."""
+
+    def __init__(self, status_code, json_data):
+        self.status_code = status_code
+        self._json = json_data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        if isinstance(self._json, str):
+            import json as _json
+            return _json.loads(self._json)
+        return self._json
