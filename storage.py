@@ -176,6 +176,22 @@ def _init_db(db_path: str = DB_PATH) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lblconf_run ON label_conflicts(run_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lblconf_key ON label_conflicts(domain, query)")
 
+        # Персистентный реестр LLM-провайдеров (v1.0.2 techdebt):
+        # источник истины для провайдеров, добавленных/изменённых через UI.
+        # Встроенный `opencode-zen` из config.py сидится сюда при первой инициализации.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS providers (
+                provider_id      TEXT PRIMARY KEY,
+                enabled          INTEGER NOT NULL DEFAULT 1,
+                priority         INTEGER NOT NULL DEFAULT 999,
+                default_model    TEXT NOT NULL DEFAULT '',
+                models           TEXT NOT NULL DEFAULT '[]',
+                endpoint         TEXT NOT NULL DEFAULT '',
+                api_key_env_var  TEXT NOT NULL DEFAULT '',
+                updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
         # Справочник эталонной разметки: ключ (domain, query), без geo и client_id.
         # Приоритет source: manual_l1 > snippet/page. manual_l1 не перезаписывается
         # автоматическими источниками (snippet/page), только другим manual_l1.
@@ -214,6 +230,103 @@ def _ensure_db(db_path: str = DB_PATH) -> None:
     if not _DB_INITIALIZED:
         _init_db(db_path)
         _DB_INITIALIZED = True
+
+
+# ─── Персистентный реестр LLM-провайдеров (v1.0.2 techdebt) ─────────────────
+
+def _providers_from_rows(rows) -> list[dict]:
+    """Преобразует строки таблицы providers в список конфигов провайдеров."""
+    result = []
+    for row in rows:
+        result.append({
+            "provider_id": row["provider_id"],
+            "enabled": bool(row["enabled"]),
+            "priority": int(row["priority"]),
+            "default_model": row["default_model"],
+            "models": _deserialize_json_field(row["models"]),
+            "endpoint": row["endpoint"],
+            "api_key_env_var": row["api_key_env_var"],
+        })
+    return result
+
+
+def save_provider(provider_id: str, cfg: dict, db_path: str = DB_PATH) -> None:
+    """INSERT OR REPLACE провайдера в персистентный реестр."""
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        conn.execute(
+            """INSERT INTO providers
+                   (provider_id, enabled, priority, default_model, models, endpoint, api_key_env_var, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                 ON CONFLICT(provider_id) DO UPDATE SET
+                     enabled = excluded.enabled,
+                     priority = excluded.priority,
+                     default_model = excluded.default_model,
+                     models = excluded.models,
+                     endpoint = excluded.endpoint,
+                     api_key_env_var = excluded.api_key_env_var,
+                     updated_at = datetime('now')""",
+            (
+                provider_id,
+                1 if cfg.get("enabled", False) else 0,
+                int(cfg.get("priority", 999)),
+                cfg.get("default_model", ""),
+                _serialize_json_field(cfg.get("models", []) or []),
+                cfg.get("endpoint", ""),
+                cfg.get("api_key_env_var", ""),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_provider(provider_id: str, db_path: str = DB_PATH) -> None:
+    """Удаляет провайдера из персистентного реестра."""
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        conn.execute("DELETE FROM providers WHERE provider_id = ?", (provider_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_persisted_providers(db_path: str = DB_PATH) -> list[dict]:
+    """Возвращает все персистентные провайдеры (в порядке приоритета)."""
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT provider_id, enabled, priority, default_model, models, endpoint, api_key_env_var
+               FROM providers ORDER BY priority ASC, provider_id ASC""",
+        ).fetchall()
+        return _providers_from_rows(rows)
+    finally:
+        conn.close()
+
+
+def load_providers_into_runtime(defaults: dict, db_path: str = DB_PATH) -> dict:
+    """Возвращает словарь провайдеров: встроенные `defaults` + персистентные из БД.
+
+    Персистентный реестр перекрывает встроенный config (источник истины — БД
+    для провайдеров, которыми управляли через UI). Встроенные провайдеры, которых
+    нет в БД, сохраняются как есть.
+    """
+    _ensure_db(db_path)
+    runtime = dict(defaults)
+    persisted = list_persisted_providers(db_path)
+    for p in persisted:
+        runtime[p["provider_id"]] = {
+            "enabled": p["enabled"],
+            "priority": p["priority"],
+            "default_model": p["default_model"],
+            "models": p["models"],
+            "endpoint": p["endpoint"],
+            "api_key_env_var": p["api_key_env_var"],
+        }
+    return runtime
 
 
 def _find_position_id(conn: sqlite3.Connection, row: Row, client_id: str) -> int | None:

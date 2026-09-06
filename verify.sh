@@ -132,7 +132,7 @@ conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 
 # Проверяем таблицы
-required_tables = ['clients', 'positions', 'labels', 'domain_labels', 'run_status', 'label_conflicts']
+required_tables = ['clients', 'positions', 'labels', 'domain_labels', 'run_status', 'label_conflicts', 'providers']
 cursor.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\")
 existing_tables = set(row[0] for row in cursor.fetchall())
 

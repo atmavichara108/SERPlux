@@ -242,6 +242,20 @@ def _apply_schema_patches(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lblconf_run ON label_conflicts(run_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lblconf_key ON label_conflicts(domain, query)")
 
+    # Персистентный реестр LLM-провайдеров (v1.0.2 techdebt)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS providers (
+            provider_id      TEXT PRIMARY KEY,
+            enabled          INTEGER NOT NULL DEFAULT 1,
+            priority         INTEGER NOT NULL DEFAULT 999,
+            default_model    TEXT NOT NULL DEFAULT '',
+            models           TEXT NOT NULL DEFAULT '[]',
+            endpoint         TEXT NOT NULL DEFAULT '',
+            api_key_env_var  TEXT NOT NULL DEFAULT '',
+            updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
     # Обновление CHECK constraint labels для режимов auto/deep
     create_sql_row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='labels'"

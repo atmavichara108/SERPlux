@@ -571,6 +571,67 @@ def test_schema_v11_run_id_and_label_conflicts(init_db):
         conn.close()
 
 
+def test_schema_providers_table_exists(init_db):
+    """v1.0.2 techdebt: таблица providers существует с колонками реестра."""
+    conn = sqlite3.connect(init_db)
+    try:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        assert "providers" in tables, "таблица providers отсутствует"
+
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
+        for expected in ("provider_id", "enabled", "priority", "default_model", "models", "endpoint", "api_key_env_var"):
+            assert expected in cols, f"providers не содержит колонку {expected}"
+    finally:
+        conn.close()
+
+
+def test_provider_persistence_roundtrip(init_db):
+    """Сохранение/чтение/удаление провайдера в персистентном реестре."""
+    storage.save_provider("openrouter", {
+        "enabled": True,
+        "priority": 2,
+        "default_model": "anthropic/claude-sonnet-4-20250514",
+        "models": ["anthropic/claude-sonnet-4-20250514"],
+        "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+        "api_key_env_var": "OPENROUTER_API_KEY",
+    }, db_path=init_db)
+
+    persisted = storage.list_persisted_providers(db_path=init_db)
+    by_id = {p["provider_id"]: p for p in persisted}
+    assert "openrouter" in by_id
+    assert by_id["openrouter"]["enabled"] is True
+    assert by_id["openrouter"]["default_model"] == "anthropic/claude-sonnet-4-20250514"
+    assert by_id["openrouter"]["models"] == ["anthropic/claude-sonnet-4-20250514"]
+
+    # load_providers_into_runtime перекрывает встроенный config
+    runtime = storage.load_providers_into_runtime({"opencode-zen": {}}, db_path=init_db)
+    assert "openrouter" in runtime
+    assert "opencode-zen" in runtime
+
+    # Удаление
+    storage.delete_provider("openrouter", db_path=init_db)
+    assert "openrouter" not in {p["provider_id"] for p in storage.list_persisted_providers(db_path=init_db)}
+
+
+def test_provider_persistence_update_overwrites(init_db):
+    """Повторный save_provider обновляет ту же запись (INSERT OR REPLACE)."""
+    storage.save_provider("openrouter", {
+        "enabled": True, "priority": 2, "default_model": "a",
+        "models": ["a"], "endpoint": "https://x/v1", "api_key_env_var": "X_KEY",
+    }, db_path=init_db)
+    storage.save_provider("openrouter", {
+        "enabled": False, "priority": 3, "default_model": "b",
+        "models": ["b"], "endpoint": "https://y/v1", "api_key_env_var": "Y_KEY",
+    }, db_path=init_db)
+
+    persisted = {p["provider_id"]: p for p in storage.list_persisted_providers(db_path=init_db)}
+    assert persisted["openrouter"]["enabled"] is False
+    assert persisted["openrouter"]["priority"] == 3
+    assert persisted["openrouter"]["default_model"] == "b"
+
+
 # ─── Блок 7: управление клиентами ─────────────────────────────────────────────
 
 

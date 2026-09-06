@@ -40,6 +40,16 @@ app = FastAPI(title="SERPlux Webhook", version="1.0.0")
 # Глобальный флаг: не запускаем два прогона одновременно
 _run_lock = threading.Lock()
 
+# Подгружаем персистентных провайдеров из БД поверх встроенного config.
+# Источник истины для провайдеров, которыми управляли через UI — таблица `providers`.
+# Guard os.path.exists: не создаём/не открываем БД при импорте в тестах (DB_PATH=temporary).
+try:
+    if os.path.exists(storage.DB_PATH):
+        config.PROVIDERS = storage.load_providers_into_runtime(config.PROVIDERS, db_path=storage.DB_PATH)
+except Exception as exc:  # noqa: BLE001
+    # БД может быть не инициализирована (первый запуск) — оставляем встроенный config.
+    log.warning("Не удалось подгрузить провайдеров из БД: %s", exc)
+
 
 class RunRequest(BaseModel):
     """Тело запроса от Google Apps Script."""
@@ -638,9 +648,12 @@ def _models_url(endpoint: str) -> str:
 
 
 def _validate_endpoint(endpoint: str) -> None:
-    """Защита от SSRF: только https, публичный хост, без localhost/private/link-local."""
+    """Защита от SSRF: только https, публичный хост, блок localhost/private/link-local целиком.
+    Покрывает DNS-rebinding: домен резолвится и приватные адреса отсекаются.
+    """
     from urllib.parse import urlparse
     import ipaddress
+    import socket
 
     parsed = urlparse(endpoint)
     if parsed.scheme != "https":
@@ -654,20 +667,48 @@ def _validate_endpoint(endpoint: str) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="endpoint не содержит host",
         )
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        ip = None
-    if ip is not None and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"endpoint указывает на недопустимый адрес: {host}",
+
+    def _blocked_ip(ip_str: str) -> bool:
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+        return (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
         )
-    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254"}:
+
+    # Блокируем литеральные недопустимые хосты и адреса.
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254", "169.254.169.254.nip.io"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"endpoint указывает на недопустимый хост: {host}",
         )
+
+    # DNS-резолв: домен может указывать на private/loopback (DNS rebinding).
+    # Резолвим и блокируем любой недопустимый адрес из ответа.
+    ip_addresses: list[str] = []
+    if _blocked_ip(host):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"endpoint указывает на недопустимый адрес: {host}",
+        )
+    try:
+        infos = socket.getaddrinfo(host, None)
+        for info in infos:
+            addr = str(info[4][0])
+            if addr not in ip_addresses:
+                ip_addresses.append(addr)
+    except socket.gaierror:
+        # Не резолвится — пропускаем как есть (не даёт SSRF-вектора ребидинга)
+        ip_addresses = []
+
+    for addr in ip_addresses:
+        if _blocked_ip(addr):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"endpoint '{host}' резолвится в недопустимый адрес: {addr}",
+            )
 
 
 @app.post("/providers/register", status_code=status.HTTP_201_CREATED)
@@ -718,7 +759,20 @@ def register_provider(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Провайдер '{body.provider_id}' уже существует или невалидный конфиг",
         )
-    
+
+    # Персистентность: сохраняем в БД, чтобы провайдер пережил restart контейнера.
+    try:
+        storage.save_provider(body.provider_id, {
+            "enabled": body.enabled,
+            "priority": body.priority,
+            "default_model": body.default_model,
+            "models": body.models,
+            "endpoint": endpoint,
+            "api_key_env_var": body.api_key_env_var,
+        }, db_path=storage.DB_PATH)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Не удалось сохранить провайдера '%s' в БД: %s", body.provider_id, exc)
+
     return JSONResponse({
         "registered": True,
         "provider_id": body.provider_id,
@@ -895,6 +949,12 @@ def update_provider(
     
     cfg.update(updates)
     log.info("Провайдер '%s' обновлён: %s", provider_id, list(updates.keys()))
+
+    # Персистентность: сохраняем обновлённый провайдер в БД.
+    try:
+        storage.save_provider(provider_id, cfg, db_path=storage.DB_PATH)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Не удалось сохранить провайдера '%s' в БД: %s", provider_id, exc)
     
     return JSONResponse({
         "updated": True,
@@ -939,7 +999,13 @@ def delete_provider(
     
     del config.PROVIDERS[provider_id]
     log.info("Провайдер '%s' удалён", provider_id)
-    
+
+    # Персистентность: удаляем из БД.
+    try:
+        storage.delete_provider(provider_id, db_path=storage.DB_PATH)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Не удалось удалить провайдера '%s' из БД: %s", provider_id, exc)
+
     return JSONResponse({
         "deleted": True,
         "provider_id": provider_id,
