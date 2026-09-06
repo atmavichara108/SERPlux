@@ -5,6 +5,7 @@ test_parse_label.py — юнит-тесты парсера метки из от�
 - без вызова реального API
 - без обращения к БД
 - только логика извлечения positive/negative/neutral из строки
+  (мусорный ответ → None, без fallback)
 """
 
 import sys
@@ -63,7 +64,7 @@ def test_response_with_extra_text(parse_label, raw, expected):
     assert parse_label(raw) == expected
 
 
-# ─── Мусорные ответы → neutral (fallback) ─────────────────────────────────────
+# ─── Мусорные ответы → None (без fallback) ─────────────────────────────────────
 
 @pytest.mark.parametrize("raw", [
     "",
@@ -78,9 +79,9 @@ def test_response_with_extra_text(parse_label, raw, expected):
     "negativ",
     "нейтральный",  # только кириллица без английского слова
 ])
-def test_garbage_response_returns_neutral(parse_label, raw):
-    """Мусорный ответ → fallback 'neutral'."""
+def test_garbage_response_returns_none(parse_label, raw):
+    """Мусорный ответ → None (строка не содержит валидной метки)."""
     result = parse_label(raw)
-    assert result == "neutral", (
-        f"Ожидался fallback 'neutral' для {raw!r}, получен {result!r}"
+    assert result is None, (
+        f"Ожидался None для мусорного ответа {raw!r}, получен {result!r}"
     )

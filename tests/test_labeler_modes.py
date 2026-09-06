@@ -56,7 +56,7 @@ def test_auto_mode_cache_hit_from_domain_labels(init_db, sample_row, monkeypatch
 
     llm_called = {"n": 0}
 
-    def fake_label_one_llm(row, provider_chain=None, model=None):
+    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
         llm_called["n"] += 1
         raise AssertionError("LLM не должен вызываться, когда есть кэш")
 
@@ -77,7 +77,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_empty_snippet(init_db, sample_
     """AUTO режим: пустой сниппет → neutral с confidence='uncertain' (без LLM вызова)."""
     sample_row["snippet"] = ""  # Пустой сниппет
 
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None: "positive")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "positive")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -92,7 +92,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_empty_snippet(init_db, sample_
 
 def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample_row, monkeypatch):
     """AUTO режим: ошибка провайдера → neutral с confidence='uncertain', кэш не отравляется."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: None)
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: None)
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -112,7 +112,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample
 
 def test_auto_mode_snippet_success_is_not_saved_to_domain_labels(init_db, sample_row, monkeypatch):
     """AUTO режим: успешная разметка по сниппету не меняет эталон."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "negative")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -153,7 +153,7 @@ def test_auto_mode_respects_manual_l1_priority(init_db, sample_row, monkeypatch)
     )
 
     # Пытаемся перезаписать через AUTO режим (source='snippet')
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "negative")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -168,8 +168,8 @@ def test_auto_mode_respects_manual_l1_priority(init_db, sample_row, monkeypatch)
     assert cached == "positive"
 
 
-def test_auto_mode_force_relabel_ignores_cache(init_db, sample_row, monkeypatch):
-    """AUTO режим: force_relabel=True игнорирует кэш domain_labels."""
+def test_auto_mode_force_relabel_respects_manual_l1(init_db, sample_row, monkeypatch):
+    """AUTO режим: force_relabel=True не обходит manual_l1 эталон (precedence rule)."""
     storage.upsert_domain_label(
         url="https://example.com/page1",
         query="subject a",
@@ -179,17 +179,23 @@ def test_auto_mode_force_relabel_ignores_cache(init_db, sample_row, monkeypatch)
         db_path=init_db,
     )
 
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
+    llm_called = {"n": 0}
+
+    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
+        llm_called["n"] += 1
+        raise AssertionError("LLM не должен вызываться: manual_l1 выигрывает всегда")
+
+    monkeypatch.setattr(labeler, "_label_one_llm", fake_label_one_llm)
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto", force_relabel=True)
 
     assert len(result) == 1
     labeled = result[0]
-    # При force_relabel, даже с manual_l1, попытаемся разметить по сниппету
-    # Но manual_l1 всё равно не перезаписывается, так что будет negative
-    # Проверим, что LLM был вызван
-    assert labeled["sentiment"] is not None
+    # manual_l1 эталон возвращается как есть, force_relabel его не обходит
+    assert labeled["sentiment"] == "positive"
+    assert labeled["label"] == "positive"
+    assert llm_called["n"] == 0
 
 
 # ─── Режим DEEP: только neutral обрабатывается ──────────────────────────────────
@@ -272,7 +278,7 @@ def test_auto_mode_logs_stats_per_searcher_geo(init_db, caplog, monkeypatch):
         db_path=init_db,
     )
 
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "negative")
 
     rows = [
         {
@@ -313,7 +319,7 @@ def test_auto_mode_logs_stats_per_searcher_geo(init_db, caplog, monkeypatch):
 
 def test_full_pipeline_auto_then_deep(init_db, sample_row, monkeypatch):
     """Полный пайплайн: AUTO разметил, потом DEEP обрабатывает."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "negative")
 
     # Шаг 1: AUTO разметка
     rows = [sample_row]
@@ -331,7 +337,7 @@ def test_full_pipeline_auto_then_deep(init_db, sample_row, monkeypatch):
 
 def test_unknown_label_mode_defaults_to_auto(init_db, sample_row, monkeypatch):
     """Неизвестный режим падает на AUTO с warning."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None: "positive")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "positive")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="unknown_mode")
@@ -491,7 +497,7 @@ def test_label_passes_model_override(monkeypatch, init_db, sample_row):
     """label() передаёт model override в _label_one_llm."""
     captured_model: dict[str, str | None] = {"value": None}
 
-    def fake_label_one_llm(row, provider_chain=None, model=None):
+    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
         captured_model["value"] = model
         return "positive"
 
@@ -507,7 +513,7 @@ def test_label_without_model_override(monkeypatch, init_db, sample_row):
     """label() без model передаёт None в _label_one_llm."""
     captured_model: dict[str, str | None] = {"value": "not_none"}
 
-    def fake_label_one_llm(row, provider_chain=None, model=None):
+    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
         captured_model["value"] = model
         return "positive"
 

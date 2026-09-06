@@ -171,6 +171,85 @@ def test_migrate_idempotent_on_fully_migrated_db(db_path):
         conn.close()
 
 
+# ─── 2a. Патч v1.1: run_status.run_id + label_conflicts на старой схеме ────────
+
+
+def test_apply_schema_patches_adds_run_id_and_label_conflicts(db_path):
+    """
+    БД со старой схемой run_status (БЕЗ run_id): _apply_schema_patches
+    добавляет колонку run_id и создаёт таблицу label_conflicts.
+    Патч идемпотентен.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        # Минимальная старая схема: clients + labels (нужны другим патчам),
+        # run_status — DDL из migrate.py минус run_id.
+        conn.execute("""
+            CREATE TABLE clients (
+                client_id   TEXT PRIMARY KEY,
+                client_name TEXT NOT NULL,
+                project_id  INTEGER,
+                sheet_id    TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE labels (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id    INTEGER NOT NULL,
+                client_id      TEXT NOT NULL,
+                label_mode     TEXT NOT NULL CHECK(label_mode IN ('auto','deep','domains','snippets','full')),
+                label_version  INTEGER NOT NULL,
+                sentiment      TEXT CHECK(sentiment IN ('positive','negative','neutral')),
+                confidence     TEXT CHECK(confidence IN ('high','uncertain')) DEFAULT 'high',
+                created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(position_id, label_mode, label_version)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE run_status (
+                id            INTEGER PRIMARY KEY CHECK(id = 1),
+                started_at    TEXT,
+                finished_at   TEXT,
+                status        TEXT NOT NULL DEFAULT 'idle',
+                client_id     TEXT,
+                stats         TEXT,
+                message       TEXT DEFAULT '',
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO run_status (id, status) VALUES (1, 'idle')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        migrate._apply_schema_patches(conn)
+        conn.commit()
+
+        assert "run_id" in _columns(conn, "run_status"), (
+            "Колонка run_status.run_id должна быть добавлена патчем"
+        )
+        assert _table_exists(conn, "label_conflicts"), (
+            "Таблица label_conflicts должна быть создана патчем"
+        )
+
+        # Идемпотентность: повторный патч не дублирует колонку/таблицу
+        migrate._apply_schema_patches(conn)
+        conn.commit()
+
+        run_id_cols = [
+            row[1] for row in conn.execute("PRAGMA table_info(run_status)").fetchall()
+            if row[1] == "run_id"
+        ]
+        assert run_id_cols == ["run_id"], "run_id задублировался при повторном патче"
+        assert _table_exists(conn, "label_conflicts")
+    finally:
+        conn.close()
+
+
 # ─── 3. Legacy results → перенос + доведение схемы ─────────────────────────────
 
 

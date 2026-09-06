@@ -104,15 +104,51 @@ def test_manual_l1_not_overwritten_by_page(init_db):
     assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
 
 
-def test_manual_l1_overwrites_manual_l1(init_db):
+def test_manual_l1_conflict_raises(init_db):
+    """manual_l1 с ДРУГИМ sentiment поверх существующей manual_l1 → ValueError."""
+    storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
+    )
+    with pytest.raises(ValueError, match="manual_l1 conflict"):
+        storage.upsert_domain_label(
+            "https://example.com/page", "subject a", "Литва", "negative", "manual_l1", db_path=init_db
+        )
+
+    # Существующая запись не изменилась
+    assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
+
+
+def test_manual_l1_same_sentiment_idempotent(init_db):
+    """Повторный upsert manual_l1 с тем же sentiment — идемпотентный успех без ошибки."""
     storage.upsert_domain_label(
         "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
     )
     storage.upsert_domain_label(
-        "https://example.com/page", "subject a", "Литва", "negative", "manual_l1", db_path=init_db
+        "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
     )
 
-    assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "negative"
+    assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
+
+
+def test_bulk_upsert_manual_conflict_raises(init_db):
+    """Bulk-батч с двумя manual_l1 (одинаковый domain+query, разный sentiment) → ValueError."""
+    items = [
+        {"url": "https://a.com/page", "query": "q1", "geo": "g1", "sentiment": "positive", "source": "manual_l1"},
+        {"url": "https://a.com/page", "query": "q1", "geo": "g1", "sentiment": "negative", "source": "manual_l1"},
+    ]
+    with pytest.raises(ValueError, match="manual_l1 conflict"):
+        storage.bulk_upsert_domain_labels(items, db_path=init_db)
+
+
+def test_bulk_upsert_manual_same_sentiment_ok(init_db):
+    """Две одинаковые manual_l1 записи в одном батче — без ошибки."""
+    items = [
+        {"url": "https://a.com/page", "query": "q1", "geo": "g1", "sentiment": "positive", "source": "manual_l1"},
+        {"url": "https://a.com/page", "query": "q1", "geo": "g1", "sentiment": "positive", "source": "manual_l1"},
+    ]
+    storage.bulk_upsert_domain_labels(items, db_path=init_db)
+
+    assert storage.get_domain_label("https://a.com/page", "q1", "g1", init_db) == "positive"
 
 
 def test_manual_l1_overwrites_snippet(init_db):

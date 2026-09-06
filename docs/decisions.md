@@ -1,6 +1,81 @@
 
 # Лог архитектурных решений (ADR)
 
+## 2026-09-05 — ADR: Изоляция domain_labels — подтверждена текущая модель
+
+**Контекст:** v1.1 workstream A intake. Spec `serp-factory-v1.1-roadmap.md`
+предполагал отдельную SQLite-БД на клиента, фактический runtime — общая БД:
+`positions`/`labels` размечены `client_id`, а `domain_labels` глобальный по
+`(domain, query)` без geo и client_id.
+
+**Решение (подтверждено пользователем 2026-09-05):**
+1. Остаёмся на общей БД: `positions`/`labels` с `client_id`,
+   `domain_labels` — глобальный эталон по `(domain, query)` без geo и client_id.
+2. Изоляция эталона отдельной БД на клиента откладывается на следующую версию
+   и зафиксирована в `docs/techdebt.md` (запись 2026-09-05).
+
+**Следствия:**
+- Validator (workstream A) строится поверх глобального эталона.
+- При появлении изоляции — миграция + бэкап + отдельный ADR.
+
+**Статус:** Принято
+
+---
+
+## 2026-09-05 — ADR: Etalon validator и журнал конфликтов разметки (workstream A)
+
+**Контекст:** Spec v1.1 требует deterministic validation layer вокруг labeler:
+объяснимость меток, диагностика жёлтых/neutral, защита эталона от
+автоперезаписи.
+
+**Решение:**
+1. **Pre-LLM lookup:** `manual_l1` по ключу `(normalize_domain(url), normalize_query(query))`
+   — жёсткий референс, нулевая стоимость LLM; `force_relabel` его НЕ обходит
+   (сбрасывает только автоматический кэш, которого в auto-режиме больше нет).
+2. **Post-label валидатор `_validate_labels` в `labeler.py`:** сравнивает
+   produced sentiment с эталоном; категории:
+   - `manual_neutral` — эталон говорит neutral;
+   - `unmatched_neutral` — нет эталона, fallback/LLM дал neutral;
+   - `manual_conflict` — результат ≠ `manual_l1`; строка исправляется на
+     эталон, конфликт фиксируется — не молча;
+   - `invalid_or_unknown` — пустой ключ/URL, мусорный ответ LLM.
+3. **Мусорный ответ LLM:** `_parse_label` возвращает `None` (раньше — ложный
+   neutral); строка получает `neutral` + `confidence='uncertain'` +
+   `label_source='fallback_invalid_llm'` → категория `invalid_or_unknown`.
+   Провайдер-сбой и пустой сниппет → `unmatched_neutral` (neutral + uncertain).
+4. **Журнал `label_conflicts`** (append-oriented, привязан к run_id): run_id,
+   domain, url, query, geo, searcher, position, observed_label, manual_label,
+   source, confidence, conflict_type, recommended_action, created_at;
+   ретеншн `prune_label_conflicts(keep_last_runs=50)`.
+5. **run_id:** `uuid4.hex`, генерируется в webhook (`POST /run`), хранится в
+   `run_status.run_id`, проходит в `main.run` → labeler → журнал; возвращается
+   в теле 202 и в `GET /status`.
+6. **Импорт эталона:** конфликт `manual_l1` → `manual_l1` с другим sentiment —
+   блокирующая ошибка записи (`ValueError "manual_l1 conflict"`),
+   last-write-wins запрещён; в `POST /labels/import` запись уходит в `errors`
+   с сообщением конфликта, батч продолжается; тот же sentiment — идемпотентно.
+7. **Новый эндпоинт `GET /labels/conflicts`** (Bearer, фильтр run_id, limit) —
+   экспорт журнала.
+
+**Почему:** объяснимость neutral, защита эталона от автоперезаписи, аудит
+расхождений, честный маркер мусорного ответа вместо ложного neutral.
+
+**Следствия:**
+- `force_relabel` больше не размечает `manual_l1` через LLM.
+- Тесты `test_parse_label` (мусор → None) и
+  `test_manual_l1_overwrites_manual_l1` (→ конфликт) изменены.
+- Stats прогона получили блок "validation".
+
+**Затронутые файлы:** `storage.py`, `labeler.py`, `main.py`, `webhook.py`,
+`migrate.py`, `verify.sh`, `tests/test_validator.py`, `tests/test_parse_label.py`,
+`tests/test_labeler_modes.py`, `tests/test_domain_labels.py`,
+`tests/test_webhook.py`, `tests/test_storage_schema.py`,
+`tests/test_migrate_idempotent.py`, `docs/contracts.md`, `docs/techdebt.md`.
+
+**Статус:** Принято, реализация в этой сессии.
+
+---
+
 ## 2026-09-05 — ADR: Provider auto-discovery, KNOWN_ENDPOINTS и free-модели Zen
 
 **Контекст:** Пользователь добавлял провайдера вручную (endpoint, модели, ключ).

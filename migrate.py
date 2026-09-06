@@ -210,6 +210,38 @@ def _apply_schema_patches(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("INSERT OR IGNORE INTO run_status (id, status) VALUES (1, 'idle')")
 
+    # run_id (v1.1 workstream A): идентификатор прогона
+    run_status_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(run_status)").fetchall()
+    }
+    if "run_id" not in run_status_cols:
+        conn.execute("ALTER TABLE run_status ADD COLUMN run_id TEXT")
+        log.info("Колонка run_status.run_id добавлена (ALTER TABLE)")
+
+    # Журнал валидации/конфликтов разметки (v1.1 workstream A)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS label_conflicts (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id             TEXT,
+            domain             TEXT NOT NULL,
+            url                TEXT,
+            query              TEXT NOT NULL,
+            geo                TEXT,
+            searcher           TEXT,
+            position           INTEGER,
+            observed_label     TEXT,
+            manual_label       TEXT,
+            source             TEXT,
+            confidence         TEXT,
+            conflict_type      TEXT NOT NULL CHECK(conflict_type IN (
+                'manual_neutral','unmatched_neutral','manual_conflict','invalid_or_unknown')),
+            recommended_action TEXT,
+            created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_lblconf_run ON label_conflicts(run_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_lblconf_key ON label_conflicts(domain, query)")
+
     # Обновление CHECK constraint labels для режимов auto/deep
     create_sql_row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='labels'"

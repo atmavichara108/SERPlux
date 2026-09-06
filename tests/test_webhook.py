@@ -57,10 +57,13 @@ class TestRunEndpoint:
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 202
-        assert pipeline_spy["args"] == (
+        args = pipeline_spy["args"]
+        assert args[:14] == (
             "map.json", True, 10, "default", "auto", False, False, "latest",
             "today", False, None, None, False, None,
         )
+        # 15-й аргумент — run_id (hex-строка), генерируется всегда
+        assert isinstance(args[14], str) and len(args[14]) >= 16
 
     def test_run_new_fields_passed(self, client, pipeline_spy):
         """Новые поля принимаются и пробрасываются в пайплайн."""
@@ -80,10 +83,13 @@ class TestRunEndpoint:
             headers={"Authorization": "Bearer test-secret"},
         )
         assert resp.status_code == 202
-        assert pipeline_spy["args"] == (
+        args = pipeline_spy["args"]
+        assert args[:14] == (
             "map.json", True, 10, "acme", "deep", True, False, "latest",
             "2026-07-01", True, "zen", None, True, ["google"],
         )
+        # 15-й аргумент — run_id (hex-строка), генерируется всегда
+        assert isinstance(args[14], str) and len(args[14]) >= 16
 
     def test_run_searchers_invalid_returns_422(self, client):
         """Неизвестный поисковик в searchers возвращает 422."""
@@ -226,6 +232,43 @@ class TestRunEndpoint:
         assert report_called["args"] is not None
         assert report_called["args"]["date"] == "2026-07-01"
         assert report_called["args"]["force"] is True
+
+
+class TestRunId:
+    """Тесты run_id: POST /run генерирует идентификатор прогона, GET /status его отдаёт."""
+
+    def test_run_response_contains_run_id(self, client, pipeline_spy):
+        """POST /run возвращает 202 с непустой строкой run_id в теле."""
+        resp = client.post(
+            "/run",
+            json={"regions_map": "map.json"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert isinstance(body.get("run_id"), str)
+        assert len(body["run_id"]) > 0
+
+    def test_status_returns_run_id_after_run(self, client, pipeline_spy):
+        """GET /status после POST /run возвращает тот же run_id."""
+        resp = client.post(
+            "/run",
+            json={"regions_map": "map.json"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 202
+        run_id = resp.json()["run_id"]
+
+        resp2 = client.get("/status", headers={"Authorization": "Bearer test-secret"})
+        assert resp2.status_code == 200
+        body = resp2.json()
+        assert body["run_id"] == run_id
+
+    def test_status_run_id_null_before_any_run(self, client):
+        """GET /status до первого прогона возвращает run_id=null."""
+        resp = client.get("/status", headers={"Authorization": "Bearer test-secret"})
+        assert resp.status_code == 200
+        assert resp.json()["run_id"] is None
 
 
 class TestRunAuth:
@@ -850,6 +893,84 @@ class TestClientProfilePipeline:
         assert cfg["client_id"] == "acme"
 
 
+class TestLabelsConflictsEndpoint:
+    """Тесты GET /labels/conflicts — журнал конфликтов разметки (v1.1)."""
+
+    def _auth(self):
+        return {"Authorization": "Bearer test-secret"}
+
+    def test_conflicts_empty_journal(self, client, client_db):
+        """Пустой журнал → {"conflicts": [], "count": 0}."""
+        resp = client.get("/labels/conflicts", headers=self._auth())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"conflicts": [], "count": 0}
+
+    def test_conflicts_filter_by_run_id(self, client, client_db):
+        """Фильтр run_id возвращает только записи этого прогона; новые сверху."""
+        run_a = "aaaa1111aaaa1111"
+        run_b = "bbbb2222bbbb2222"
+
+        storage.save_label_conflicts(
+            [
+                {"run_id": run_a, "domain": "a.com", "query": "q1", "conflict_type": "manual_neutral"},
+            ],
+            db_path=client_db,
+        )
+        storage.save_label_conflicts(
+            [
+                {"run_id": run_b, "domain": "b.com", "query": "q2", "conflict_type": "unmatched_neutral"},
+                {"run_id": run_a, "domain": "c.com", "query": "q3", "conflict_type": "manual_conflict",
+                 "url": "https://c.com/x", "geo": "Литва", "searcher": "google", "position": 3,
+                 "observed_label": "neutral", "manual_label": "positive"},
+            ],
+            db_path=client_db,
+        )
+
+        resp = client.get(f"/labels/conflicts?run_id={run_a}", headers=self._auth())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 2
+        assert len(body["conflicts"]) == 2
+        assert all(c["run_id"] == run_a for c in body["conflicts"])
+        # Новые сверху: последняя вставленная запись run_a — первая
+        assert body["conflicts"][0]["domain"] == "c.com"
+        assert body["conflicts"][1]["domain"] == "a.com"
+        # Ключевые поля контракта присутствуют
+        assert body["conflicts"][0]["conflict_type"] == "manual_conflict"
+        assert body["conflicts"][0]["query"] == "q3"
+
+    def test_conflicts_returns_contract_fields(self, client, client_db):
+        """Каждая запись содержит полный набор полей контракта."""
+        storage.save_label_conflicts(
+            [{"run_id": "run-xyz", "domain": "d.com", "query": "q9", "conflict_type": "invalid_or_unknown"}],
+            db_path=client_db,
+        )
+        resp = client.get("/labels/conflicts", headers=self._auth())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 1
+        record = body["conflicts"][0]
+        for field in (
+            "id", "run_id", "domain", "url", "query", "geo", "searcher", "position",
+            "observed_label", "manual_label", "source", "confidence", "conflict_type",
+            "recommended_action", "created_at",
+        ):
+            assert field in record, f"Поле {field} отсутствует в записи конфликта"
+
+    def test_conflicts_missing_auth_returns_401(self, client, client_db):
+        """GET /labels/conflicts без Bearer возвращает 401."""
+        assert client.get("/labels/conflicts").status_code == 401
+
+    def test_conflicts_invalid_auth_returns_403(self, client, client_db):
+        """GET /labels/conflicts с неверным Bearer возвращает 403."""
+        resp = client.get(
+            "/labels/conflicts",
+            headers={"Authorization": "Bearer wrong-secret"},
+        )
+        assert resp.status_code == 403
+
+
 class TestLabelsImportEndpoint:
     """Тесты POST /labels/import — батчевый импорт в domain_labels."""
 
@@ -1026,6 +1147,49 @@ class TestLabelsImportEndpoint:
             "https://a.com", "q1", "Литва", "positive", "snippet", db_path=client_db
         )
         assert storage.get_domain_label("https://a.com", "q1", "Литва", client_db) == "negative"
+
+    def test_import_labels_manual_l1_conflict_counts_error(self, client, client_db):
+        """Импорт manual_l1, конфликтующего с существующей manual_l1 (другой sentiment):
+        errors == 1, error_samples содержат 'manual_l1 conflict', в БД старый sentiment."""
+        import storage
+
+        storage.upsert_domain_label(
+            "https://a.com", "q1", "Литва", "positive", "manual_l1", db_path=client_db
+        )
+
+        resp = client.post(
+            "/labels/import",
+            json=[{"url": "https://a.com", "query": "q1", "geo": "Литва", "sentiment": "negative"}],
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["errors"] == 1
+        assert body["imported"] == 0
+        assert any("manual_l1 conflict" in s for s in body["error_samples"])
+
+        # В БД остаётся СТАРЫЙ sentiment
+        assert storage.get_domain_label("https://a.com", "q1", "Литва", client_db) == "positive"
+
+    def test_import_labels_same_manual_sentiment_is_idempotent(self, client, client_db):
+        """Повторный импорт manual_l1 с тем же sentiment → imported (идемпотентно)."""
+        import storage
+
+        storage.upsert_domain_label(
+            "https://a.com", "q1", "Литва", "positive", "manual_l1", db_path=client_db
+        )
+
+        resp = client.post(
+            "/labels/import",
+            json=[{"url": "https://a.com", "query": "q1", "geo": "Литва", "sentiment": "positive"}],
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"] == 1
+        assert body["errors"] == 0
+
+        assert storage.get_domain_label("https://a.com", "q1", "Литва", client_db) == "positive"
 
     def test_import_labels_partial_batch_continues(self, client, client_db):
         """Битая запись в середине батча не роняет остальные."""

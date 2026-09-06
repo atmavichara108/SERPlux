@@ -65,6 +65,12 @@ Row = {
   или `None` если записи нет. Домен нормализуется через `storage.normalize_domain`;
   `query` нормализуется к lowercase. `geo` в эталон не входит.
 
+- `get_domain_label_record(domain_or_url: str, query: str, db_path: str = DB_PATH) -> dict | None`
+  — Возвращает полную запись эталона `{domain, query, sentiment, source, updated_at}`
+  по ключу `(domain, query)`, или `None`, если записи нет или ключ пуст.
+  Нужна валидатору (v1.1), чтобы отличать `manual_l1` от legacy `snippet`/`page`
+  (`get_domain_label()` возвращает только sentiment, без `source`).
+
 - `upsert_domain_label(domain_or_url: str, query: str, sentiment: str,
                         source: str, db_path: str = DB_PATH) -> None`
   — INSERT или UPDATE записи в `domain_labels` по `PRIMARY KEY (domain, query)`.
@@ -72,12 +78,61 @@ Row = {
   При UPDATE обновляет `sentiment`, `source`, `updated_at`.
   Приоритет `source`: `manual_l1` не перезаписывается источниками `snippet`/`page`;
   `manual_l1` может перезаписать любую существующую запись.
+  **Конфликт эталона (v1.1):** `manual_l1` → `manual_l1` с **другим** sentiment —
+  блокирующая ошибка записи `ValueError "manual_l1 conflict"`
+  (last-write-wins запрещён); тот же sentiment — идемпотентно
+  (обновляется только `updated_at`).
   Полный канон разметки: `docs/labeling_canon.md`.
 
 - `bulk_upsert_domain_labels(items: list[dict], db_path: str = DB_PATH) -> None`
   — Массовый upsert списка записей `{domain, query, sentiment, source}`.
-  `domain` нормализуется. Применяются те же правила приоритета `source`,
-  что и в `upsert_domain_label`.
+  `domain` нормализуется. Применяются те же правила приоритета `source`
+  и конфликта `manual_l1` (`ValueError "manual_l1 conflict"` при другом
+  sentiment), что и в `upsert_domain_label`.
+
+- **Журнал конфликтов разметки `label_conflicts` (v1.1, ADR 2026-09-05):**
+  append-oriented, каждая запись привязана к `run_id` прогона.
+
+  - `CONFLICT_TYPES` — кортеж допустимых значений `conflict_type`:
+    `manual_neutral`, `unmatched_neutral`, `manual_conflict`, `invalid_or_unknown`.
+  - `save_label_conflicts(records: list[dict], db_path: str = DB_PATH) -> int`
+    — INSERT записей журнала. Валидирует `conflict_type` (входит в
+    `CONFLICT_TYPES`) и непустые `domain`/`query`. Возвращает кол-во записанных.
+  - `get_label_conflicts(run_id: str | None = None, limit: int = 500,
+      db_path: str = DB_PATH) -> list[dict]`
+    — Возвращает записи журнала, новые сверху; опциональный фильтр по `run_id`.
+  - `prune_label_conflicts(keep_last_runs: int = 50, db_path: str = DB_PATH) -> int`
+    — Ретеншн: удаляет записи журнала, кроме последних `keep_last_runs`
+    прогонов (по `run_id`). Возвращает кол-во удалённых.
+
+  DDL-состав таблицы (создаётся идемпотентно в `_init_db` и `migrate.py`):
+
+  ```sql
+  CREATE TABLE IF NOT EXISTS label_conflicts (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id             TEXT,
+      domain             TEXT NOT NULL,
+      url                TEXT,
+      query              TEXT NOT NULL,
+      geo                TEXT,
+      searcher           TEXT,
+      position           INTEGER,
+      observed_label     TEXT,
+      manual_label       TEXT,
+      source             TEXT,
+      confidence         TEXT,
+      conflict_type      TEXT NOT NULL CHECK(conflict_type IN
+                         ('manual_neutral','unmatched_neutral',
+                          'manual_conflict','invalid_or_unknown')),
+      recommended_action TEXT,
+      created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_lblconf_run ON label_conflicts(run_id);
+  CREATE INDEX IF NOT EXISTS idx_lblconf_key ON label_conflicts(domain, query);
+  ```
+
+  Колонка `run_id TEXT` в `run_status` (uuid4.hex прогона, ADR 2026-09-05) —
+  добавляется миграцией идемпотентно.
 
 - **Заполнение `domain_labels`:**
   Ручная эталонная разметка (source=`manual_l1`) обычно заполняется вне приложения.
@@ -100,6 +155,9 @@ Row = {
     `snippet`/`page`) и идемпотентность по PK `(domain, query)`.
   - Битая запись не прерывает батч: увеличивается `skipped` (валидация) или
     `errors` (ошибка БД), собираются первые ~5 сообщений в `error_samples`.
+  - Конфликт `manual_l1` → `manual_l1` с другим sentiment (ADR 2026-09-05):
+    запись уходит в `errors`, сообщение `"manual_l1 conflict"` попадает в
+    `error_samples`, батч продолжается. Тот же sentiment — идемпотентно.
   - Ответ HTTP 200 даже при частичных ошибках:
     `{"imported": N, "skipped": N, "errors": N, "error_samples": [...]}`.
 
@@ -250,15 +308,58 @@ DEFAULT_PROVIDER: str = "opencode-zen"
     force_relabel: bool = False,
     client_id: str = "default",
     provider_chain: str | None = None,
+    model: str | None = None,
+    run_id: str | None = None,
+    validation_out: dict | None = None,
   ) -> list[dict]`
-   — Проставляет `sentiment` (и алиас `label`), а также `confidence`, `label_mode` каждой строке.
+   — Проставляет `sentiment` (и алиас `label`), а также `confidence`,
+   `label_mode`, `label_source` каждой строке.
    Параметры:
    - `label_mode`: режим разметки (**"auto"** | **"deep"**; дефолт "auto")
-   - `force_relabel`: если True — игнорировать кэш, размечать всё заново
+   - `force_relabel`: сбросить автоматический кэш и размечать заново;
+     **эталон `manual_l1` НЕ обходится** (жёсткий референс, ADR 2026-09-05)
    - `client_id`: slug клиента (используется для `positions`/`labels`, не для `domain_labels`)
    - `provider_chain`: строка или список идентификаторов провайдеров через запятую;
      фильтрует `config.PROVIDERS` перед фолбек-цепочкой
-   Возвращает список с заполненными `sentiment`/`label`/`confidence`/`label_mode`.
+   - `model`: override модели текущего провайдера (ADR 2026-07-15)
+   - `run_id`: идентификатор прогона (uuid4.hex из webhook); пишется в записи
+     журнала `label_conflicts`
+   - `validation_out`: мутируемый dict-аккумулятор; после разметки заполняется
+     счётчиками `{total, ok, manual_neutral, unmatched_neutral, manual_conflict,
+     invalid_or_unknown, recorded}` — блок "validation" в stats прогона
+   Возвращает список с заполненными `sentiment`/`label`/`confidence`/`label_mode`/`label_source`.
+
+   **Pre-LLM lookup (эталон — жёсткий референс):** перед LLM ищется `manual_l1`
+   по ключу `(normalize_domain(url), normalize_query(query))`. Найдено →
+   sentiment из эталона, `confidence='high'`, LLM не вызывается (нулевая
+   стоимость). `force_relabel` сбрасывает только автоматический кэш, которого
+   в auto-режиме больше нет.
+
+   **Post-label валидация (`_validate_labels`):** после разметки каждая строка
+   сравнивается produced sentiment с эталоном; категории конфликтов:
+   - `manual_neutral` — эталон говорит neutral;
+   - `unmatched_neutral` — эталона нет, fallback/LLM дал neutral
+     (провайдер-сбой и пустой сниппет → neutral + uncertain);
+   - `manual_conflict` — результат ≠ `manual_l1`: строка **исправляется на
+     эталон**, конфликт пишется в журнал `label_conflicts` (не молча);
+   - `invalid_or_unknown` — пустой ключ/URL или мусорный ответ LLM.
+
+- `_parse_label(raw: str | None) -> str | None`
+   — Нормализует ответ LLM к `{"positive","negative","neutral"}`; возвращает
+   `None` для мусорного/нечитаемого ответа (раньше мусор превращался в ложный
+   `neutral`).
+
+- `_label_one_llm(row: dict, provider_chain=None, model=None, invalid_ref=None)`
+   — Одиночный вызов LLM по сниппету с retry/fallback по цепочке провайдеров.
+   `invalid_ref` — мутируемый счётчик нечитаемых ответов: инкрементируется,
+   когда `_parse_label` вернул `None`. Строка получает `neutral` +
+   `confidence='uncertain'` + `label_source='fallback_invalid_llm'`.
+
+- **Транзиентное поле строки `label_source`** ∈
+  {`manual_l1`, `llm`, `fallback_empty_snippet`, `fallback_provider_error`,
+  `fallback_invalid_llm`, `fallback_invalid_key`}
+  — источник метки в текущем прогоне (в `positions`/`labels` не сохраняется);
+  используется валидатором, журналом конфликтов и статистикой прогона.
 
    **Режимы (двухрежимная система):**
    
@@ -343,9 +444,14 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
 {
     "accepted": true,
     "started_at": "2026-07-04T10:00:00.123456+00:00",
-    "client_id": "sudheimer"
+    "client_id": "sudheimer",
+    "run_id": "3f2c9a6e8b7d4f1a9c0d2e5b8a1f4c7e"
 }
 ```
+
+**`run_id`:** `uuid4.hex`, генерируется при старте прогона; хранится в
+`run_status.run_id`, проходит `main.run` → labeler → журнал `label_conflicts`,
+возвращается в `GET /status` (ADR 2026-09-05).
 
 **Ответ 409 Conflict:**
 ```json
@@ -372,6 +478,7 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
     "started_at": "2026-07-04T10:00:00.123456+00:00",
     "finished_at": "2026-07-04T10:05:32.654321+00:00",
     "client_id": "sudheimer",
+    "run_id": "3f2c9a6e8b7d4f1a9c0d2e5b8a1f4c7e",
     "message": "Прогон завершён успешно"
 }
 ```
@@ -381,6 +488,7 @@ Runtime-config собирается как `DEFAULT_CONFIG` → параметр
 - `started_at`: ISO-формат времени старта прогона (null если не было прогонов)
 - `finished_at`: ISO-формат времени завершения (null пока прогон идёт)
 - `client_id`: ID клиента из последнего/текущего прогона (null если не было прогонов)
+- `run_id`: идентификатор последнего/текущего прогона, uuid4.hex (null если не было прогонов)
 - `message`: текстовое сообщение о результате или ошибке
 
 ### GET /health
@@ -506,6 +614,45 @@ Health-check для мониторинга контейнера (без авто
 
 **Ответ 502 Bad Gateway:** при ошибке связи с Topvisor.
 
+### GET /labels/conflicts
+
+Возвращает журнал конфликтов разметки (v1.1, ADR 2026-09-05).
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Query-параметры:**
+```python
+{
+    "run_id": str | None,   # фильтр по прогону (опционально)
+    "limit": int = 500,     # максимум записей
+}
+```
+
+**Ответ 200 OK:**
+```json
+{
+    "conflicts": [
+        {
+            "run_id": "3f2c9a6e8b7d4f1a9c0d2e5b8a1f4c7e",
+            "domain": "example.de",
+            "url": "https://example.de/page",
+            "query": "Example Group",
+            "geo": "Германия",
+            "searcher": "google",
+            "position": 3,
+            "observed_label": "neutral",
+            "manual_label": "positive",
+            "source": "manual_l1",
+            "confidence": "high",
+            "conflict_type": "manual_conflict",
+            "recommended_action": "Проверить эталон и результат разметки",
+            "created_at": "2026-09-05 12:00:00"
+        }
+    ],
+    "count": 1
+}
+```
+
 ### GET /providers
 
 Возвращает список зарегистрированных провайдеров LLM (только чтение).
@@ -562,6 +709,8 @@ CREATE INDEX idx_domlbl_domain_query ON domain_labels(domain, query);
 - `migrate.py` выполняет эти DDL-шаги идемпотентно
 - Если существует старая схема `domain_labels` (с `id`/`client_id`/`domain`) — таблица пересоздаётся
 - На боевой БД запускать **только после бэкапа** и проверки на копии
+- v1.1 (ADR 2026-09-05): миграция также идемпотентно создаёт таблицу
+  `label_conflicts` (DDL в разделе storage.py) и колонку `run_status.run_id`
 
 ## reporter.py — раскладка отчёта
 

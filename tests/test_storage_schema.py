@@ -541,6 +541,36 @@ def test_default_client_created_on_init(init_db):
         conn.close()
 
 
+def test_schema_v11_run_id_and_label_conflicts(init_db):
+    """v1.1: run_status имеет колонку run_id; существует таблица label_conflicts с CHECK."""
+    conn = sqlite3.connect(init_db)
+    try:
+        run_status_cols = {row[1] for row in conn.execute("PRAGMA table_info(run_status)").fetchall()}
+        assert "run_id" in run_status_cols, "run_status.run_id отсутствует"
+
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        assert "label_conflicts" in tables, "таблица label_conflicts отсутствует"
+
+        conflict_cols = {row[1] for row in conn.execute("PRAGMA table_info(label_conflicts)").fetchall()}
+        assert "run_id" in conflict_cols
+        assert "domain" in conflict_cols
+        assert "query" in conflict_cols
+        assert "conflict_type" in conflict_cols
+
+        # CHECK constraint на допустимые типы конфликтов
+        ddl_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='label_conflicts'"
+        ).fetchone()
+        assert ddl_row is not None
+        ddl = ddl_row[0] or ""
+        for allowed in ("manual_neutral", "unmatched_neutral", "manual_conflict", "invalid_or_unknown"):
+            assert allowed in ddl, f"CHECK conflict_type не содержит {allowed}"
+    finally:
+        conn.close()
+
+
 # ─── Блок 7: управление клиентами ─────────────────────────────────────────────
 
 

@@ -56,6 +56,8 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     force_rebuild_report = config.get("force_rebuild_report", False)
     provider_chain = config.get("provider_chain")
     model = config.get("model")
+    run_id = config.get("run_id")
+    validation_stats: dict[str, Any] = {}
 
     # Наполняем config значениями из профиля клиента / fallback DEFAULT_CONFIG
     runtime_config = {
@@ -70,7 +72,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     if config.get("regions_map"):
         runtime_config["regions_map"] = config["regions_map"]
 
-    stats = {
+    stats: dict[str, Any] = {
         "collected": 0,
         "saved_new": 0,
         "labeled": 0,
@@ -112,6 +114,8 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
                 "force_relabel": force_relabel,
                 "client_id": client_id,
                 "db_path": storage.DB_PATH,
+                "run_id": run_id,
+                "validation_out": validation_stats,
             }
             if provider_chain is not None:
                 label_kwargs["provider_chain"] = provider_chain
@@ -125,6 +129,10 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
             log.error("Сбой labeler: %s", e)
     else:
         log.info("Разметка пропущена (with_labels=False)")
+
+    # Сводка валидации разметки (v1.1 workstream A) → stats прогона
+    if validation_stats:
+        stats["validation"] = validation_stats
 
     export_ok = False
     try:

@@ -13,6 +13,7 @@ webhook.py — FastAPI endpoint для запуска пайплайна из Go
 import os
 import re
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -203,8 +204,11 @@ def _run_pipeline(
     model: str | None = None,
     label_only: bool = False,
     searchers: list[str] | None = None,
+    run_id: str | None = None,
 ) -> None:
     """Запускает полный пайплайн или только построение/разметку/сбор в фоновом потоке."""
+    if not run_id:
+        run_id = uuid.uuid4().hex
     started_at = datetime.now(timezone.utc).isoformat()
     storage.update_run_status(
         {
@@ -214,13 +218,14 @@ def _run_pipeline(
             "finished_at": None,
             "message": "",
             "stats": None,
+            "run_id": run_id,
         },
         db_path=storage.DB_PATH,
     )
     log.info(
-        "Фоновый прогон запущен: client_id=%s, label_mode=%s, force_relabel=%s, "
+        "Фоновый прогон запущен: run_id=%s, client_id=%s, label_mode=%s, force_relabel=%s, "
         "report_only=%s, label_only=%s, date=%s",
-        client_id, label_mode, force_relabel, report_only, label_only, date,
+        run_id, client_id, label_mode, force_relabel, report_only, label_only, date,
     )
 
     def _set_status(status: str, message: str, stats: dict | None = None) -> None:
@@ -273,6 +278,7 @@ def _run_pipeline(
                 raise ValueError(f"Нет данных за {target_date} для разметки")
 
             log.info("Разметка %s строк (label_only=True) за %s", len(rows), target_date)
+            validation_stats: dict[str, Any] = {}
             labeled_rows = label(
                 rows,
                 label_mode=label_mode,
@@ -281,16 +287,19 @@ def _run_pipeline(
                 provider_chain=provider_chain,
                 model=model,
                 db_path=storage.DB_PATH,
+                run_id=run_id,
+                validation_out=validation_stats,
             )
             storage.insert_labels(labeled_rows, db_path=storage.DB_PATH)
 
             build_report(date=target_date, force=force_rebuild_report, sheet_id=sheet_id,
                         client_id=client_id, db_path=storage.DB_PATH)
-            _set_status(
-                "ok",
-                "Разметка завершена успешно",
-                stats={"collected": 0, "saved_new": 0, "labeled": len(labeled_rows), "exported": 0},
-            )
+            label_stats: dict[str, Any] = {
+                "collected": 0, "saved_new": 0, "labeled": len(labeled_rows), "exported": 0,
+            }
+            if validation_stats:
+                label_stats["validation"] = validation_stats
+            _set_status("ok", "Разметка завершена успешно", stats=label_stats)
             log.info("Разметка завершена успешно")
             return
 
@@ -312,6 +321,7 @@ def _run_pipeline(
             request_params["model"] = model
         if searchers:
             request_params["searchers"] = searchers
+        request_params["run_id"] = run_id
         # regions_map из тела запроса пока сохраняем для обратной совместимости,
         # но профиль клиента может его перекрыть
         if regions_map:
@@ -381,6 +391,7 @@ def trigger_run(
             detail="Прогон уже выполняется, подождите завершения",
         )
 
+    run_id = uuid.uuid4().hex
     started_at = datetime.now(timezone.utc).isoformat()
     storage.update_run_status(
         {
@@ -390,6 +401,7 @@ def trigger_run(
             "message": "",
             "client_id": body.client_id,
             "stats": None,
+            "run_id": run_id,
         },
         db_path=storage.DB_PATH,
     )
@@ -411,6 +423,7 @@ def trigger_run(
             body.model,
             body.label_only,
             body.searchers,
+            run_id,
         ),
         daemon=True,
     )
@@ -421,7 +434,12 @@ def trigger_run(
         body.regions_map, body.client_id, body.label_mode, body.force_relabel, body.report_only,
     )
     return JSONResponse(
-        {"accepted": True, "started_at": started_at, "client_id": body.client_id},
+        {
+            "accepted": True,
+            "started_at": started_at,
+            "client_id": body.client_id,
+            "run_id": run_id,
+        },
         status_code=status.HTTP_202_ACCEPTED,
     )
 
@@ -1050,6 +1068,28 @@ def import_domain_labels(
         "errors": errors,
         "error_samples": error_samples,
     })
+
+
+@app.get("/labels/conflicts")
+def list_label_conflicts(
+    run_id: str | None = None,
+    limit: int = 500,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """
+    Журнал валидации/конфликтов разметки (v1.1 workstream A).
+
+    Query-параметры:
+      - run_id: фильтр по идентификатору прогона (опционально);
+      - limit: максимум записей (по умолчанию 500).
+
+    Ответ: {"conflicts": [...], "count": N} — новые записи сверху.
+    """
+    _verify_token(authorization)
+    rows = storage.get_label_conflicts(
+        run_id=run_id, limit=limit, db_path=storage.DB_PATH,
+    )
+    return JSONResponse({"conflicts": rows, "count": len(rows)})
 
 
 def _extract_str(value: Any) -> str:

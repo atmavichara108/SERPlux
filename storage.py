@@ -143,6 +143,39 @@ def _init_db(db_path: str = DB_PATH) -> None:
             VALUES (1, 'idle')
         """)
 
+        # run_id (v1.1): криптографически случайный идентификатор прогона.
+        # Для старых БД колонка добавляется миграционно (идемпотентно).
+        try:
+            conn.execute("ALTER TABLE run_status ADD COLUMN run_id TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
+        # Журнал валидации/конфликтов разметки (v1.1 workstream A).
+        # Append-oriented: записи привязаны к run_id, ретеншн через prune.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS label_conflicts (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id             TEXT,
+                domain             TEXT NOT NULL,
+                url                TEXT,
+                query              TEXT NOT NULL,
+                geo                TEXT,
+                searcher           TEXT,
+                position           INTEGER,
+                observed_label     TEXT,
+                manual_label       TEXT,
+                source             TEXT,
+                confidence         TEXT,
+                conflict_type      TEXT NOT NULL CHECK(conflict_type IN (
+                    'manual_neutral','unmatched_neutral','manual_conflict','invalid_or_unknown')),
+                recommended_action TEXT,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_lblconf_run ON label_conflicts(run_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_lblconf_key ON label_conflicts(domain, query)")
+
         # Справочник эталонной разметки: ключ (domain, query), без geo и client_id.
         # Приоритет source: manual_l1 > snippet/page. manual_l1 не перезаписывается
         # автоматическими источниками (snippet/page), только другим manual_l1.
@@ -623,6 +656,35 @@ def get_domain_label(domain_or_url: str, query: str, db_path: str = DB_PATH, *le
         conn.close()
 
 
+def get_domain_label_record(
+    domain_or_url: str, query: str, db_path: str = DB_PATH
+) -> dict | None:
+    """
+    Возвращает полную запись эталона по (domain, query):
+    {domain, query, sentiment, source, updated_at} или None.
+
+    Используется валидатором разметки (v1.1 workstream A): источник записи
+    нужен, чтобы отличать жёсткий референс manual_l1 от legacy-автозаписей
+    (snippet/page), которые эталоном не являются.
+    """
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        domain = normalize_domain(domain_or_url)
+        query_norm = normalize_query(query)
+        if not domain or not query_norm:
+            return None
+        row = conn.execute(
+            """SELECT domain, query, sentiment, source, updated_at
+               FROM domain_labels
+               WHERE domain = ? AND query = ?""",
+            (domain, query_norm),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def upsert_domain_label(
     domain_or_url: str | None = None,
     query: str | None = None,
@@ -661,20 +723,29 @@ def upsert_domain_label(
     try:
         domain = normalize_domain(domain_or_url)
         query_norm = normalize_query(query)
-        # Проверяем существующую запись и её source
+        # Проверяем существующую запись и её source/sentiment
         existing = conn.execute(
-            """SELECT source FROM domain_labels
+            """SELECT source, sentiment FROM domain_labels
                WHERE domain = ? AND query = ?""",
             (domain, query_norm),
         ).fetchone()
 
-        if existing is not None and existing["source"] == "manual_l1" and source != "manual_l1":
-            # Существующая manual_l1 не перезаписывается автоматическими источниками
-            log.debug(
-                "domain_labels: пропускаю обновление %s/%s (manual_l1 -> %s)",
-                domain, query_norm, source
-            )
-            return
+        if existing is not None and existing["source"] == "manual_l1":
+            if source != "manual_l1":
+                # Существующая manual_l1 не перезаписывается автоматическими источниками
+                log.debug(
+                    "domain_labels: пропускаю обновление %s/%s (manual_l1 -> %s)",
+                    domain, query_norm, source
+                )
+                return
+            if existing["sentiment"] != sentiment:
+                # Конфликт ручных эталонов: last-write-wins запрещён
+                raise ValueError(
+                    f"manual_l1 conflict for ({domain}, {query_norm}): "
+                    f"existing={existing['sentiment']}, new={sentiment}; "
+                    "требуется явное разрешение оператора (last-write-wins запрещён)"
+                )
+            # Тот же sentiment — идемпотентный upsert, идём дальше
 
         conn.execute(
             """INSERT INTO domain_labels
@@ -711,7 +782,8 @@ def bulk_upsert_domain_labels(
     _ensure_db(db_path)
     conn = _get_conn(db_path)
     try:
-        # Сначала находим все существующие manual_l1, которые нельзя перезаписывать
+        # Сначала находим все существующие manual_l1 (с их sentiment),
+        # которые нельзя перезаписывать автоматикой и нельзя молча конфликтовать
         keys = [
             (normalize_domain(item.get("domain", item.get("url", ""))), normalize_query(item["query"]))
             for item in items
@@ -720,25 +792,38 @@ def bulk_upsert_domain_labels(
         if placeholders:
             flat_keys = [v for tup in keys for v in tup]
             existing_manual = {
-                (row["domain"], row["query"])
+                (row["domain"], row["query"]): row["sentiment"]
                 for row in conn.execute(
-                    f"""SELECT domain, query FROM domain_labels
+                    f"""SELECT domain, query, sentiment FROM domain_labels
                         WHERE (domain, query) IN ({placeholders})
                           AND source = 'manual_l1'""",
                     flat_keys,
                 ).fetchall()
             }
         else:
-            existing_manual = set()
+            existing_manual = {}
+
+        # Intra-batch учёт manual_l1: два конфликтующих manual в одном батче
+        # тоже дают ValueError, а не last-write-wins
+        seen_manual: dict[tuple[str, str], str] = {}
 
         for item in items:
             domain = normalize_domain(item.get("domain", item.get("url", "")))
             query = normalize_query(item["query"])
             sentiment = item["sentiment"]
             source = item["source"]
+            key = (domain, query)
 
-            if (domain, query) in existing_manual and source != "manual_l1":
-                continue
+            existing_sentiment = existing_manual.get(key) or seen_manual.get(key)
+            if existing_sentiment is not None:
+                if source != "manual_l1":
+                    continue
+                if existing_sentiment != sentiment:
+                    raise ValueError(
+                        f"manual_l1 conflict for ({domain}, {query}): "
+                        f"existing={existing_sentiment}, new={sentiment}; "
+                        "требуется явное разрешение оператора (last-write-wins запрещён)"
+                    )
 
             conn.execute(
                 """INSERT INTO domain_labels
@@ -750,7 +835,128 @@ def bulk_upsert_domain_labels(
                         updated_at = datetime('now')""",
                 (domain, query, sentiment, source),
             )
+            if source == "manual_l1":
+                seen_manual[key] = sentiment
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ─── Журнал валидации/конфликтов разметки (v1.1 workstream A) ─────────────────
+
+# Допустимые категории конфликтов (совпадают с CHECK в таблице label_conflicts)
+CONFLICT_TYPES = ("manual_neutral", "unmatched_neutral", "manual_conflict", "invalid_or_unknown")
+
+
+def save_label_conflicts(records: list[dict], db_path: str = DB_PATH) -> int:
+    """
+    Вставляет записи в журнал label_conflicts (append-only аудит).
+
+    Валидация КАЖДОЙ записи выполняется ДО вставки: невалидная запись в
+    середине батча отменяет весь батч (ValueError, ничего не записано).
+    Отсутствующие ключи записываются как NULL.
+    Возвращает число вставленных записей.
+    """
+    if not records:
+        return 0
+
+    # Валидация всех записей до любой вставки.
+    # Пустые domain/query ДОПУСТИМЫ: категория invalid_or_unknown как раз
+    # фиксирует строки с невалидным ключом ("" удовлетворяет NOT NULL).
+    for rec in records:
+        if rec.get("conflict_type") not in CONFLICT_TYPES:
+            raise ValueError(
+                f"conflict_type must be one of {'/'.join(CONFLICT_TYPES)}, "
+                f"got {rec.get('conflict_type')!r}"
+            )
+
+    columns = (
+        "run_id", "domain", "url", "query", "geo", "searcher", "position",
+        "observed_label", "manual_label", "source", "confidence",
+        "conflict_type", "recommended_action",
+    )
+    placeholders = ", ".join("?" for _ in columns)
+    col_list = ", ".join(columns)
+
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        for rec in records:
+            conn.execute(
+                f"INSERT INTO label_conflicts ({col_list}) VALUES ({placeholders})",
+                tuple(rec.get(col) for col in columns),
+            )
+        conn.commit()
+        return len(records)
+    finally:
+        conn.close()
+
+
+def get_label_conflicts(
+    run_id: str | None = None, limit: int = 500, db_path: str = DB_PATH
+) -> list[dict]:
+    """
+    Возвращает записи журнала label_conflicts (новые сверху: ORDER BY id DESC).
+    Если задан run_id — только записи этого прогона.
+    """
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        query = "SELECT * FROM label_conflicts"
+        params: list[Any] = []
+        if run_id is not None:
+            query += " WHERE run_id = ?"
+            params.append(run_id)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def prune_label_conflicts(keep_last_runs: int = 50, db_path: str = DB_PATH) -> int:
+    """
+    Ретеншн журнала: оставляет записи только последних keep_last_runs прогонов
+    (по MAX(created_at) каждого run_id). Записи с run_id=NULL не удаляются —
+    это журнал прямых вызовов label() вне прогона (скрипты/отладка).
+    Возвращает суммарное число удалённых записей.
+    """
+    _ensure_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        keep_rows = conn.execute(
+            """SELECT run_id, MAX(created_at) AS last_ts
+               FROM label_conflicts
+               WHERE run_id IS NOT NULL
+               GROUP BY run_id
+               ORDER BY last_ts DESC
+               LIMIT ?""",
+            (keep_last_runs,),
+        ).fetchall()
+        keep_ids = [r["run_id"] for r in keep_rows]
+
+        removed = 0
+        if keep_ids:
+            placeholders = ",".join("?" for _ in keep_ids)
+            cur = conn.execute(
+                f"""DELETE FROM label_conflicts
+                    WHERE run_id IS NOT NULL AND run_id NOT IN ({placeholders})""",
+                keep_ids,
+            )
+            removed += cur.rowcount
+        else:
+            cur = conn.execute("DELETE FROM label_conflicts WHERE run_id IS NOT NULL")
+            removed += cur.rowcount
+
+        # Записи с run_id=NULL НЕ удаляются: валидатор пишет их при прямых
+        # вызовах label() без прогона; production-прогоны всегда имеют run_id
+        # и ретеншн по keep_last_runs.
+
+        conn.commit()
+        if removed:
+            log.info("prune_label_conflicts: удалено %s записей", removed)
+        return removed
     finally:
         conn.close()
 
@@ -767,7 +973,7 @@ def get_run_status(db_path: str = DB_PATH) -> dict:
     conn = _get_conn(db_path)
     try:
         row = conn.execute(
-            """SELECT started_at, finished_at, status, client_id, stats, message
+            """SELECT started_at, finished_at, status, client_id, stats, message, run_id
                FROM run_status WHERE id = 1"""
         ).fetchone()
         if row is None:
@@ -778,6 +984,7 @@ def get_run_status(db_path: str = DB_PATH) -> dict:
                 "client_id": None,
                 "stats": None,
                 "message": "",
+                "run_id": None,
             }
         result = dict(row)
         stats = result.get("stats")
@@ -794,10 +1001,10 @@ def get_run_status(db_path: str = DB_PATH) -> dict:
 def update_run_status(fields: dict, db_path: str = DB_PATH) -> None:
     """
     Атомарно обновляет поля статуса прогона (id=1).
-    Допустимые поля: started_at, finished_at, status, client_id, stats, message.
+    Допустимые поля: started_at, finished_at, status, client_id, stats, message, run_id.
     stats может быть dict/list — будет сериализован в JSON.
     """
-    allowed = {"started_at", "finished_at", "status", "client_id", "stats", "message"}
+    allowed = {"started_at", "finished_at", "status", "client_id", "stats", "message", "run_id"}
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"Недопустимые поля run_status: {', '.join(sorted(unknown))}")

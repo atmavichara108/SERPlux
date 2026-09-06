@@ -23,10 +23,12 @@ def report_etalon_coverage(rows: list[dict], db_path: str = storage.DB_PATH) -> 
         for row in rows
     }
     keys.discard(("", ""))
-    labels = {
-        key: storage.get_domain_label(key[0], key[1], db_path)
-        for key in keys
-    }
+    # Покрытие считается только по жёсткому эталону manual_l1:
+    # legacy-записи snippet/page эталоном не являются (v1.1 workstream A).
+    labels = {}
+    for key in keys:
+        rec = storage.get_domain_label_record(key[0], key[1], db_path)
+        labels[key] = rec.get("sentiment") if rec is not None and rec.get("source") == "manual_l1" else None
     matched = sum(value is not None for value in labels.values())
     for domain, query in sorted(keys):
         if labels[(domain, query)] is None:
@@ -102,13 +104,17 @@ def _build_prompt(query: str, url: str, snippet: str) -> str:
     )
 
 
-def _parse_label(raw: str) -> str:
-    """Извлекает sentiment из LLM-ответа, fallback на neutral."""
-    match = LABEL_PATTERN.search(raw)
+def _parse_label(raw: str) -> str | None:
+    """Извлекает sentiment из LLM-ответа.
+
+    v1.1 (workstream A): мусорный ответ → None (честный маркер
+    категории invalid_or_unknown), а не ложный neutral.
+    """
+    match = LABEL_PATTERN.search(raw or "")
     if match:
         return match.group(1).lower()
-    log.warning("LLM вернул мусор '%s', ставлю neutral", raw.strip()[:80])
-    return "neutral"
+    log.warning("LLM вернул мусор '%s' — метка не распознана", (raw or "").strip()[:80])
+    return None
 
 
 def _normalize_provider_chain(provider_chain: str | list[str] | None) -> list[str] | None:
@@ -210,15 +216,30 @@ def _call_provider(provider_id: str, provider_cfg: dict, prompt: str, model: str
     return None
 
 
-def _label_one_llm(row: dict, provider_chain: str | list[str] | None = None, model: str | None = None) -> str | None:
+def _label_one_llm(
+    row: dict,
+    provider_chain: str | list[str] | None = None,
+    model: str | None = None,
+    invalid_ref: list | None = None,
+) -> str | None:
     """Вызывает LLM для разметки по цепочке провайдеров
-    (без проверки кэша — кэш проверяет label())."""
+    (без проверки кэша — кэш проверяет label()).
+
+    invalid_ref: опциональный счётчик [n]; инкрементируется, если провайдер
+    вернул нечитаемый ответ (v1.1: категория invalid_or_unknown).
+    """
     prompt = _build_prompt(row["query"], row["url"], row.get("snippet", ""))
     chain = _get_provider_chain(provider_chain)
     for provider_id, provider_cfg in chain:
         raw = _call_provider(provider_id, provider_cfg, prompt, model=model)
         if raw is not None:
             lbl = _parse_label(raw)
+            if lbl is None:
+                # Мусорный ответ провайдера — учитываем как invalid,
+                # наружу отдаём None (fallback neutral ставит группа)
+                if invalid_ref is not None:
+                    invalid_ref[0] += 1
+                return None
             log.info("%s: %s + '%s' -> %s", provider_id, row["url"], row["query"], lbl)
             return lbl
     # Все провайдеры недоступны — возвращаем None, не neutral
@@ -251,12 +272,15 @@ def _label_group_auto(
     searcher = group_rows[0].get("searcher") or "unknown"
     geo = group_rows[0].get("geo") or "unknown"
 
+    invalid_ref = [0]  # счётчик мусорных ответов LLM (v1.1: invalid_or_unknown)
     stats = {
         "total": len(group_rows),
-        "cache_hit": 0,      # Взяли из кэша domain_labels
+        "cache_hit": 0,      # Взяли из эталона domain_labels (manual_l1)
         "snippet_success": 0, # Разметили по сниппету успешно
-        "snippet_fallback_neutral": 0,  # Сниппет пуст или LLM ошибка → neutral
+        "snippet_fallback_neutral": 0,  # Сниппет пуст → neutral
         "provider_error": 0,  # Счётчик ошибок провайдера
+        "invalid_llm": 0,     # Мусорный ответ LLM (v1.1)
+        "invalid_key": 0,     # Пустой domain/query (v1.1)
     }
 
     log.info("AUTO: разметка группы searcher=%s geo=%s строк=%s",
@@ -274,20 +298,38 @@ def _label_group_auto(
         query = row.get("query") or ""
         snippet = row.get("snippet", "")
 
-        log.info("AUTO: url=%s query='%s' geo=%s — cache lookup", url, query, geo)
+        log.info("AUTO: url=%s query='%s' geo=%s — etalon lookup", url, query, geo)
 
         # Шаг 1: Проверяем эталон (domain, query), geo не участвует в ключе.
-        if domain and not force_relabel:
-            cached_sentiment = storage.get_domain_label(domain, query, db_path)
-            if cached_sentiment is not None:
-                row["sentiment"] = cached_sentiment
-                row["label"] = cached_sentiment
-                stats["cache_hit"] += 1
-                log.info("AUTO cache HIT: url=%s -> %s", url, cached_sentiment)
-                result.append(row)
-                continue
+        # manual_l1 — жёсткий референс: выигрывает всегда, force_relabel его
+        # не обходит (v1.1 precedence rule 5); force_relabel сбрасывает только
+        # автоматический кэш, которого в auto-режиме больше нет.
+        record = None
+        if domain and query:
+            record = storage.get_domain_label_record(url, query, db_path)
+        if record is not None and record.get("source") == "manual_l1" and record.get("sentiment"):
+            row["sentiment"] = record["sentiment"]
+            row["label"] = record["sentiment"]
+            row["confidence"] = "high"
+            row["label_source"] = "manual_l1"
+            stats["cache_hit"] += 1
+            log.info("AUTO etalon HIT (manual_l1): url=%s -> %s", url, record["sentiment"])
+            result.append(row)
+            continue
 
-        log.info("AUTO cache MISS: url=%s, calling LLM", url)
+        log.info("AUTO etalon MISS: url=%s", url)
+
+        # Шаг 1b: Невалидный ключ — не гоняем строку в LLM
+        # (v1.1: категория invalid_or_unknown).
+        if not domain or not query:
+            log.warning("AUTO invalid key: url=%r query=%r -> neutral (uncertain)", url, query)
+            row["sentiment"] = "neutral"
+            row["label"] = "neutral"
+            row["confidence"] = "uncertain"
+            row["label_source"] = "fallback_invalid_key"
+            stats["invalid_key"] += 1
+            result.append(row)
+            continue
 
         # Шаг 2: Если сниппет пуст — ставим neutral (маркер неуверенности)
         if not snippet or not snippet.strip():
@@ -296,6 +338,7 @@ def _label_group_auto(
             row["sentiment"] = "neutral"
             row["label"] = "neutral"
             row["confidence"] = "uncertain"
+            row["label_source"] = "fallback_empty_snippet"
             stats["snippet_fallback_neutral"] += 1
             result.append(row)
             continue
@@ -310,19 +353,28 @@ def _label_group_auto(
             log.debug("AUTO: пауза %.1fс между вызовами LLM", wait)
             time.sleep(wait)
 
-        sentiment = _label_one_llm(row, provider_chain=provider_chain, model=model)
+        invalid_before = invalid_ref[0]
+        sentiment = _label_one_llm(
+            row, provider_chain=provider_chain, model=model, invalid_ref=invalid_ref,
+        )
 
-        # Если LLM не ответила или ошибка провайдера
-        provider_failed = False
         if sentiment is None:
-            log.warning("AUTO provider ERROR: url=%s query='%s' -> neutral (uncertain)",
-                        url, query)
             sentiment = "neutral"
             row["confidence"] = "uncertain"
-            stats["provider_error"] += 1
-            provider_failed = True
+            if invalid_ref[0] > invalid_before:
+                # Мусорный ответ провайдера — invalid_or_unknown, не provider_error
+                log.warning("AUTO invalid LLM answer: url=%s query='%s' -> neutral (uncertain)",
+                            url, query)
+                row["label_source"] = "fallback_invalid_llm"
+                stats["invalid_llm"] += 1
+            else:
+                log.warning("AUTO provider ERROR: url=%s query='%s' -> neutral (uncertain)",
+                            url, query)
+                row["label_source"] = "fallback_provider_error"
+                stats["provider_error"] += 1
         else:
             stats["snippet_success"] += 1
+            row["label_source"] = "llm"
             log.info("AUTO LLM: url=%s query='%s' -> %s", url, query, sentiment)
 
         row["sentiment"] = sentiment
@@ -335,9 +387,10 @@ def _label_group_auto(
 
     log.info(
         "AUTO searcher=%s geo=%s: total=%s cache_hit=%s snippet_success=%s "
-        "snippet_fallback_neutral=%s provider_error=%s",
+        "snippet_fallback_neutral=%s provider_error=%s invalid_llm=%s invalid_key=%s",
         searcher, geo, stats["total"], stats["cache_hit"], stats["snippet_success"],
-        stats["snippet_fallback_neutral"], stats["provider_error"]
+        stats["snippet_fallback_neutral"], stats["provider_error"],
+        stats["invalid_llm"], stats["invalid_key"],
     )
     return result
 
@@ -411,6 +464,127 @@ def _label_group_deep(
     return result
 
 
+def _validate_labels(
+    rows: list[dict],
+    run_id: str | None,
+    db_path: str,
+    out: dict | None = None,
+) -> dict:
+    """
+    Post-label валидатор (v1.1 workstream A).
+
+    Для каждой строки детерминированно сравнивает produced sentiment с ручным
+    эталоном manual_l1 по ключу (domain, query) и классифицирует neutral.
+    Категории журнала label_conflicts:
+      - manual_neutral: эталон явно говорит neutral;
+      - unmatched_neutral: эталона нет, fallback/LLM дал neutral;
+      - manual_conflict: результат ≠ manual_l1 (строка исправляется на эталон,
+        конфликт фиксируется в журнале — не молча);
+      - invalid_or_unknown: пустой ключ/URL или мусорный ответ LLM.
+    """
+    counts = {
+        "total": len(rows),
+        "ok": 0,
+        "manual_neutral": 0,
+        "unmatched_neutral": 0,
+        "manual_conflict": 0,
+        "invalid_or_unknown": 0,
+    }
+    records: list[dict] = []
+
+    for row in rows:
+        url = row.get("url") or ""
+        query = row.get("query") or ""
+        domain = storage.normalize_domain(url)
+        qnorm = storage.normalize_query(query)
+        observed = row.get("sentiment")
+        confidence = row.get("confidence") or "high"
+        source = row.get("label_source") or ""
+
+        manual = None
+        if domain and qnorm:
+            manual = storage.get_domain_label_record(url, query, db_path)
+        manual_sentiment = None
+        if manual is not None and manual.get("source") == "manual_l1":
+            manual_sentiment = manual.get("sentiment")
+
+        base = {
+            "run_id": run_id,
+            "domain": domain,
+            "url": url,
+            "query": qnorm or query,
+            "geo": row.get("geo"),
+            "searcher": row.get("searcher"),
+            "position": row.get("position"),
+            "observed_label": observed,
+            "manual_label": manual_sentiment,
+            "source": source,
+            "confidence": confidence,
+        }
+
+        if not domain or not qnorm:
+            counts["invalid_or_unknown"] += 1
+            records.append({**base, "conflict_type": "invalid_or_unknown",
+                            "recommended_action": "fix_input"})
+            continue
+
+        if observed not in ("positive", "negative", "neutral"):
+            if observed is not None:
+                counts["invalid_or_unknown"] += 1
+                records.append({**base, "conflict_type": "invalid_or_unknown",
+                                "recommended_action": "fix_input"})
+            continue
+
+        if manual_sentiment is not None:
+            if observed != manual_sentiment:
+                counts["manual_conflict"] += 1
+                records.append({**base, "conflict_type": "manual_conflict",
+                                "recommended_action": "resolve_conflict"})
+                # Precedence rule 1: manual_l1 выигрывает; правка не молча —
+                # конфликт зафиксирован в журнале выше.
+                row["sentiment"] = manual_sentiment
+                row["label"] = manual_sentiment
+                row["confidence"] = "high"
+                row["label_source"] = "manual_l1"
+            elif observed == "neutral":
+                counts["manual_neutral"] += 1
+                records.append({**base, "conflict_type": "manual_neutral",
+                                "recommended_action": "none"})
+            else:
+                counts["ok"] += 1
+        elif observed == "neutral":
+            if source == "fallback_invalid_llm":
+                counts["invalid_or_unknown"] += 1
+                records.append({**base, "conflict_type": "invalid_or_unknown",
+                                "recommended_action": "fix_input"})
+            else:
+                counts["unmatched_neutral"] += 1
+                records.append({**base, "conflict_type": "unmatched_neutral",
+                                "recommended_action": "review_snippet"})
+        else:
+            counts["ok"] += 1
+
+    if records:
+        storage.save_label_conflicts(records, db_path)
+        # Ретеншн только для прогонных записей: у прямых вызовов label()
+        # без run_id журнал не чистим (dev/отладка).
+        if run_id:
+            storage.prune_label_conflicts(keep_last_runs=50, db_path=db_path)
+
+    log.info(
+        "VALIDATION: total=%s ok=%s manual_neutral=%s unmatched_neutral=%s "
+        "manual_conflict=%s invalid_or_unknown=%s recorded=%s",
+        counts["total"], counts["ok"], counts["manual_neutral"],
+        counts["unmatched_neutral"], counts["manual_conflict"],
+        counts["invalid_or_unknown"], len(records),
+    )
+    if out is not None:
+        out.clear()
+        out.update(counts)
+        out["recorded"] = len(records)
+    return counts
+
+
 def label(
     rows: list[dict],
     db_path: str = storage.DB_PATH,
@@ -419,23 +593,34 @@ def label(
     client_id: str = "default",
     provider_chain: str | list[str] | None = None,
     model: str | None = None,
+    run_id: str | None = None,
+    validation_out: dict | None = None,
 ) -> list[dict]:
     """
     Проставляет sentiment (и алиас label) каждой строке.
 
     Параметры:
       - label_mode: "auto" (дефолт) | "deep"
-      - force_relabel: если True — игнорировать кэш, размечать заново
-      - client_id: идентификатор клиента для domain_labels
+      - force_relabel: сбрасывает автоматический кэш; manual_l1 эталон
+        НЕ обходит (v1.1 precedence rule 5)
+      - client_id: идентификатор клиента для positions/labels
       - provider_chain: переопределение цепочки провайдеров (id через запятую или list)
       - model: конкретная модель LLM (override default_model провайдера)
+      - run_id: идентификатор прогона для журнала валидации (v1.1)
+      - validation_out: мутабельный dict; заполняется счётчиками валидации
+        {total, ok, manual_neutral, unmatched_neutral, manual_conflict,
+        invalid_or_unknown, recorded}
 
     Режимы:
-      - auto: get_domain_label (manual_l1) → LLM (snippet) → neutral (fallback on error).
+      - auto: get_domain_label_record (manual_l1) → LLM (snippet) → neutral (fallback on error).
               Результат LLM не записывается в domain_labels.
       - deep: обрабатывает только строки с sentiment='neutral',
               размечает по контенту страницы (URL).
               Результат page не записывается в domain_labels.
+
+    После разметки выполняется post-label валидация (_validate_labels):
+    сравнение с эталоном, классификация neutral/конфликтов, запись журнала
+    label_conflicts, исправление строк на эталон при manual_conflict.
     """
     if label_mode not in LABEL_MODES:
         log.warning("Неизвестный режим разметки '%s', используем 'auto'", label_mode)
@@ -478,6 +663,10 @@ def label(
 
     total_success = sum(1 for r in result if r.get("sentiment") is not None)
     log.info("Разметка завершена: %s/%s строк с sentiment", total_success, len(rows))
+
+    # Post-label валидация (v1.1 workstream A): сравнение с эталоном,
+    # классификация neutral/конфликтов, журнал label_conflicts.
+    _validate_labels(result, run_id=run_id, db_path=db_path, out=validation_out)
     return result
 
 
@@ -532,7 +721,7 @@ if __name__ == "__main__":
     print("=== Тест labeler.py (режим AUTO, мок LLM, изолированная БД: %s) ===\n" % TEST_DB)
 
     # Подменяем LLM на детерминированный мок, чтобы не расходовать токены в примере
-    def _fake_label_one_llm(row, provider_chain=None, model=None):
+    def _fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
         url = row.get("url", "")
         if "ivan-petrov.ru" in url:
             return "positive"

@@ -6,6 +6,36 @@
 
 ## Сделано
 
+- **Session: 2026-09-06 — v1.1 Workstream A: Etalon validator + журнал конфликтов:**
+  - Решение по изоляции (подтверждено пользователем): `domain_labels` остаётся
+    глобальным `(domain, query)` в общей БД; отдельная БД на клиента отложена
+    в techdebt (ADR 2026-09-05).
+  - `storage.py`: `run_status.run_id`; таблица `label_conflicts` (+индексы);
+    `get_domain_label_record()`; конфликт-семантика `upsert/bulk_upsert`
+    (manual_l1 → manual_l1 с другим sentiment = ValueError "manual_l1
+    conflict", last-write-wins запрещён; тот же sentiment — идемпотентно);
+    `save/get/prune_label_conflicts` (пустые domain/query допустимы для
+    invalid_or_unknown; run_id=NULL не удаляется prune'ом).
+  - `labeler.py`: pre-LLM lookup только `manual_l1` — force_relabel эталон
+    НЕ обходит (precedence rule 5); `_parse_label` мусор → `None`;
+    `_label_one_llm(invalid_ref=)`; транзиентный `label_source` ∈
+    {manual_l1, llm, fallback_empty_snippet, fallback_provider_error,
+    fallback_invalid_llm, fallback_invalid_key}; post-label `_validate_labels`
+    с категориями manual_neutral / unmatched_neutral / manual_conflict /
+    invalid_or_unknown; manual_conflict исправляет строку на эталон (не молча);
+    coverage эталона считается только по manual_l1.
+  - `webhook.py`: `run_id` (uuid4.hex) в 202 `/run` и `GET /status`; новый
+    `GET /labels/conflicts` (Bearer, run_id/limit); import-конфликт manual_l1
+    → errors + error_samples, батч продолжается.
+  - `main.py`: проброс `run_id`/`validation_out`; `stats["validation"]`.
+  - `migrate.py`: идемпотентные патчи `run_id` + `label_conflicts`.
+  - `verify.sh`: `label_conflicts` в required_tables.
+  - Тесты: +28 (новый `tests/test_validator.py` — 13; обновления
+    test_parse_label, test_labeler_modes, test_domain_labels, test_webhook,
+    test_storage_schema, test_migrate_idempotent). Полный набор **321 passed**.
+  - Документация: `docs/contracts.md`, `docs/decisions.md` (2 ADR),
+    `docs/techdebt.md`, статусы specs v1.0.2.
+
 - **Session: 2026-09-05 — Provider UI backend v1.0.2 (backend-часть):**
   - `config.py`: добавлен `KNOWN_ENDPOINTS` (opencode-zen, openrouter, openai);
     модели opencode-zen актуализированы до free-моделей каталога Zen
