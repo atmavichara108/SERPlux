@@ -1,9 +1,16 @@
 # Dynamic Etalon Import v1.0.2
 
-**Status:** approved for implementation  
-**Version:** v1.0.2  
-**Branch:** `main`  
+**Status:** implemented (Stage 1 + Stage 2; см. docs/progress.md 2026-08-30)
+**Version:** v1.0.2
+**Branch:** `main`
 **Target tag:** `v1.0.2`
+
+> **Примечание к реализации (2026-09-06):** код Stage 1
+> (`importHistoricalEtalonsToDb`) и Stage 2 (`importLatestReportToEtalon`,
+> меню «Зафиксировать исправления в эталон») в apps_script.gs, импорт через
+> `POST /labels/import` с `source=manual_l1`. Production-импорт трёх
+> исторических листов — ручная операция; evidence её выполнения в репо
+> не зафиксирован (требуется прогон + сверка счётчиков imported/skipped).
 
 ## Goal
 

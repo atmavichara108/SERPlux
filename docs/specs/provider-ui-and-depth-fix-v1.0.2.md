@@ -1,9 +1,16 @@
 # Provider UI, Searcher Checkboxes, Depth Fix v1.0.2
 
-**Status:** approved for implementation  
-**Version:** v1.0.2 (extension)  
-**Branch:** `main`  
+**Status:** implemented (backend + UI; commit `0951de0`; см. docs/progress.md 2026-09-05)
+**Version:** v1.0.2 (extension)
+**Branch:** `main`
 **Target tag:** `v1.0.2`
+
+> **Примечание к реализации (2026-09-05/06):** endpoint назван
+> `POST /providers/discover` (в плане фигурировал `/providers/test`); API-ключ
+> в UI НЕ вводится — передаётся только имя env-переменной (безопаснее исходного
+> ТЗ, см. ADR 2026-09-05 в docs/decisions.md). `depth` Topvisor API не принимает
+> на уровне запроса — реализованы WARNING и диагностика расхождения
+> (docs/topvisor-api.md, tests/test_collector.py).
 
 ## Goal
 
@@ -132,13 +139,13 @@ OpenAI: https://api.openai.com/v1
 
 ## Risks
 
-1. **Topvisor API не поддерживает depth на уровне запроса.**  
+1. **Topvisor API не поддерживает depth на уровне запроса.**
    Снижение: логировать warning, использовать default.
 
-2. **Auto-discovery моделей может расходовать лимиты.**  
+2. **Auto-discovery моделей может расходовать лимиты.**
    Снижение: тестировать только `*-free` модели, timeout 10s.
 
-3. **Checkbox поисковиков может сломать backward compatibility.**  
+3. **Checkbox поисковиков может сломать backward compatibility.**
    Снижение: по дефолту все выбраны, fallback на профиль клиента.
 
 ## Rollback
