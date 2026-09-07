@@ -19,7 +19,7 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, Header, HTTPException, status
+from fastapi import Body, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
@@ -67,6 +67,14 @@ class RunRequest(BaseModel):
     model: str | None = None  # конкретная модель LLM (override default_model)
     label_only: bool = False  # только разметка существующих данных
     searchers: list[str] | None = None  # поисковики для текущего прогона (google/yandex_ru/yandex_com)
+    report_depth: int = 10  # глубина отчёта (1..50); дефолт 10
+
+    @field_validator("report_depth")
+    @classmethod
+    def _validate_report_depth(cls, v: int) -> int:
+        if v < 1 or v > 50:
+            raise ValueError(f"report_depth должен быть в диапазоне 1..50; получено {v}")
+        return v
 
     @field_validator("searchers")
     @classmethod
@@ -215,6 +223,7 @@ def _run_pipeline(
     label_only: bool = False,
     searchers: list[str] | None = None,
     run_id: str | None = None,
+    report_depth: int = 10,
 ) -> None:
     """Запускает полный пайплайн или только построение/разметку/сбор в фоновом потоке."""
     if not run_id:
@@ -261,7 +270,8 @@ def _run_pipeline(
             log.info("Построение отчёта за %s (report_only=True)", date_arg or "последнюю доступную")
 
             build_report(date=date_arg, force=True, sheet_id=sheet_id,
-                        client_id=client_id, db_path=storage.DB_PATH)
+                        client_id=client_id, db_path=storage.DB_PATH,
+                        report_depth=report_depth)
             _set_status("ok", "Отчёт построен успешно")
             log.info("Отчёт построен успешно")
             return
@@ -303,7 +313,8 @@ def _run_pipeline(
             storage.insert_labels(labeled_rows, db_path=storage.DB_PATH)
 
             build_report(date=target_date, force=force_rebuild_report, sheet_id=sheet_id,
-                        client_id=client_id, db_path=storage.DB_PATH)
+                        client_id=client_id, db_path=storage.DB_PATH,
+                        report_depth=report_depth)
             label_stats: dict[str, Any] = {
                 "collected": 0, "saved_new": 0, "labeled": len(labeled_rows), "exported": 0,
             }
@@ -331,6 +342,8 @@ def _run_pipeline(
             request_params["model"] = model
         if searchers:
             request_params["searchers"] = searchers
+        if report_depth != 10:
+            request_params["report_depth"] = report_depth
         request_params["run_id"] = run_id
         # regions_map из тела запроса пока сохраняем для обратной совместимости,
         # но профиль клиента может его перекрыть
@@ -434,10 +447,17 @@ def trigger_run(
             body.label_only,
             body.searchers,
             run_id,
+            body.report_depth,
         ),
         daemon=True,
     )
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        # Если поток не стартовал, _run_pipeline не выполнит release в finally —
+        # освобождаем здесь, иначе lock останется захваченным навсегда.
+        _run_lock.release()
+        raise
 
     log.info(
         "Прогон принят в очередь: regions_map=%s, client_id=%s, label_mode=%s, force_relabel=%s, report_only=%s",
@@ -1066,6 +1086,8 @@ def import_domain_labels(
     imported = 0
     skipped = 0
     errors = 0
+    conflicts: list[dict] = []
+    conflicts_count = 0
     error_samples: list[str] = []
 
     def _add_sample(message: str) -> None:
@@ -1107,14 +1129,31 @@ def import_domain_labels(
             continue
 
         try:
-            storage.upsert_domain_label(
+            conflict = storage.upsert_domain_label(
                 domain_or_url=domain,
                 query=query,
                 sentiment=sentiment,
                 source=source,
                 db_path=storage.DB_PATH,
             )
-            imported += 1
+            if conflict == "manual_l1_conflict":
+                # Конфликт ручных эталонов (один domain+query, разные sentiment):
+                # НЕ теряем и НЕ перезаписываем — возвращаем оператору
+                # для жёлтой маркировки (Apps Script листит «Спорные»).
+                conflicts.append({
+                    "row": idx,
+                    "domain": domain,
+                    "query": query,
+                    "sentiment": sentiment,
+                    "source": source,
+                })
+                conflicts_count += 1
+                log.warning(
+                    "labels_import: manual_l1 conflict row %s %s/%s (new=%s)",
+                    idx, domain, query, sentiment,
+                )
+            else:
+                imported += 1
         except Exception as exc:
             errors += 1
             _add_sample(f"row {idx}: db error for {domain}/{query}: {exc}")
@@ -1124,14 +1163,16 @@ def import_domain_labels(
             )
 
     log.info(
-        "labels_import: imported=%s skipped=%s errors=%s",
-        imported, skipped, errors,
+        "labels_import: imported=%s skipped=%s errors=%s conflicts=%s",
+        imported, skipped, errors, conflicts_count,
     )
 
     return JSONResponse({
         "imported": imported,
         "skipped": skipped,
         "errors": errors,
+        "conflicts": conflicts,
+        "conflicts_count": conflicts_count,
         "error_samples": error_samples,
     })
 
@@ -1139,7 +1180,7 @@ def import_domain_labels(
 @app.get("/labels/conflicts")
 def list_label_conflicts(
     run_id: str | None = None,
-    limit: int = 500,
+    limit: int = Query(default=500, ge=1, le=5000),
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     """
@@ -1147,7 +1188,7 @@ def list_label_conflicts(
 
     Query-параметры:
       - run_id: фильтр по идентификатору прогона (опционально);
-      - limit: максимум записей (по умолчанию 500).
+      - limit: максимум записей, 1..5000 (по умолчанию 500; вне диапазона — 422).
 
     Ответ: {"conflicts": [...], "count": N} — новые записи сверху.
     """

@@ -207,6 +207,159 @@ class TestBuildReportWithDynamicProfile:
         # Проверяем, что gspread был вызван (тест дошёл до записи)
         mock_gspread["service_account"].assert_called_once()
     
+
+    def test_report_depth_limits_rows(self, temp_db, mock_gspread):
+        """report_depth=20: рисуется до 20 позиций; при 44 фактических и запросе 50 — 44 строки."""
+        from reporter import build_report
+
+        client_id = "client_depth"
+        queries = [{"key": "juri sudheimer", "display": "Juri Sudheimer"}]
+        regions_map = [{"geo_name": "Литва", "searcher": "google"}]
+
+        storage.create_client(
+            client_id=client_id, client_name="Depth Client",
+            queries=queries, regions_map=regions_map, db_path=temp_db,
+        )
+
+        # 44 позиции (как фактическая выдача Google при depth=50)
+        test_rows = [
+            {
+                "date": "2026-07-10",
+                "searcher": "google",
+                "query": "juri sudheimer",
+                "geo": "Литва",
+                "region_index": 1300,
+                "position": pos,
+                "url": f"https://example{pos}.com",
+                "domain": f"example{pos}.com",
+                "snippet": "",
+                "client_id": client_id,
+            }
+            for pos in range(1, 45)
+        ]
+        storage.save(test_rows, client_id=client_id, db_path=temp_db)
+
+        # report_depth=20: позиций 45-я нет, строк ровно 20
+        ws = mock_gspread["worksheet"]
+        ws.get_all_values.return_value = []
+        build_report(date="2026-07-10", client_id=client_id, db_path=temp_db,
+                     report_depth=20)
+        written = ws.update.call_args_list[-1].kwargs.get("range") and None or None
+        call = ws.update.call_args_list[-1]
+        written = call.args[0] if call.args else call.kwargs["values"] if "values" in call.kwargs else call.kwargs.get("range") and None
+        # Блок: заголовок версии + пустая + субъект + гео + 20 позиций + буфер
+        # Позиция пишется в колонку sb["pos"] (индекс 1)
+        pos_rows = [r for r in written if len(r) > 1 and r[1].isdigit()]
+        assert len(pos_rows) == 20, f"expected 20 position rows, got {len(pos_rows)}"
+
+        # report_depth=50 при 44 фактических: рисуем 44, не 50
+        ws.get_all_values.return_value = []
+        build_report(date="2026-07-10", client_id=client_id, db_path=temp_db,
+                     report_depth=50)
+        call2 = ws.update.call_args_list[-1]
+        written2 = call2.args[0] if call2.args else call2.kwargs["values"]
+        pos_rows2 = [r for r in written2 if len(r) > 1 and r[1].isdigit()]
+        assert len(pos_rows2) == 44, f"expected 44 position rows, got {len(pos_rows2)}"
+
+    def test_report_depth_default_from_config(self, temp_db, mock_gspread):
+        """report_depth=None -> config.REPORT_DEPTH (обратная совместимость)."""
+        from reporter import build_report
+        from reporter import REPORT_DEPTH
+
+        client_id = "client_defdepth"
+        queries = [{"key": "juri sudheimer", "display": "Juri Sudheimer"}]
+        regions_map = [{"geo_name": "Литва", "searcher": "google"}]
+        storage.create_client(
+            client_id=client_id, client_name="DefDepth",
+            queries=queries, regions_map=regions_map, db_path=temp_db,
+        )
+        test_rows = [
+            {"date": "2026-07-10", "searcher": "google", "query": "juri sudheimer",
+             "geo": "Литва", "region_index": 1300, "position": pos,
+             "url": f"https://d{pos}.com", "domain": f"d{pos}.com", "snippet": "",
+             "client_id": client_id}
+            for pos in range(1, 15)
+        ]
+        storage.save(test_rows, client_id=client_id, db_path=temp_db)
+
+        ws = mock_gspread["worksheet"]
+        ws.get_all_values.return_value = []
+        build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
+        call = ws.update.call_args_list[-1]
+        written = call.args[0] if call.args else call.kwargs["values"] if "values" in call.kwargs else call.kwargs.get("range") and None
+        pos_rows = [r for r in written if len(r) > 1 and r[1].isdigit()]
+        assert len(pos_rows) == REPORT_DEPTH, f"expected {REPORT_DEPTH}, got {len(pos_rows)}"
+
+    def test_report_searchers_filtered_from_client_profile(self, temp_db, mock_gspread):
+        """Профиль searchers=["google"] -> яндексы в positions не попадают в отчёт."""
+        from reporter import build_report
+
+        client_id = "client_searchers"
+        queries = [{"key": "juri sudheimer", "display": "Juri Sudheimer"}]
+        regions_map = [{"geo_name": "Литва", "searcher": "google"}]
+        storage.create_client(
+            client_id=client_id, client_name="Searchers Client",
+            queries=queries, regions_map=regions_map,
+            searchers=["google"], db_path=temp_db,
+        )
+        test_rows = [
+            # google — попадает
+            {"date": "2026-07-10", "searcher": "google", "query": "juri sudheimer",
+             "geo": "Литва", "region_index": 1300, "position": 1,
+             "url": "https://g.com", "domain": "g.com", "snippet": "",
+             "client_id": client_id},
+            # яндексы — старые снапшоты в positions, в отчёт не должны попасть
+            {"date": "2026-07-10", "searcher": "yandex_ru", "query": "juri sudheimer",
+             "geo": "Литва", "region_index": 1300, "position": 1,
+             "url": "https://yr.ru", "domain": "yr.ru", "snippet": "",
+             "client_id": client_id},
+            {"date": "2026-07-10", "searcher": "yandex_com", "query": "juri sudheimer",
+             "geo": "Литва", "region_index": 1300, "position": 1,
+             "url": "https://yc.com", "domain": "yc.com", "snippet": "",
+             "client_id": client_id},
+        ]
+        storage.save(test_rows, client_id=client_id, db_path=temp_db)
+
+        ws = mock_gspread["worksheet"]
+        ws.get_all_values.return_value = []
+        build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
+        written = ws.update.call_args_list[-1].args[0]
+        flat = "\n".join(",".join(map(str, r)) for r in written)
+        assert "https://g.com" in flat
+        assert "https://yr.ru" not in flat, "яндекс_ru не отфильтрован профилем"
+        assert "https://yc.com" not in flat, "яндекс_com не отфильтрован"
+
+    def test_report_all_searchers_when_profile_empty(self, temp_db, mock_gspread):
+        """Пустой/отсутствующий searchers в профиле — отчёт по всем ПС (обратная совместимость)."""
+        from reporter import build_report
+
+        client_id = "client_nosearchers"
+        queries = [{"key": "juri sudheimer", "display": "Juri Sudheimer"}]
+        regions_map = [{"geo_name": "Литва", "searcher": "google"}]
+        storage.create_client(
+            client_id=client_id, client_name="NoSearchers",
+            queries=queries, regions_map=regions_map, db_path=temp_db,
+        )
+        test_rows = [
+            {"date": "2026-07-10", "searcher": "google", "query": "juri sudheimer",
+             "geo": "Литва", "region_index": 1300, "position": 1,
+             "url": "https://g.com", "domain": "g.com", "snippet": "",
+             "client_id": client_id},
+            {"date": "2026-07-10", "searcher": "yandex_ru", "query": "juri sudheimer",
+             "geo": "Литва", "region_index": 1300, "position": 1,
+             "url": "https://yr.ru", "domain": "yr.ru", "snippet": "",
+             "client_id": client_id},
+        ]
+        storage.save(test_rows, client_id=client_id, db_path=temp_db)
+
+        ws = mock_gspread["worksheet"]
+        ws.get_all_values.return_value = []
+        build_report(date="2026-07-10", client_id=client_id, db_path=temp_db)
+        written = ws.update.call_args_list[-1].args[0]
+        flat = "\n".join(",".join(map(str, r)) for r in written)
+        assert "https://g.com" in flat
+        assert "https://yr.ru" in flat
+
     def test_report_with_2_subjects(self, temp_db, mock_gspread):
         """Построение отчёта для профиля с 2 субъектами."""
         from reporter import build_report

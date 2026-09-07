@@ -47,6 +47,7 @@ var DEFAULT_REPORT_DATE = "latest";
 var SETTINGS_TEMPLATE = [
   ["client_id",            "",         "ID клиента (например: client01). Выбрать из dropdown или обновить SERPlux → Настройки → [>] Обновить список клиентов"],
   ["depth",                "10",       "Справочная глубина (10/20/50/100). Реальная глубина выдачи задаётся в кабинете Topvisor — параметр здесь не управляет ей"],
+  ["report_depth",         "10",       "Глубина отчёта (10/20/50): сколько позиций рисовать на листе «Отчёт». По умолчанию 10"],
   ["with_labels",          "true",     "Включить разметку: true или false"],
   ["label_mode",           "auto",     "Режим разметки: auto (кэш+сниппет) или deep (страница)"],
   ["date",                 "today",    "Дата сбора: today или YYYY-MM-DD"],
@@ -308,6 +309,22 @@ function initSettingsSheetSafe() {
     );
   } catch (e) {
     Logger.log("initSettingsSheetSafe: ошибка валидации depth: %s", e.message);
+  }
+
+  // report_depth — по ключу строки (лист может расширяться)
+  try {
+    var rdRow = _findSettingsRow(sheet, "report_depth");
+    if (rdRow > 0) {
+      sheet.getRange(rdRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(["10", "20", "50"], true)
+          .setAllowInvalid(false)
+          .setHelpText("Глубина отчёта: 10, 20 или 50 (сколько позиций рисовать в «Отчёте»)")
+          .build()
+      );
+    }
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации report_depth: %s", e.message);
   }
 
   // with_labels (строка 3)
@@ -576,6 +593,7 @@ function _readSettings() {
   var defaults = {
     clientId: "",
     depth: DEFAULT_DEPTH,
+    reportDepth: 10,
     withLabels: true,
     labelMode: DEFAULT_LABEL_MODE,
     date: DEFAULT_DATE,
@@ -602,6 +620,12 @@ function _readSettings() {
     switch (key) {
       case "client_id":
         settings.clientId = String(val).trim();
+        break;
+      case "report_depth":
+        var parsedDepth = parseInt(String(val).trim(), 10);
+        if (!isNaN(parsedDepth) && parsedDepth >= 1 && parsedDepth <= 50) {
+          settings.reportDepth = parsedDepth;
+        }
         break;
       case "depth":
         var parsed = parseInt(val, 10);
@@ -760,6 +784,7 @@ function runCollection() {
   var payload = {
     client_id: settings.clientId,
     depth: settings.depth,
+    report_depth: settings.reportDepth || 10,
     with_labels: settings.withLabels,
     label_mode: settings.labelMode,
     force_relabel: settings.forceRelabel,
@@ -2679,10 +2704,11 @@ function parseList1ToEtalon() {
       var geo = geoCell;
       Logger.log("parseList1ToEtalon: субъект '" + subj.name + "', гео='" + geo + "', строка=" + (r+1));
 
-      // Читаем depth номеров под гео
-      for (var d = 0; d < DEPTH; d++) {
+      // Читаем ВСЕ номера под гео (эталон (domain, query) не зависит от
+      // позиции — DEPTH-лимит был рудиментом старой модели и резал эталон).
+      var d = 0;
+      while (r + 1 + d < values.length) {
         var numRow = r + 1 + d;
-        if (numRow >= values.length) break;
 
         var numCell = String(values[numRow][posCol] || "").trim();
         var urlCell = String(values[numRow][nameCol] || "").trim();
@@ -2694,7 +2720,7 @@ function parseList1ToEtalon() {
         }
 
         var position = parseInt(numCell, 10);
-        if (position < 1 || position > DEPTH) {
+        if (position < 1) {
           continue;
         }
 
@@ -2723,8 +2749,8 @@ function parseList1ToEtalon() {
           etalonRows.push([urlCell, query, sentiment, "manual_l1"]);
       }
 
-      // Переходим к следующему гео-блоку (пропускаем буферную строку)
-      r = r + 1 + DEPTH + 1;
+      // Продвигаем r за прочитанный блок номеров (до первой не-числовой строки)
+      r = r + 1 + d;
     }
   }
 
@@ -2919,6 +2945,7 @@ function _importReportLabels(labels, secret) {
   var totalSkipped = 0;
   var totalErrors = 0;
   var errorSamples = [];
+  var conflicts = [];
   var batchCount = Math.ceil(labels.length / IMPORT_BATCH_SIZE);
 
   for (var b = 0; b < batchCount; b++) {
@@ -2929,13 +2956,46 @@ function _importReportLabels(labels, secret) {
       totalSkipped += result.data.skipped || 0;
       totalErrors += result.data.errors || 0;
       if (result.data.error_samples) errorSamples = errorSamples.concat(result.data.error_samples);
+      // Конфликты ручных эталонов (один domain+query, разные sentiment) —
+      // сервер их не записал и не перезаписал; помечаем жёлтым в «Спорные».
+      if (Array.isArray(result.data.conflicts)) {
+        conflicts = conflicts.concat(result.data.conflicts);
+      }
     } else {
       totalErrors += batch.length;
       if (errorSamples.length < 5) errorSamples.push("батч " + (b + 1) + ": HTTP " + result.code);
     }
   }
   return { imported: totalImported, skipped: totalSkipped, errors: totalErrors,
-    errorSamples: errorSamples.slice(0, 5) };
+    conflicts: conflicts, errorSamples: errorSamples.slice(0, 5) };
+}
+
+/**
+ * Дописывает конфликтные записи manual_l1 в существующий лист «Спорные»
+ * (жёлтая маркировка оператору: тот же domain+query, другой sentiment).
+ * Колонки листа: row, col, hex, url, geo, query — конфликт не имеет
+ * координат ячейки отчёта, поэтому row/col/hex несут контекст источника.
+ */
+function _markEtalonConflictsInSpornye(conflicts, sourceLabel) {
+  if (!Array.isArray(conflicts) || conflicts.length === 0) return 0;
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var spornye = ss.getSheetByName(SPORNYE_SHEET_NAME);
+  if (!spornye) {
+    spornye = ss.insertSheet(SPORNYE_SHEET_NAME);
+    spornye.getRange(1, 1, 1, 6).setValues([["row", "col", "hex", "url", "geo", "query"]]);
+  }
+  var rows = conflicts.map(function (c) {
+    return [sourceLabel, "", "#ffff00", c.domain, "manual_l1 conflict", c.query];
+  });
+  var startRow = spornye.getLastRow() + 1;
+  spornye.getRange(startRow, 1, rows.length, 6).setValues(rows);
+  // Жёлтая заливка помеченных строк
+  try {
+    spornye.getRange(startRow, 1, rows.length, 6).setBackground("#ffff00");
+  } catch (e) {
+    Logger.log("_markEtalonConflictsInSpornye: заливка пропущена: %s", e.message);
+  }
+  return rows.length;
 }
 
 /**
@@ -3044,11 +3104,13 @@ function importLatestReportToEtalon() {
   if (confirm !== ui.Button.YES) return;
 
   var imported = _importReportLabels(collected.labels, secret);
+  var conflictsMarked = _markEtalonConflictsInSpornye(imported.conflicts, "Отчёт");
   var summary = "Фиксация исправлений завершена.\n\n" +
     "Валидных URL: " + collected.labels.length +
     "\nИмпортировано: " + imported.imported +
     "\nПропущено: " + (collected.skipped + imported.skipped) +
-    "\nОшибок: " + (collected.errors + imported.errors);
+    "\nОшибок: " + (collected.errors + imported.errors) +
+    "\nКонфликтов (жёлтым в «Спорные»): " + conflictsMarked;
   Logger.log("importLatestReportToEtalon: " + summary.replace(/\n/g, " | "));
   ui.alert("Готово", summary, ui.ButtonSet.OK);
 }

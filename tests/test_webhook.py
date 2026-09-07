@@ -91,6 +91,37 @@ class TestRunEndpoint:
         # 15-й аргумент — run_id (hex-строка), генерируется всегда
         assert isinstance(args[14], str) and len(args[14]) >= 16
 
+    def test_run_report_depth_passed_to_pipeline(self, client, pipeline_spy):
+        """report_depth пробрасывается в _run_pipeline последним аргументом."""
+        resp = client.post(
+            "/run",
+            json={"report_depth": 50},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 202
+        args = pipeline_spy["args"]
+        assert args[-1] == 50
+
+    def test_run_report_depth_default_10(self, client, pipeline_spy):
+        """report_depth не передан -> дефолт 10."""
+        resp = client.post(
+            "/run",
+            json={},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 202
+        assert pipeline_spy["args"][-1] == 10
+
+    @pytest.mark.parametrize("bad", [0, -5, 51, 100])
+    def test_run_report_depth_out_of_range_returns_422(self, client, bad):
+        """report_depth вне 1..50 возвращает 422."""
+        resp = client.post(
+            "/run",
+            json={"report_depth": bad},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 422
+
     def test_run_searchers_invalid_returns_422(self, client):
         """Неизвестный поисковик в searchers возвращает 422."""
         resp = client.post(
@@ -962,6 +993,23 @@ class TestLabelsConflictsEndpoint:
         """GET /labels/conflicts без Bearer возвращает 401."""
         assert client.get("/labels/conflicts").status_code == 401
 
+    def test_conflicts_invalid_limit_returns_422(self, client, client_db):
+        """limit вне диапазона 1..5000 возвращает 422 (защита от LIMIT -1 = без лимита)."""
+        for bad_limit in ("0", "-1", "5001"):
+            resp = client.get(
+                f"/labels/conflicts?limit={bad_limit}", headers=self._auth()
+            )
+            assert resp.status_code == 422, f"limit={bad_limit}"
+
+    def test_conflicts_valid_limit_accepted(self, client, client_db):
+        """Валидный limit (1 и 5000) принимается."""
+        for good_limit in ("1", "5000"):
+            resp = client.get(
+                f"/labels/conflicts?limit={good_limit}", headers=self._auth()
+            )
+            assert resp.status_code == 200, f"limit={good_limit}"
+            assert "count" in resp.json()
+
     def test_conflicts_invalid_auth_returns_403(self, client, client_db):
         """GET /labels/conflicts с неверным Bearer возвращает 403."""
         resp = client.get(
@@ -1148,9 +1196,10 @@ class TestLabelsImportEndpoint:
         )
         assert storage.get_domain_label("https://a.com", "q1", "Литва", client_db) == "negative"
 
-    def test_import_labels_manual_l1_conflict_counts_error(self, client, client_db):
+    def test_import_labels_manual_l1_conflict_reported(self, client, client_db):
         """Импорт manual_l1, конфликтующего с существующей manual_l1 (другой sentiment):
-        errors == 1, error_samples содержат 'manual_l1 conflict', в БД старый sentiment."""
+        конфликт возвращается отдельным списком conflicts (не теряется, не
+        перезаписывается), imported не растёт, в БД старый sentiment. v1.0.2."""
         import storage
 
         storage.upsert_domain_label(
@@ -1164,12 +1213,41 @@ class TestLabelsImportEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["errors"] == 1
+        # Конфликт в отдельном списке, не в errors
+        assert body["errors"] == 0
         assert body["imported"] == 0
-        assert any("manual_l1 conflict" in s for s in body["error_samples"])
+        assert body["conflicts_count"] == 1
+        assert len(body["conflicts"]) == 1
+        assert body["conflicts"][0]["domain"] == "a.com"
+        assert body["conflicts"][0]["query"] == "q1"
+        assert body["conflicts"][0]["sentiment"] == "negative"
 
-        # В БД остаётся СТАРЫЙ sentiment
+        # В БД остаётся СТАРЫЙ sentiment (не перезаписан)
         assert storage.get_domain_label("https://a.com", "q1", "Литва", client_db) == "positive"
+
+    def test_import_labels_mixed_conflict_and_ok(self, client, client_db):
+        """Батч: одна ok-запись + один конфликт -> imported=1, conflicts=1, ошибки не смешиваются."""
+        import storage
+
+        storage.upsert_domain_label(
+            "https://conflict.com", "q1", "Литва", "positive", "manual_l1", db_path=client_db
+        )
+        resp = client.post(
+            "/labels/import",
+            json=[
+                {"url": "https://ok.com", "query": "q2", "geo": "Литва", "sentiment": "neutral"},
+                {"url": "https://conflict.com", "query": "q1", "geo": "Литва", "sentiment": "negative"},
+            ],
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"] == 1
+        assert body["conflicts_count"] == 1
+        assert body["errors"] == 0
+        assert body["conflicts"][0]["domain"] == "conflict.com"
+        assert storage.get_domain_label("https://ok.com", "q2", "Литва", client_db) == "neutral"
+        assert storage.get_domain_label("https://conflict.com", "q1", "Литва", client_db) == "positive"
 
     def test_import_labels_same_manual_sentiment_is_idempotent(self, client, client_db):
         """Повторный импорт manual_l1 с тем же sentiment → imported (идемпотентно)."""

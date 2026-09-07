@@ -252,17 +252,25 @@ def _trim_old_versions(spreadsheet, worksheet, max_versions: int = MAX_VERSIONS)
 
 
 def build_report(date: str | None = None, force: bool = False, sheet_id: str | None = None,
-                 client_id: str = "default", db_path: str = storage.DB_PATH) -> None:
+                 client_id: str = "default", db_path: str = storage.DB_PATH,
+                 report_depth: int | None = None) -> None:
     # force устарел: параметр оставлен в сигнатуре для обратной совместимости.
     # Загружаем профиль клиента для получения списка субъектов и гео
     client = get_client(client_id, db_path=db_path)
     if not client:
         log.error("Клиент %s не найден в БД", client_id)
         return
-    
+
     queries = client.get("queries", [])
     regions_map = client.get("regions_map", [])
-    
+
+    # Глубина отчёта: из параметра прогона, иначе config.REPORT_DEPTH.
+    # Рисуем сколько позиций реально есть, но не больше запрошенной глубины.
+    if report_depth is None:
+        report_depth = REPORT_DEPTH
+    report_depth = max(1, int(report_depth))
+    log.info("Глубина отчёта: %s", report_depth)
+
     if not queries:
         log.warning("У клиента %s нет субъектов (queries)", client_id)
         return
@@ -279,7 +287,13 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
     if date is None:
         raise ValueError("Дата не определена и нет данных в базе")
 
-    rows = get_history(filters={"date": date, "client_id": client_id}, db_path=db_path)
+    # Фильтр по ПС из профиля клиента: старые снапшоты других поисковиков
+    # (например, Яндекс при google-only прогоне) не попадают в отчёт.
+    searchers = client.get("searchers") or None
+    filters: dict[str, Any] = {"date": date, "client_id": client_id}
+    if searchers:
+        filters["searchers"] = searchers
+    rows = get_history(filters=filters, db_path=db_path)
     if not rows:
         log.warning("Нет данных за дату %s", date)
         return
@@ -371,7 +385,8 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
             if max_pos == 0:
                 max_pos = EMPTY_GEO_DEPTH
 
-            for pos in range(1, min(max_pos, REPORT_DEPTH) + 1):
+            # Рисуем сколько позиций реально есть, но не больше report_depth.
+            for pos in range(1, min(max_pos, report_depth) + 1):
                 row = [""] * cols
                 for sb in subject_blocks:
                     qkey = sb["key"]

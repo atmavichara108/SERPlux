@@ -583,10 +583,25 @@ def get_history(filters: dict | None = None, db_path: str = DB_PATH) -> list[Row
             where.append("p.client_id = ?")
             params.append(client_id)
 
-        for field in ("date", "searcher", "geo", "query"):
+        for field in ("date", "geo", "query"):
             if field in filters:
                 where.append(f"p.{field} = ?")
                 params.append(filters[field])
+
+        # searchers: строка или список значений -> p.searcher IN (...)
+        # (reporter фильтрует отчёт по ПС из профиля клиента)
+        searchers_filter = filters.get("searchers")
+        if searchers_filter is not None:
+            if isinstance(searchers_filter, str):
+                searchers_filter = [searchers_filter]
+            searchers_list = [str(s) for s in searchers_filter if s]
+            if searchers_list:
+                placeholders = ",".join("?" * len(searchers_list))
+                where.append(f"p.searcher IN ({placeholders})")
+                params.extend(searchers_list)
+            else:
+                # Пустой список = заведомо пустой результат, не «все ПС»
+                where.append("1 = 0")
 
         if all_versions:
             # Все версии меток
@@ -807,9 +822,15 @@ def upsert_domain_label(
     db_path: str = DB_PATH,
     url: str | None = None,
     **kwargs,
-) -> None:
+) -> str | None:
     """
     INSERT или UPDATE записи в domain_labels по PRIMARY KEY (domain, query).
+
+    Возвращает None при успешной записи/пропуске, или строку-маркер
+    "manual_l1_conflict" при конфликте ручных эталонов (один domain+query,
+    разные sentiment). Конфликт НЕ теряется молча и НЕ перезаписывается
+    автоматически — наверху (webhook /labels/import) возвращается в ответе
+    отдельным списком для жёлтой маркировки и ручного решения оператора.
 
     Приоритет source:
       - 'manual_l1' — не перезаписывается источниками 'snippet' или 'page'.
@@ -852,12 +873,14 @@ def upsert_domain_label(
                 )
                 return
             if existing["sentiment"] != sentiment:
-                # Конфликт ручных эталонов: last-write-wins запрещён
-                raise ValueError(
-                    f"manual_l1 conflict for ({domain}, {query_norm}): "
-                    f"existing={existing['sentiment']}, new={sentiment}; "
-                    "требуется явное разрешение оператора (last-write-wins запрещён)"
+                # Конфликт ручных эталонов: last-write-wins запрещён.
+                # Не бросаем исключение — возвращаем признак конфликта,
+                # чтобы импорт вернул строку оператору (жёлтая маркировка).
+                log.warning(
+                    "domain_labels: manual_l1 conflict (%s, %s): existing=%s, new=%s",
+                    domain, query_norm, existing["sentiment"], sentiment,
                 )
+                return "manual_l1_conflict"
             # Тот же sentiment — идемпотентный upsert, идём дальше
 
         conn.execute(
@@ -871,6 +894,7 @@ def upsert_domain_label(
             (domain, query_norm, sentiment, source),
         )
         conn.commit()
+        return None
     finally:
         conn.close()
 
@@ -887,10 +911,15 @@ def bulk_upsert_domain_labels(
     """
     valid_sources = {"manual_l1", "snippet", "page"}
     for item in items:
-        if item["source"] not in valid_sources:
+        source = item.get("source")
+        if source not in valid_sources:
             raise ValueError(
-                f"source must be one of manual_l1/snippet/page, got {item['source']}"
+                f"source must be one of manual_l1/snippet/page, got {source!r}"
             )
+        if not item.get("query"):
+            raise ValueError(f"bulk_upsert_domain_labels: query обязателен: {item!r}")
+        if item.get("sentiment") is None:
+            raise ValueError(f"bulk_upsert_domain_labels: sentiment обязателен: {item!r}")
 
     _ensure_db(db_path)
     conn = _get_conn(db_path)
@@ -1039,11 +1068,11 @@ def prune_label_conflicts(keep_last_runs: int = 50, db_path: str = DB_PATH) -> i
     conn = _get_conn(db_path)
     try:
         keep_rows = conn.execute(
-            """SELECT run_id, MAX(created_at) AS last_ts
+            """SELECT run_id, MAX(created_at) AS last_ts, MAX(id) AS max_id
                FROM label_conflicts
                WHERE run_id IS NOT NULL
                GROUP BY run_id
-               ORDER BY last_ts DESC
+               ORDER BY last_ts DESC, max_id DESC
                LIMIT ?""",
             (keep_last_runs,),
         ).fetchall()

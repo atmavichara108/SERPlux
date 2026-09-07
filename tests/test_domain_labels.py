@@ -104,18 +104,31 @@ def test_manual_l1_not_overwritten_by_page(init_db):
     assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
 
 
-def test_manual_l1_conflict_raises(init_db):
-    """manual_l1 с ДРУГИМ sentiment поверх существующей manual_l1 → ValueError."""
+def test_manual_l1_conflict_returns_marker(init_db):
+    """manual_l1 с ДРУГИМ sentiment поверх существующей manual_l1 → маркер конфликта.
+
+    v1.0.2: конфликт не бросает исключение и не перезаписывает —
+    upsert возвращает признак "manual_l1_conflict" наверх для жёлтой
+    маркировки (apps_script «Спорные»). Запись сохраняется.
+    """
     storage.upsert_domain_label(
         "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
     )
-    with pytest.raises(ValueError, match="manual_l1 conflict"):
-        storage.upsert_domain_label(
-            "https://example.com/page", "subject a", "Литва", "negative", "manual_l1", db_path=init_db
-        )
+    result = storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "negative", "manual_l1", db_path=init_db
+    )
+    assert result == "manual_l1_conflict"
 
-    # Существующая запись не изменилась
+    # Существующая запись не изменилась (не перезаписана)
     assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
+
+
+def test_upsert_success_returns_none(init_db):
+    """Успешный upsert возвращает None (не признак конфликта)."""
+    result = storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
+    )
+    assert result is None
 
 
 def test_manual_l1_same_sentiment_idempotent(init_db):
@@ -131,7 +144,11 @@ def test_manual_l1_same_sentiment_idempotent(init_db):
 
 
 def test_bulk_upsert_manual_conflict_raises(init_db):
-    """Bulk-батч с двумя manual_l1 (одинаковый domain+query, разный sentiment) → ValueError."""
+    """Bulk-батч с двумя manual_l1 (одинаковый domain+query, разный sentiment) → ValueError.
+
+    bulk-путь сохраняет строгую валидацию батча (весь батч до вставки) —
+    маркер конфликтов нужен только одиночному upsert через /labels/import.
+    """
     items = [
         {"url": "https://a.com/page", "query": "q1", "geo": "g1", "sentiment": "positive", "source": "manual_l1"},
         {"url": "https://a.com/page", "query": "q1", "geo": "g1", "sentiment": "negative", "source": "manual_l1"},
