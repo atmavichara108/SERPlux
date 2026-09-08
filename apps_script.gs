@@ -855,10 +855,14 @@ function checkStatus() {
           (lb.fallback_invalid_llm || 0) +
           (lb.fallback_invalid_key || 0) +
           (lb.invalid_key || 0);
-        // Оператор ?? не поддерживается рантаймом Apps Script — используем ||
-        dialogMsg += "\nРазметка: из эталона " + (lb.etalon_hit || "—") +
-          ", LLM: " + (lb.llm_success || "—") +
-          ", fallback: " + (fallbackSum || "—");
+        // Оператор ?? не поддерживается рантаймом Apps Script V8.
+        // 0 — валидное значение счётчика, поэтому || нельзя: пишем helper.
+        function _fmtCount(v) {
+          return (typeof v === "number" && isFinite(v)) ? String(v) : "—";
+        }
+        dialogMsg += "\nРазметка: из эталона " + _fmtCount(lb.etalon_hit) +
+          ", LLM: " + _fmtCount(lb.llm_success) +
+          ", fallback: " + _fmtCount(fallbackSum);
       }
       break;
 

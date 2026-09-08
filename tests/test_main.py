@@ -166,6 +166,23 @@ class TestMainPipelineParams:
         assert result["exit_code"] == 0
         assert report_spy.call_args.kwargs["force"] is True
 
+    def test_run_passes_report_depth_to_report(self, monkeypatch, sample_rows):
+        """report_depth из config попадает в build_report() (регрессия v1.0.3:
+        полный прогон терял report_depth — отчёт всегда рисовался 10 позиций)."""
+        monkeypatch.setattr(main_module, "collect", lambda config: sample_rows)
+        monkeypatch.setattr(main_module, "_ensure_db", lambda db_path=None: None)
+        monkeypatch.setattr(main_module, "save", lambda rows, client_id="default": len(rows))
+        monkeypatch.setattr(main_module, "label", lambda rows, **kwargs: sample_rows)
+        monkeypatch.setattr(main_module, "insert_labels", lambda rows: len(rows))
+        monkeypatch.setattr(main_module, "export", lambda rows, sheet_id=None: None)
+
+        report_spy = MagicMock()
+        monkeypatch.setattr(main_module, "build_report", report_spy)
+
+        result = main_module.run({"client_id": "acme", "report_depth": 50})
+        assert result["exit_code"] == 0
+        assert report_spy.call_args.kwargs["report_depth"] == 50
+
     def test_run_passes_searchers_geos_project_id_to_collector(self, monkeypatch, sample_rows):
         """searchers, geos, project_id из config попадают в collect()."""
         collect_spy = MagicMock(return_value=sample_rows)
