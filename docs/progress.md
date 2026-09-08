@@ -6,6 +6,36 @@
 
 ## Сделано
 
+- **Session: 2026-09-08 — Hotfix v1.0.3: сбор после таймаута + report_depth UI + labeling breakdown:**
+  - Root cause «Сбор не вернул строк» (прогоны 2026-09-08): poll_status Topvisor
+    не дожидался завершения 50-глубинной проверки за timeout_sec=900 (percent=0
+    все 900с), collect возвращал [] до скачивания снапшотов; снапшоты дозревали
+    позже. Диф git-истории (explore-агент) доказал: сбор-код не менялся;
+    коммит 05bde07 лишь перестал маскировать этот исход как успех.
+  - `collector.py`: `CollectTimeoutError` — только при 0 строк после таймаута
+    poll + финальная попытка get_snapshot по всем связкам (частичный сбор — успех).
+  - `topvisor.py`: run_check логирует сырой ответ при пустом projectsIds
+    (усечение 500 симв., без ключей); poll_status логирует status_positions.
+  - `main.py`: ловит CollectTimeoutError → exit_code=1 + сообщение оператору
+    (повторить запуск через 10-20 минут); stats["labeling"] в stats прогона.
+  - `labeler.py`: label(stats_out=) — опциональный breakdown по label_source
+    {etalon_hit, llm_success, fallback_*, invalid_key, total}; контракт
+    label→rows не изменён (поверх dirty-правок v1.1 workstream A).
+  - `apps_script.gs`: root cause бага report_depth — захардкоженный
+    getRange(3,2) for with_labels перезаписывал валидацию B3; все валидации
+    листа Настройки переведены на _findSettingsRow по ключу (B3=10/20/50,
+    B4 with_labels=true/false); checkStatus показывает «Разметка: из эталона
+    N, LLM M, fallback K» из stats.labeling; оператор ?? заменён на ||
+    (не поддерживается Apps Script V8).
+  - Тесты: +32 (test_collector 18, test_labeler_modes stats_out 6, test_main
+    CollectTimeoutError+labeling 2, test_imports UI-регресс 2, и др.).
+    Полный набор **353 passed**. Verifier: PASS. Reviewer: замечания
+    (контракты collector/labeler) закрыты в docs/contracts.md.
+  - В бэклоге: сверка семантики status_positions с topvisor-openapi;
+    замечание reviewer по ослабленному permission-гейту opencode.json
+    (pre-existing dirty, вне scope).
+
+
 - **Session: 2026-09-06 — v1.1 Workstream A: Etalon validator + журнал конфликтов:**
   - Решение по изоляции (подтверждено пользователем): `domain_labels` остаётся
     глобальным `(domain, query)` в общей БД; отдельная БД на клиента отложена
@@ -35,6 +65,17 @@
     test_storage_schema, test_migrate_idempotent). Полный набор **321 passed**.
   - Документация: `docs/contracts.md`, `docs/decisions.md` (2 ADR),
     `docs/techdebt.md`, статусы specs v1.0.2.
+  - Fix-итерация 1 (reviewer PASS_WITH_NOTES → закрыто): contracts.md
+    синхронизирован с кодом (AUTO не пишет LLM-результат в domain_labels;
+    `save_label_conflicts` допускает пустые domain/query для
+    invalid_or_unknown); `GET /labels/conflicts` — limit 1..5000 через Query
+    (422 вне диапазона, +2 теста); prune обёрнут в try/except (ретеншн
+    некритичен); счётчик `unlabeled` для sentiment=None; prune ORDER BY
+    `(MAX(created_at), MAX(id))`; `migrate._verify_schema` проверяет
+    `label_conflicts` и `run_status.run_id`; `_parse_label(raw: str | None)`;
+    `bulk_upsert` — .get() + ValueError вместо KeyError; release `_run_lock`
+    при сбое `thread.start()`. Итог на текущем дереве (поверх hotfix
+    v1.0.3): 353 passed.
 
 - **Session: 2026-09-05 — Provider UI backend v1.0.2 (backend-часть):**
   - `config.py`: добавлен `KNOWN_ENDPOINTS` (opencode-zen, openrouter, openai);

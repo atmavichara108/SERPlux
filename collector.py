@@ -14,6 +14,14 @@ from topvisor import (
 )
 
 
+class CollectTimeoutError(Exception):
+    """
+    Таймаут poll_status Topvisor, при этом финальная попытка скачивания
+    снапшотов не вернула ни одной строки (hotfix v1.0.3).
+    Бросается ТОЛЬКО когда данных нет совсем; частичный сбор — обычный успех.
+    """
+
+
 def _get_project_id(config: dict[str, Any]) -> int:
     """project_id из config['project_id'], fallback на env/get_project_id()."""
     if config.get("project_id") is not None:
@@ -62,6 +70,12 @@ def collect(config: dict[str, Any]) -> list[Row]:
 
     Возвращает объединённый list[Row] по всем связкам.
     Частичный сбой: ошибка одной связки логируется, сбор продолжается.
+
+    Raises:
+        CollectTimeoutError: poll_status вернул False (таймаут) И финальная
+            попытка скачивания снапшотов не дала ни одной строки.
+            Hotfix v1.0.3: таймаут поллинга сам по себе не прерывает сбор —
+            Topvisor может завершить проверку уже после таймаута.
     """
     depth = config.get("depth", 10)
     searchers = config.get("searchers", [])
@@ -97,6 +111,7 @@ def collect(config: dict[str, Any]) -> list[Row]:
         )
     ]
 
+    poll_ok = True
     if missing:
         log.info("Отсутствуют снапшоты для %s из %s регионов, запускаю одну проверку",
                  len(missing), len(filtered))
@@ -104,9 +119,16 @@ def collect(config: dict[str, Any]) -> list[Row]:
         ids = run_check(project_id, depth, missing_indexes)
         if not ids:
             log.warning("run_check не вернул id (возможно, проверка уже запущена)")
-        if not poll_status(project_id, timeout_sec=timeout_sec):
-            log.error("Таймаут ожидания проверки")
-            return all_rows
+        poll_ok = poll_status(project_id, timeout_sec=timeout_sec)
+        if not poll_ok:
+            # Hotfix v1.0.3: Topvisor может завершить проверку ПОСЛЕ таймаута
+            # поллинга. Не возвращаемся сразу — пробуем скачать снапшоты:
+            # к этому моменту они часто уже доступны.
+            log.warning(
+                "Таймаут ожидания проверки Topvisor (timeout_sec=%s), "
+                "выполняю финальную попытку скачивания снапшотов",
+                timeout_sec,
+            )
     else:
         log.info("Все снапшоты за %s уже существуют, пропускаю проверку", today)
 
@@ -136,6 +158,13 @@ def collect(config: dict[str, Any]) -> list[Row]:
             continue
 
     log.info("Всего собрано строк: %s", len(all_rows))
+    # Hotfix v1.0.3: исключение только если после таймаута поллинга
+    # финальная попытка не дала НИ ОДНОЙ строки. Частичный сбор — успех.
+    if not all_rows and not poll_ok:
+        raise CollectTimeoutError(
+            f"Таймаут poll_status ({timeout_sec} сек) и финальная попытка "
+            f"скачивания не вернула строк для project_id={project_id}"
+        )
     return all_rows
 
 

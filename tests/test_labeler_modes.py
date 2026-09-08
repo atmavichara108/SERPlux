@@ -575,3 +575,126 @@ def test_call_provider_uses_default_model_when_no_override(monkeypatch):
     labeler._call_provider("test-provider", provider_cfg, "prompt")
 
     assert captured_model["value"] == "default-model-v1"
+
+
+# ─── v1.0.3: breakdown разметки через stats_out ───────────────────────────────
+
+
+def test_label_stats_out_etalon_hit(init_db, sample_row, monkeypatch):
+    """stats_out: строка из эталона manual_l1 → etalon_hit=1, LLM не вызван."""
+    storage.upsert_domain_label(
+        url="https://example.com/page1",
+        query="subject a",
+        geo="Литва",
+        sentiment="positive",
+        source="manual_l1",
+        db_path=init_db,
+    )
+    monkeypatch.setattr(
+        labeler, "_label_one_llm",
+        lambda row, provider_chain=None, model=None, invalid_ref=None: (
+            pytest.fail("LLM не должен вызываться при etalon HIT")
+        ),
+    )
+
+    stats_out: dict = {}
+    labeler.label([sample_row], db_path=init_db, label_mode="auto", stats_out=stats_out)
+
+    assert stats_out["etalon_hit"] == 1
+    assert stats_out["llm_success"] == 0
+    assert stats_out["total"] == 1
+
+
+def test_label_stats_out_llm_success(init_db, sample_row, monkeypatch):
+    """stats_out: успешная LLM-разметка → llm_success=1, etalon_hit=0."""
+    monkeypatch.setattr(
+        labeler, "_label_one_llm",
+        lambda row, provider_chain=None, model=None, invalid_ref=None: "negative",
+    )
+
+    stats_out: dict = {}
+    labeler.label([sample_row], db_path=init_db, label_mode="auto", stats_out=stats_out)
+
+    assert stats_out["llm_success"] == 1
+    assert stats_out["etalon_hit"] == 0
+    assert stats_out["total"] == 1
+
+
+def test_label_stats_out_fallback_empty_snippet(init_db, sample_row):
+    """stats_out: пустой сниппет → fallback_empty_snippet=1."""
+    sample_row["snippet"] = ""
+
+    stats_out: dict = {}
+    labeler.label([sample_row], db_path=init_db, label_mode="auto", stats_out=stats_out)
+
+    assert stats_out["fallback_empty_snippet"] == 1
+    assert stats_out["llm_success"] == 0
+    assert stats_out["total"] == 1
+
+
+def test_label_stats_out_fallback_provider_error(init_db, sample_row, monkeypatch):
+    """stats_out: все провайдеры недоступны → fallback_provider_error=1."""
+    monkeypatch.setattr(
+        labeler, "_label_one_llm",
+        lambda row, provider_chain=None, model=None, invalid_ref=None: None,
+    )
+
+    stats_out: dict = {}
+    labeler.label([sample_row], db_path=init_db, label_mode="auto", stats_out=stats_out)
+
+    assert stats_out["fallback_provider_error"] == 1
+    assert stats_out["total"] == 1
+
+
+def test_label_stats_out_none_keeps_old_behavior(init_db, sample_row, monkeypatch):
+    """stats_out=None (дефолт): поведение прежнее, breakdown только в логах."""
+    monkeypatch.setattr(
+        labeler, "_label_one_llm",
+        lambda row, provider_chain=None, model=None, invalid_ref=None: "positive",
+    )
+
+    result = labeler.label([sample_row], db_path=init_db, label_mode="auto")
+    assert result[0]["sentiment"] == "positive"
+
+
+def test_label_stats_out_mixed_sources(init_db, sample_row, monkeypatch):
+    """stats_out: смешанный пачка — сумма категорий сходится с total."""
+    storage.upsert_domain_label(
+        url="https://example.com/page1",
+        query="subject a",
+        geo="Литва",
+        sentiment="positive",
+        source="manual_l1",
+        db_path=init_db,
+    )
+
+    row_llm = {
+        **sample_row,
+        "url": "https://other.com/x",
+        "domain": "other.com",
+        "snippet": "Other snippet",
+    }
+    row_empty = {**row_llm, "url": "https://third.com/y", "domain": "third.com", "snippet": ""}
+
+    monkeypatch.setattr(
+        labeler, "_label_one_llm",
+        lambda row, provider_chain=None, model=None, invalid_ref=None: "neutral",
+    )
+
+    stats_out: dict = {}
+    labeler.label(
+        [sample_row, row_llm, row_empty],
+        db_path=init_db, label_mode="auto", stats_out=stats_out,
+    )
+
+    assert stats_out["etalon_hit"] == 1
+    assert stats_out["llm_success"] == 1
+    assert stats_out["fallback_empty_snippet"] == 1
+    assert stats_out["total"] == 3
+    categorized = (
+        stats_out["etalon_hit"] + stats_out["llm_success"]
+        + stats_out["fallback_empty_snippet"] + stats_out["fallback_provider_error"]
+        + stats_out["fallback_invalid_llm"] + stats_out["fallback_invalid_key"]
+        + stats_out["invalid_key"]
+    )
+    assert categorized == stats_out["total"]

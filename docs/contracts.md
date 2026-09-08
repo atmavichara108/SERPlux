@@ -97,7 +97,10 @@ Row = {
     `manual_neutral`, `unmatched_neutral`, `manual_conflict`, `invalid_or_unknown`.
   - `save_label_conflicts(records: list[dict], db_path: str = DB_PATH) -> int`
     — INSERT записей журнала. Валидирует `conflict_type` (входит в
-    `CONFLICT_TYPES`) и непустые `domain`/`query`. Возвращает кол-во записанных.
+    `CONFLICT_TYPES`); пустые `domain`/`query` ДОПУСТИМЫ — категория
+    `invalid_or_unknown` как раз фиксирует строки с невалидным ключом.
+    Валидация всей пачки до вставки (невалидная запись отменяет батч).
+    Возвращает кол-во записанных.
   - `get_label_conflicts(run_id: str | None = None, limit: int = 500,
       db_path: str = DB_PATH) -> list[dict]`
     — Возвращает записи журнала, новые сверху; опциональный фильтр по `run_id`.
@@ -311,6 +314,7 @@ DEFAULT_PROVIDER: str = "opencode-zen"
     model: str | None = None,
     run_id: str | None = None,
     validation_out: dict | None = None,
+    stats_out: dict | None = None,  # v1.0.3
   ) -> list[dict]`
    — Проставляет `sentiment` (и алиас `label`), а также `confidence`,
    `label_mode`, `label_source` каждой строке.
@@ -326,7 +330,13 @@ DEFAULT_PROVIDER: str = "opencode-zen"
      журнала `label_conflicts`
    - `validation_out`: мутируемый dict-аккумулятор; после разметки заполняется
      счётчиками `{total, ok, manual_neutral, unmatched_neutral, manual_conflict,
-     invalid_or_unknown, recorded}` — блок "validation" в stats прогона
+     invalid_or_unknown, unlabeled, recorded}` — блок "validation" в stats прогона
+   - `stats_out` (v1.0.3): опциональный мутируемый dict; после разметки
+     заполняется breakdown по `label_source`:
+     `{etalon_hit, llm_success, fallback_empty_snippet, fallback_provider_error,
+     fallback_invalid_llm, fallback_invalid_key, invalid_key, total}`.
+     Блок "labeling" в stats прогона (показывается в Sheets-статусе).
+     При `stats_out=None` поведение прежнее (breakdown только в логах).
    Возвращает список с заполненными `sentiment`/`label`/`confidence`/`label_mode`/`label_source`.
 
    **Pre-LLM lookup (эталон — жёсткий референс):** перед LLM ищется `manual_l1`
@@ -365,13 +375,18 @@ DEFAULT_PROVIDER: str = "opencode-zen"
    
   - **AUTO (дефолт):** иерархический режим с fallback на neutral
        - Шаг 1: ищет `sentiment` в справочнике `domain_labels(domain, query)`
-         по **домену** (нормализованному). Если найдено → `sentiment` из
-        справочника, `confidence='high'`, LLM не вызывается (нулевая стоимость)
-      - Шаг 2: если в справочнике нет → вызывает LLM для сниппета (как режим "snippets")
-        - Успех → `sentiment` из LLM, `confidence='high'`, сохраняет в `domain_labels` с `source='snippet'`
+          по **домену** (нормализованному). Жёсткий референс — ТОЛЬКО записи
+         с `source='manual_l1'`; если найдено → `sentiment` из справочника,
+         `confidence='high'`, LLM не вызывается (нулевая стоимость).
+         `force_relabel` эталон НЕ обходит (v1.1 precedence rule 5)
+      - Шаг 2: если жёсткого эталона нет → вызывает LLM для сниппета
+        - Успех → `sentiment` из LLM, `confidence='high'`, `label_source='llm'`.
+          Результат LLM в `domain_labels` НЕ записывается (авторазметка —
+          не эталон, ADR 2026-08-16)
       - Шаг 3: при ошибке LLM (сеть, таймаут, провайдер недоступен) → `sentiment='neutral'`, `confidence='uncertain'`
         - neutral как маркер неуверенности (пропускаемые и ошибочные случаи помечаются)
-       - Кэширование: пары (domain, query) с `sentiment != None` берутся из `domain_labels` повторно
+       - Повторные прогоны: пары (domain, query) с `manual_l1` берутся из
+         `domain_labels` повторно; LLM-результаты не кэшируются
    
    - **DEEP (зарезервирован для v2):** обработка только `sentiment=='neutral'` по контенту страницы
      - Сейчас → заглушка, возвращает `sentiment` без изменений (проходит нейтральные без обработки)
@@ -388,7 +403,7 @@ DEFAULT_PROVIDER: str = "opencode-zen"
     - Группирует строки по `(searcher, geo)`
      - Для каждой строки проверяет `domain_labels(domain, query)` → LLM → neutral
     - Логирует статистику по группе и детальный лог для каждой строки
-    - Вызывает `storage.upsert_domain_label()` с приоритетом `source='snippet'`
+    - Результат LLM в `domain_labels` НЕ записывается (эталон — только manual_l1)
 
 - `_label_group_deep(rows: list[dict]) -> list[dict]`
    — Вспомогательная функция для режима DEEP (v2).
@@ -675,6 +690,19 @@ Health-check для мониторинга контейнера (без авто
 **Примечание:** POST/PUT/DELETE /providers не реализованы (ADR 2026-07-03: провайдеры в config.py, read-only).
 
 ---
+
+## collector.py
+
+- `collect(config: dict) -> list[Row]`
+   — Собирает снимки выдачи по всем связкам searcher×geo из config.
+   Частичный сбой: ошибка одной связки логируется, сбор продолжается.
+
+   **Raises (v1.0.3):** `CollectTimeoutError` — ТОЛЬКО когда poll_status Topvisor
+   вернул False (таймаут `timeout_sec`) И финальная попытка скачивания снапшотов
+   не дала ни одной строки. Таймаут поллинга сам по себе сбор не прерывает:
+   после него выполняется одна финальная попытка `get_snapshot` по всем связкам
+   (снапшот часто дозревает вскоре после таймаута). Частичный сбор — обычный успех.
+   Поймано в `main.run()` → `exit_code=1` + сообщение оператору про повторный запуск.
 
 ## Важно
 

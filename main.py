@@ -3,7 +3,7 @@ from typing import Any
 
 import config
 import storage
-from collector import collect
+from collector import collect, CollectTimeoutError
 from storage import save, insert_labels, _ensure_db
 from labeler import label
 from exporter import export
@@ -81,6 +81,16 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
 
     try:
         rows = collect(runtime_config)
+    except CollectTimeoutError as e:
+        # Hotfix v1.0.3: таймаут poll_status + финальная попытка не дала строк.
+        # Снапшот в Topvisor доедет позже — оператору нужны конкретные действия.
+        message = (
+            f"{e}. Снапшот появится в Topvisor позже — "
+            f"повторите запуск через 10-20 минут или используйте "
+            f"«Построить отчёт за дату» после успешного сбора"
+        )
+        log.error("CollectTimeoutError: %s", e)
+        return {"exit_code": 1, "stats": stats, "message": message}
     except Exception as e:
         log.error("Сбой collect: %s", e)
         return {"exit_code": 1, "stats": stats, "message": f"Сбой collect: {e}"}
@@ -107,6 +117,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     # Разметка тональности и сохранение меток
     labeled_count = 0
     labeled_rows = rows  # fallback: если labeler упал, используем сырые данные
+    labeling_breakdown: dict[str, Any] = {}  # v1.0.3: breakdown разметки для stats
     if config.get("with_labels", True):
         try:
             label_kwargs = {
@@ -116,6 +127,8 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
                 "db_path": storage.DB_PATH,
                 "run_id": run_id,
                 "validation_out": validation_stats,
+                # v1.0.3: breakdown по label_source (etalon_hit/llm/fallback)
+                "stats_out": labeling_breakdown,
             }
             if provider_chain is not None:
                 label_kwargs["provider_chain"] = provider_chain
@@ -133,6 +146,11 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     # Сводка валидации разметки (v1.1 workstream A) → stats прогона
     if validation_stats:
         stats["validation"] = validation_stats
+
+    # v1.0.3: breakdown разметки (эталон/LLM/fallback) → stats прогона;
+    # Apps Script checkStatus показывает его в диалоге статуса
+    if labeling_breakdown:
+        stats["labeling"] = labeling_breakdown
 
     export_ok = False
     try:

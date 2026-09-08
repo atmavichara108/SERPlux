@@ -210,3 +210,41 @@ class TestMainPipelineParams:
         cfg = collect_spy.call_args.args[0]
         assert cfg["searchers"] == ["google", "yandex_ru", "yandex_com"]
         assert "Литва" in cfg["geos"]
+
+    def test_run_collect_timeout_error_message(self, monkeypatch):
+        """CollectTimeoutError → exit_code=1 и сообщение оператору про повторный запуск."""
+        from collector import CollectTimeoutError
+
+        def fake_collect(config):
+            raise CollectTimeoutError(
+                "Таймаут poll_status (900 сек) и финальная попытка "
+                "скачивания не вернула строк для project_id=28938353"
+            )
+
+        monkeypatch.setattr(main_module, "collect", fake_collect)
+
+        result = main_module.run({"client_id": "client01"})
+
+        assert result["exit_code"] == 1
+        assert "Таймаут poll_status" in result["message"]
+        assert "повторите запуск" in result["message"]
+
+    def test_run_labeling_breakdown_in_stats(self, mock_pipeline, sample_rows):
+        """stats_out пробрасывается в label(), breakdown попадает в stats["labeling"]."""
+        label_spy = mock_pipeline
+
+        # Реальный label() заполняет stats_out — эмулируем это поведение
+        def fake_label(rows, **kwargs):
+            kwargs["stats_out"].update({"etalon_hit": 1, "llm_success": 0, "total": 1})
+            return rows
+
+        label_spy.side_effect = fake_label
+
+        result = main_module.run({"client_id": "acme", "with_labels": True})
+
+        assert result["exit_code"] == 0
+        # stats_out передан в label()
+        kwargs = label_spy.call_args.kwargs
+        assert "stats_out" in kwargs
+        # label() заполнил stats_out → main положил его в stats["labeling"]
+        assert result["stats"]["labeling"] == {"etalon_hit": 1, "llm_success": 0, "total": 1}

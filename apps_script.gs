@@ -184,15 +184,21 @@ function _getClientIdList() {
 }
 
 /**
- * Устанавливает Data Validation для поля client_id (строка 1, колонка B).
+ * Устанавливает Data Validation для поля client_id (строка ищется по ключу, колонка B).
  * Dropdown заполняется из GET /clients API.
  */
 function _setupClientIdValidation(sheet) {
+  var row = _findSettingsRow(sheet, "client_id");
+  if (row === -1) {
+    Logger.log("_setupClientIdValidation: ключ «client_id» не найден — валидация пропущена");
+    return;
+  }
+
   var clientIds = _getClientIdList();
   
   if (clientIds.length === 0) {
     // Если список клиентов не получен — сохраняем свободный ввод с подсказкой
-    sheet.getRange(1, 2).setDataValidation(
+    sheet.getRange(row, 2).setDataValidation(
       SpreadsheetApp.newDataValidation()
         .setAllowInvalid(true)
         .setHelpText("ID клиента (например: client01). Загрузить из сервера: SERPlux → Настройки → [>] Обновить список клиентов")
@@ -200,7 +206,7 @@ function _setupClientIdValidation(sheet) {
     );
   } else {
     // Устанавливаем dropdown из списка клиентов
-    sheet.getRange(1, 2).setDataValidation(
+    sheet.getRange(row, 2).setDataValidation(
       SpreadsheetApp.newDataValidation()
         .requireValueInList(clientIds, true)
         .setAllowInvalid(false)
@@ -290,31 +296,39 @@ function initSettingsSheetSafe() {
   // Валидации по одному полю. При сбое логируем поле и продолжаем.
   // Важно: sheet уже заполнен значениями, поэтому даже при полном сбое валидаций
   // пользователь может редактировать значения вручную.
+  //
+  // КАЖДАЯ валидация ищет строку по ключу через _findSettingsRow(sheet, "<ключ>").
+  // Хардкодить номера строк нельзя: при расширении SETTINGS_TEMPLATE строки
+  // сдвигаются (например, report_depth вставлен строкой 3, with_labels — строкой 4).
+  // Если ключ не найден (старый лист без строки) — тихо пропускаем.
 
-  // client_id (строка 1) — может потребовать сетевой запрос к серверу.
+  // client_id — может потребовать сетевой запрос к серверу.
   try {
     _setupClientIdValidation(sheet);
   } catch (e) {
     Logger.log("initSettingsSheetSafe: ошибка валидации client_id: %s", e.message);
   }
 
-  // depth (строка 2)
+  // depth
   try {
-    sheet.getRange(2, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .requireValueInList(["10", "20", "50", "100"], true)
-        .setAllowInvalid(false)
-        .setHelpText("Глубина сбора: 10, 20, 50 или 100")
-        .build()
-    );
+    var depthRow = _findSettingsRow(sheet, "depth");
+    if (depthRow !== -1) {
+      sheet.getRange(depthRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(["10", "20", "50", "100"], true)
+          .setAllowInvalid(false)
+          .setHelpText("Глубина сбора: 10, 20, 50 или 100")
+          .build()
+      );
+    }
   } catch (e) {
     Logger.log("initSettingsSheetSafe: ошибка валидации depth: %s", e.message);
   }
 
-  // report_depth — по ключу строки (лист может расширяться)
+  // report_depth
   try {
     var rdRow = _findSettingsRow(sheet, "report_depth");
-    if (rdRow > 0) {
+    if (rdRow !== -1) {
       sheet.getRange(rdRow, 2).setDataValidation(
         SpreadsheetApp.newDataValidation()
           .requireValueInList(["10", "20", "50"], true)
@@ -327,30 +341,143 @@ function initSettingsSheetSafe() {
     Logger.log("initSettingsSheetSafe: ошибка валидации report_depth: %s", e.message);
   }
 
-  // with_labels (строка 3)
+  // with_labels
   try {
-    sheet.getRange(3, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .requireValueInList(["true", "false"], true)
-        .setAllowInvalid(false)
-        .setHelpText("true или false")
-        .build()
-    );
+    var wlRow = _findSettingsRow(sheet, "with_labels");
+    if (wlRow !== -1) {
+      sheet.getRange(wlRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(["true", "false"], true)
+          .setAllowInvalid(false)
+          .setHelpText("true или false")
+          .build()
+      );
+    }
   } catch (e) {
     Logger.log("initSettingsSheetSafe: ошибка валидации with_labels: %s", e.message);
   }
 
-  // label_mode (строка 4): только auto/deep
+  // label_mode: только auto/deep
   try {
-    sheet.getRange(4, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .requireValueInList(["auto", "deep"], true)
-        .setAllowInvalid(false)
-        .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
-        .build()
-    );
+    var lmRow = _findSettingsRow(sheet, "label_mode");
+    if (lmRow !== -1) {
+      sheet.getRange(lmRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(["auto", "deep"], true)
+          .setAllowInvalid(false)
+          .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
+          .build()
+      );
+    }
   } catch (e) {
     Logger.log("initSettingsSheetSafe: ошибка валидации label_mode: %s", e.message);
+  }
+
+  // date: свободный ввод
+  try {
+    var dateRow = _findSettingsRow(sheet, "date");
+    if (dateRow !== -1) {
+      sheet.getRange(dateRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .setAllowInvalid(true)
+          .setHelpText("today или дата в формате YYYY-MM-DD")
+          .build()
+      );
+    }
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации date: %s", e.message);
+  }
+
+  // force_relabel
+  try {
+    var frRow = _findSettingsRow(sheet, "force_relabel");
+    if (frRow !== -1) {
+      sheet.getRange(frRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(["true", "false"], true)
+          .setAllowInvalid(false)
+          .setHelpText("true или false")
+          .build()
+      );
+    }
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации force_relabel: %s", e.message);
+  }
+
+  // force_rebuild_report
+  try {
+    var frbRow = _findSettingsRow(sheet, "force_rebuild_report");
+    if (frbRow !== -1) {
+      sheet.getRange(frbRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(["true", "false"], true)
+          .setAllowInvalid(false)
+          .setHelpText("true или false")
+          .build()
+      );
+    }
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации force_rebuild_report: %s", e.message);
+  }
+
+  // report_date: свободный ввод
+  try {
+    var rdateRow = _findSettingsRow(sheet, "report_date");
+    if (rdateRow !== -1) {
+      sheet.getRange(rdateRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .setAllowInvalid(true)
+          .setHelpText("latest или дата в формате YYYY-MM-DD")
+          .build()
+      );
+    }
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации report_date: %s", e.message);
+  }
+
+  // provider_chain: свободный ввод
+  try {
+    var pcRow = _findSettingsRow(sheet, "provider_chain");
+    if (pcRow !== -1) {
+      sheet.getRange(pcRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .setAllowInvalid(true)
+          .setHelpText("Провайдер LLM или цепочка через запятую")
+          .build()
+      );
+    }
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации provider_chain: %s", e.message);
+  }
+
+  // model: свободный ввод
+  try {
+    var modelRow = _findSettingsRow(sheet, "model");
+    if (modelRow !== -1) {
+      sheet.getRange(modelRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .setAllowInvalid(true)
+          .setHelpText("Модель LLM (пусто = default_model провайдера)")
+          .build()
+      );
+    }
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации model: %s", e.message);
+  }
+
+  // status: свободный ввод (обновляется автоматически)
+  try {
+    var statusRow = _findSettingsRow(sheet, "status");
+    if (statusRow !== -1) {
+      sheet.getRange(statusRow, 2).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .setAllowInvalid(true)
+          .setHelpText("Статус последнего прогона (обновляется автоматически)")
+          .build()
+      );
+    }
+  } catch (e) {
+    Logger.log("initSettingsSheetSafe: ошибка валидации status: %s", e.message);
   }
 
   // searcher_* — checkbox поисковиков: только true/false.
@@ -395,191 +522,6 @@ function initSettingsSheetSafe() {
   }
 }
 
-/**
- * Создаёт или пересоздаёт лист «Настройки» с шаблоном ключей и Data Validation.
- * Формат: колонка A = ключ, B = значение, C = подсказка.
- */
-function initSettingsSheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(SETTINGS_SHEET_NAME);
-
-  if (!sheet) {
-    sheet = ss.insertSheet(SETTINGS_SHEET_NAME);
-  }
-
-  // Очищаем содержимое (сохраняем форматирование если есть)
-  try {
-    sheet.clearContents();
-  } catch (e) {
-    Logger.log("initSettingsSheet: clearContents пропущен: %s", e.message);
-  }
-
-  // Записываем шаблон целиком. Это основная задача — лист должен быть заполнен.
-  try {
-    sheet.getRange(1, 1, SETTINGS_TEMPLATE.length, 3).setValues(SETTINGS_TEMPLATE);
-  } catch (e) {
-    Logger.log("initSettingsSheet FATAL setValues: %s", e.message);
-    // Если setValues не удался — лист бесполезен, но не бросаем исключение,
-    // чтобы пользователь мог увидеть лог и попробовать ещё раз.
-    return;
-  }
-
-  // Форматирование — не критично, оборачиваем целиком
-  try {
-    sheet.getRange(1, 1, SETTINGS_TEMPLATE.length, 1).setFontWeight("bold");
-    sheet.setColumnWidth(1, 200);
-    sheet.setColumnWidth(2, 250);
-    sheet.setColumnWidth(3, 400);
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка форматирования: %s", e.message);
-  }
-
-  // Валидации по одному полю. При сбое логируем поле и продолжаем.
-  // Важно: sheet уже заполнен значениями, поэтому даже при полном сбое валидаций
-  // пользователь может редактировать значения вручную.
-
-  // depth (строка 2)
-  try {
-    sheet.getRange(2, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .requireValueInList(["10", "20", "50", "100"], true)
-        .setAllowInvalid(false)
-        .setHelpText("Глубина сбора: 10, 20, 50 или 100")
-        .build()
-    );
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации depth: %s", e.message);
-  }
-
-  // with_labels (строка 3)
-  try {
-    sheet.getRange(3, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .requireValueInList(["true", "false"], true)
-        .setAllowInvalid(false)
-        .setHelpText("true или false")
-        .build()
-    );
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации with_labels: %s", e.message);
-  }
-
-  // label_mode (строка 4): только auto/deep
-  try {
-    sheet.getRange(4, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .requireValueInList(["auto", "deep"], true)
-        .setAllowInvalid(false)
-        .setHelpText("Режим разметки: auto (кэш+сниппет) или deep (страница)")
-        .build()
-    );
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации label_mode: %s", e.message);
-  }
-
-  // date (строка 5): свободный ввод
-  try {
-    sheet.getRange(5, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .setAllowInvalid(true)
-        .setHelpText("today или дата в формате YYYY-MM-DD")
-        .build()
-    );
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации date: %s", e.message);
-  }
-
-  // force_relabel (строка 6)
-  try {
-    sheet.getRange(6, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .requireValueInList(["true", "false"], true)
-        .setAllowInvalid(false)
-        .setHelpText("true или false")
-        .build()
-    );
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации force_relabel: %s", e.message);
-  }
-
-  // force_rebuild_report (строка 7)
-  try {
-    sheet.getRange(7, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .requireValueInList(["true", "false"], true)
-        .setAllowInvalid(false)
-        .setHelpText("true или false")
-        .build()
-    );
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации force_rebuild_report: %s", e.message);
-  }
-
-  // report_date (строка 8): свободный ввод
-  try {
-    sheet.getRange(8, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .setAllowInvalid(true)
-        .setHelpText("latest или дата в формате YYYY-MM-DD")
-        .build()
-    );
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации report_date: %s", e.message);
-  }
-
-  // provider_chain (строка 9): свободный ввод
-  try {
-    sheet.getRange(9, 2).setDataValidation(
-      SpreadsheetApp.newDataValidation()
-        .setAllowInvalid(true)
-        .setHelpText("Провайдер LLM или цепочка через запятую")
-        .build()
-    );
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации provider_chain: %s", e.message);
-  }
-
-  // searcher_* — checkbox поисковиков: только true/false.
-  // Строки ищем по ключу, т.к. их номер меняется при расширении шаблона.
-  var searcherKeys = ["searcher_google", "searcher_yandex_ru", "searcher_yandex_com"];
-  for (var s = 0; s < searcherKeys.length; s++) {
-    try {
-      var sRow = _findSettingsRow(sheet, searcherKeys[s]);
-      if (sRow !== -1) {
-        sheet.getRange(sRow, 2).setDataValidation(
-          SpreadsheetApp.newDataValidation()
-            .requireValueInList(["true", "false"], true)
-            .setAllowInvalid(false)
-            .setHelpText("true — использовать поисковик в прогоне, false — пропустить")
-            .build()
-        );
-      }
-    } catch (e) {
-      Logger.log("initSettingsSheet: ошибка валидации " + searcherKeys[s] + ": %s", e.message);
-    }
-  }
-
-  // client_id (строка 1) — последний, потому что может потребовать сетевой запрос к серверу.
-  // Сетевой сбой не должен мешать остальному листу.
-  try {
-    _setupClientIdValidation(sheet);
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка валидации client_id: %s", e.message);
-  }
-
-  // Косметика — каждая операция отдельно, не критична
-  try {
-    ss.setActiveSheet(sheet);
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка setActiveSheet: %s", e.message);
-  }
-
-  try {
-    ss.toast("Лист «Настройки» инициализирован", "SERPlux", 5);
-  } catch (e) {
-    Logger.log("initSettingsSheet: ошибка toast: %s", e.message);
-  }
-}
 
 /**
  * Читает параметры из листа «Настройки» в объект.
@@ -904,6 +846,19 @@ function checkStatus() {
           "\nРазмечено: " + (stats.labeled || "—") +
           "\nВыгружено: " + (stats.exported || "—") +
           "\nПровайдер: " + providerUsed;
+      }
+      // Defensive-вывод breakdown разметки, если поле присутствует (старые статусы его не содержат)
+      if (stats.labeling) {
+        var lb = stats.labeling;
+        var fallbackSum = (lb.fallback_empty_snippet || 0) +
+          (lb.fallback_provider_error || 0) +
+          (lb.fallback_invalid_llm || 0) +
+          (lb.fallback_invalid_key || 0) +
+          (lb.invalid_key || 0);
+        // Оператор ?? не поддерживается рантаймом Apps Script — используем ||
+        dialogMsg += "\nРазметка: из эталона " + (lb.etalon_hit || "—") +
+          ", LLM: " + (lb.llm_success || "—") +
+          ", fallback: " + (fallbackSum || "—");
       }
       break;
 

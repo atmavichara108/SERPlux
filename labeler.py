@@ -104,7 +104,7 @@ def _build_prompt(query: str, url: str, snippet: str) -> str:
     )
 
 
-def _parse_label(raw: str) -> str | None:
+def _parse_label(raw: str | None) -> str | None:
     """Извлекает sentiment из LLM-ответа.
 
     v1.1 (workstream A): мусорный ответ → None (честный маркер
@@ -489,6 +489,7 @@ def _validate_labels(
         "unmatched_neutral": 0,
         "manual_conflict": 0,
         "invalid_or_unknown": 0,
+        "unlabeled": 0,
     }
     records: list[dict] = []
 
@@ -529,7 +530,11 @@ def _validate_labels(
             continue
 
         if observed not in ("positive", "negative", "neutral"):
-            if observed is not None:
+            if observed is None:
+                # Строка без попытки разметки (deep pass-through) — считаем
+                # отдельно, чтобы сумма категорий сходилась с total
+                counts["unlabeled"] += 1
+            else:
                 counts["invalid_or_unknown"] += 1
                 records.append({**base, "conflict_type": "invalid_or_unknown",
                                 "recommended_action": "fix_input"})
@@ -567,16 +572,20 @@ def _validate_labels(
     if records:
         storage.save_label_conflicts(records, db_path)
         # Ретеншн только для прогонных записей: у прямых вызовов label()
-        # без run_id журнал не чистим (dev/отладка).
+        # без run_id журнал не чистим (dev/отладка). Ретеншн некритичен —
+        # сбой prune не должен валить разметку (частичный сбой = логируем).
         if run_id:
-            storage.prune_label_conflicts(keep_last_runs=50, db_path=db_path)
+            try:
+                storage.prune_label_conflicts(keep_last_runs=50, db_path=db_path)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("prune_label_conflicts не выполнен: %s", exc)
 
     log.info(
         "VALIDATION: total=%s ok=%s manual_neutral=%s unmatched_neutral=%s "
-        "manual_conflict=%s invalid_or_unknown=%s recorded=%s",
+        "manual_conflict=%s invalid_or_unknown=%s unlabeled=%s recorded=%s",
         counts["total"], counts["ok"], counts["manual_neutral"],
         counts["unmatched_neutral"], counts["manual_conflict"],
-        counts["invalid_or_unknown"], len(records),
+        counts["invalid_or_unknown"], counts["unlabeled"], len(records),
     )
     if out is not None:
         out.clear()
@@ -595,6 +604,7 @@ def label(
     model: str | None = None,
     run_id: str | None = None,
     validation_out: dict | None = None,
+    stats_out: dict | None = None,
 ) -> list[dict]:
     """
     Проставляет sentiment (и алиас label) каждой строке.
@@ -609,7 +619,13 @@ def label(
       - run_id: идентификатор прогона для журнала валидации (v1.1)
       - validation_out: мутабельный dict; заполняется счётчиками валидации
         {total, ok, manual_neutral, unmatched_neutral, manual_conflict,
-        invalid_or_unknown, recorded}
+        invalid_or_unknown, unlabeled, recorded}
+      - stats_out: опциональный мутабельный dict (v1.0.3); заполняется
+        breakdown разметки по label_source:
+        {etalon_hit, llm_success, fallback_empty_snippet, fallback_provider_error,
+        fallback_invalid_llm, fallback_invalid_key, invalid_key, total}
+        Контракт label() → list[rows] не меняется; при stats_out=None поведение
+        прежнее (breakdown только в логах).
 
     Режимы:
       - auto: get_domain_label_record (manual_l1) → LLM (snippet) → neutral (fallback on error).
@@ -663,6 +679,31 @@ def label(
 
     total_success = sum(1 for r in result if r.get("sentiment") is not None)
     log.info("Разметка завершена: %s/%s строк с sentiment", total_success, len(rows))
+
+    # v1.0.3: breakdown разметки по label_source — наружу для stats прогона.
+    # Источник истины — row["label_source"], проставленный _label_group_auto.
+    if stats_out is not None:
+        breakdown = {
+            "etalon_hit": 0,
+            "llm_success": 0,
+            "fallback_empty_snippet": 0,
+            "fallback_provider_error": 0,
+            "fallback_invalid_llm": 0,
+            "fallback_invalid_key": 0,
+            "invalid_key": 0,
+            "total": len(result),
+        }
+        for r in result:
+            src = r.get("label_source")
+            if src == "manual_l1":
+                breakdown["etalon_hit"] += 1
+            elif src == "llm":
+                breakdown["llm_success"] += 1
+            elif src in breakdown:
+                breakdown[src] += 1
+        stats_out.clear()
+        stats_out.update(breakdown)
+        log.info("LABELING BREAKDOWN: %s", breakdown)
 
     # Post-label валидация (v1.1 workstream A): сравнение с эталоном,
     # классификация neutral/конфликтов, журнал label_conflicts.

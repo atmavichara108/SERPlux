@@ -229,3 +229,73 @@ def test_no_warning_when_depth_equals_real_depth(monkeypatch, caplog):
                               region_lang="lt", region_device=0, geo="Литва")
 
     assert not any("Глубина выдачи меньше запрошенной" in r.message for r in caplog.records)
+
+
+# ─── Hotfix v1.0.3: финальная попытка скачивания после таймаута poll_status ───
+
+
+def _timeout_cfg():
+    """Конфиг для тестов таймаута: одна связка, фиксированный project_id."""
+    return {"depth": 10, "searchers": ["google"], "geos": ["Литва"],
+            "regions_map": _REGIONS, "project_id": 123, "date": "2026-06-19",
+            "timeout_sec": 5}
+
+
+def _row(n=1):
+    """Минимальная строка результата get_snapshot."""
+    return {"date": "2026-06-19", "searcher": "google", "query": f"q{n}",
+            "geo": "Литва", "position": n, "url": f"http://a.example/{n}",
+            "domain": "a.example", "label": None}
+
+
+def test_collect_poll_timeout_but_snapshot_has_rows(monkeypatch):
+    """poll_status=False, но финальная попытка get_snapshot дала строки —
+    collect возвращает rows как обычный успех (без исключения)."""
+    monkeypatch.setattr(collector, "snapshot_exists", lambda *a, **k: False)
+    monkeypatch.setattr(collector, "run_check", lambda *a, **k: [123])
+    monkeypatch.setattr(collector, "poll_status", lambda *a, **k: False)
+    monkeypatch.setattr(collector, "get_snapshot", lambda *a, **k: [_row(1), _row(2)])
+
+    rows = collector.collect(_timeout_cfg())
+
+    assert len(rows) == 2
+    assert rows[0]["domain"] == "a.example"
+
+
+def test_collect_poll_timeout_and_zero_rows_raises(monkeypatch):
+    """poll_status=False и финальная попытка дала 0 строк — CollectTimeoutError."""
+    monkeypatch.setattr(collector, "snapshot_exists", lambda *a, **k: False)
+    monkeypatch.setattr(collector, "run_check", lambda *a, **k: [123])
+    monkeypatch.setattr(collector, "poll_status", lambda *a, **k: False)
+    monkeypatch.setattr(collector, "get_snapshot", lambda *a, **k: [])
+
+    with pytest.raises(collector.CollectTimeoutError):
+        collector.collect(_timeout_cfg())
+
+
+def test_collect_poll_success_keeps_old_behavior(monkeypatch):
+    """poll_status=True — старое поведение: rows возвращаются, исключения нет."""
+    monkeypatch.setattr(collector, "snapshot_exists", lambda *a, **k: False)
+    monkeypatch.setattr(collector, "run_check", lambda *a, **k: [123])
+    monkeypatch.setattr(collector, "poll_status", lambda *a, **k: True)
+    monkeypatch.setattr(collector, "get_snapshot", lambda *a, **k: [_row(1)])
+
+    rows = collector.collect(_timeout_cfg())
+    assert len(rows) == 1
+
+
+def test_collect_poll_success_zero_rows_returns_empty(monkeypatch):
+    """poll_status=True и 0 строк — как раньше, return [] (не CollectTimeoutError)."""
+    monkeypatch.setattr(collector, "snapshot_exists", lambda *a, **k: False)
+    monkeypatch.setattr(collector, "run_check", lambda *a, **k: [123])
+    monkeypatch.setattr(collector, "poll_status", lambda *a, **k: True)
+    monkeypatch.setattr(collector, "get_snapshot", lambda *a, **k: [])
+
+    assert collector.collect(_timeout_cfg()) == []
+
+
+def test_collect_timeout_error_is_exception():
+    """CollectTimeoutError импортируется и является Exception."""
+    from collector import CollectTimeoutError
+    assert issubclass(CollectTimeoutError, Exception)
+    assert isinstance(CollectTimeoutError("timeout"), Exception)

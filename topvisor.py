@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from urllib.parse import urlparse
@@ -170,9 +171,24 @@ def run_check(project_id: int, depth: int, region_indexes: list[int]) -> list[in
         "do_snapshots": True,
     })
     if result is None:
+        # Диагностика потери снапшотов: result=None означает, что _post уже
+        # залогировал ошибку (timeout/соединение/API error). Сырого ответа нет.
+        # Секретов в теле ответа API нет; headers/ключи сюда не попадают.
+        log.warning("run_check: Topvisor вернул result=None (сырой ответ недоступен)")
         log.error("Не удалось запустить проверку")
         return []
     ids = result.get("projectsIds", [])
+    if not ids:
+        # Диагностика: логируем сырой ответ Topvisor (усечённо, без секретов —
+        # это только тело result, не заголовки запроса и не ключи авторизации)
+        try:
+            raw = json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raw = repr(result)
+        log.warning("run_check: пустой projectsIds, сырой ответ Topvisor: %s",
+                    raw[:500])
+        log.error("Не удалось запустить проверку")
+        return []
     log.info("Запущена проверка проектов: %s", ids)
     return ids
 
@@ -193,7 +209,8 @@ def poll_status(project_id: int, timeout_sec: int = 600) -> bool:
             proj = result[0] if isinstance(result, list) else result
             pct = proj.get("positions_percent", 0)
             status = proj.get("status_positions", "")
-            log.info("Проект %s: percent=%s, status=%s", project_id, pct, status)
+            log.info("Проект %s: percent=%s, status_positions=%s",
+                     project_id, pct, status)
             if pct == 100 or status == "done":
                 return True
         time.sleep(10)

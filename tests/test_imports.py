@@ -128,6 +128,36 @@ def test_apps_script_searcher_checkboxes_in_settings_template():
     assert "Не выбран ни один поисковик" in script
 
 
+def test_apps_script_settings_validation_uses_key_lookup():
+    """Валидации листа «Настройки» ищут строку по ключу, а не по захардкоженному номеру.
+
+    Регрессия v1.0.3: после вставки report_depth строкой 3 захардкоженный
+    getRange(3, 2) перезаписывал with_labels списком ["true","false"], ломая
+    report_depth. Все валидации должны идти через _findSettingsRow(sheet, "<ключ>").
+    """
+    script_path = Path(PROJECT_ROOT) / "apps_script.gs"
+    if not script_path.exists():
+        pytest.skip("apps_script.gs is a client-side artifact and is not copied into the server image")
+    script = script_path.read_text(encoding="utf-8")
+
+    # Ни одна валидация не должна хардкодить номер строки в setDataValidation
+    assert "getRange(3, 2).setDataValidation" not in script
+
+    # with_labels ищется по ключу (фикс бага: B3 остаётся ["10","20","50"], B4 получает ["true","false"])
+    assert '_findSettingsRow(sheet, "with_labels")' in script
+
+
+def test_apps_script_check_status_shows_labeling_breakdown():
+    """checkStatus в ветке ok выводит breakdown разметки из stats.labeling."""
+    script_path = Path(PROJECT_ROOT) / "apps_script.gs"
+    if not script_path.exists():
+        pytest.skip("apps_script.gs is a client-side artifact and is not copied into the server image")
+    script = script_path.read_text(encoding="utf-8")
+
+    assert "из эталона" in script
+    assert "stats.labeling" in script
+
+
 def test_apps_script_provider_discover_ui_does_not_ask_for_api_key():
     """_addProviderDialog использует preset endpoint'ы и не запрашивает сам API-ключ."""
     script_path = Path(PROJECT_ROOT) / "apps_script.gs"
