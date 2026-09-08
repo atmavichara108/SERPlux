@@ -87,3 +87,27 @@ do_snapshots увеличивает стоимость проверки. Лог�
 Точные ключи JSON-ответа get/snapshots_2/history уточнить из OpenAPI-репозитория
 topvisor на GitHub во время реализации (webfetch). Не угадывать структуру —
 свериться с реальной схемой.
+
+## Сверка с официальным OpenAPI (2026-09-08, repo topvisor/topvisor-openapi@main)
+
+Поля проекта (Models/Projects.json, schemas `Models.Projects`):
+
+- `status_positions`: `string`, nullable. **Enum значений в схеме НЕ описан.**
+- `positions_percent`: nullable, тип не описан (число по факту).
+- Дополнительно существуют: `status_positions_percent`, `status_positions_time`,
+  `status_positions_date`, `status_positions_by_keywords` (все nullable).
+- I18n-словарь CheckButton (I18n/Projects/CheckButton.json) содержит человеко-
+  читаемые состояния проверки: `Last_check`, `In_queue`, `In_work` — но явного
+  маппинга строк `status_positions` в схеме нет.
+
+Следствия для SERPlux:
+
+1. Мёртвая ветка `status == "done"` в poll_status подтверждена: Topvisor
+   шлёт числа (наблюдение живых прогонов: status=1, status=2), а не строку
+   "done". Завершение надёжно определяется по `positions_percent == 100`.
+2. Значения статусов НЕ документированы официально — менять поведение
+   поллинга на их основе нельзя. Текущий подход (percent + timeout +
+   финальная попытка скачивания v1.0.3) остаётся корректным и безопасным.
+3. Если понадобится точный маппинг статусов — снять значения эмпирически
+   с живого проекта (лог status_positions по время длительной проверки),
+   не из схемы.
