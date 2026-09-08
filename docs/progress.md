@@ -6,6 +6,21 @@
 
 ## Сделано
 
+- **Session: 2026-09-08 (2) — v1.0.3 follow-up: report_depth в полном прогоне + нули в breakdown:**
+  - Живой прогон 11:20 UTC выявил: report_depth=50 из Настроек доходил до
+    webhook (report_only/label_only ветки прокидывали), но в ПОЛНОМ пайплайне
+    main.run вызывал build_report без report_depth → reporter рисовал дефолт
+    REPORT_DEPTH=10 позиций.
+  - `main.py`: build_report(..., report_depth=config.get("report_depth")).
+  - `apps_script.gs`: _fmtCount() — 0 валидное значение счётчика; было
+    `0||"—"` → «LLM: 0» показывалось как «—».
+  - `tests/test_main.py`: регрессия проброса report_depth. Полный набор
+    **354 passed**. Коммит `46ca582`, push выполнен.
+  - migrate.py (verify label_conflicts/run_id) подтверждён тестами (13 passed),
+    закоммичен отдельно от чужих dirty-файлов НЕ был — остался в дереве
+    (решение о агент-конфигах/opencode.json за владельцем другой сессии).
+
+
 - **Session: 2026-09-08 — Hotfix v1.0.3: сбор после таймаута + report_depth UI + labeling breakdown:**
   - Root cause «Сбор не вернул строк» (прогоны 2026-09-08): poll_status Topvisor
     не дожидался завершения 50-глубинной проверки за timeout_sec=900 (percent=0
