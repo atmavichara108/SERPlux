@@ -418,6 +418,13 @@ def _verify_schema(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn, "run_status"):
         raise RuntimeError("Схема не доведена: таблица run_status отсутствует")
 
+    # v1.1 workstream A: журнал валидации + run_id прогона
+    if not _table_exists(conn, "label_conflicts"):
+        raise RuntimeError("Схема не доведена: таблица label_conflicts отсутствует")
+    run_status_cols = {row[1] for row in conn.execute("PRAGMA table_info(run_status)").fetchall()}
+    if "run_id" not in run_status_cols:
+        raise RuntimeError("Схема не доведена: колонка run_status.run_id отсутствует")
+
     create_sql_row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='labels'"
     ).fetchone()
