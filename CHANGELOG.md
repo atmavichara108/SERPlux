@@ -6,6 +6,50 @@
 
 ---
 
+## [1.0.2] - 2026-09-08 (предварительное закрытие)
+
+**Статус:** предварительный релиз. Финальное закрытие — после подтверждения
+заказчиком качества разметки (LLM vs эталон) и парсинга эталона. Официальный
+tag не ставится до финального закрытия; текущий HEAD остаётся рабочей точкой.
+
+### Added
+- **Provider UI:** POST /providers/discover (auto-discovery бесплатных моделей,
+  ключ только по имени env-переменной), preset endpoint'ы (opencode-zen,
+  openrouter, openai), register без ручного ввода endpoint'а
+- **Checkbox поисковиков:** searcher_google/searcher_yandex_ru/searcher_yandex_com
+  на листе «Настройки», применяется к текущему прогону
+- **Labeling breakdown в статусе прогона:** stats.labeling
+  {etalon_hit, llm_success, fallback_*} → диалог Sheets «из эталона N, LLM M, fallback K»
+- **Etalon validator + журнал конфликтов (v1.1 workstream A):** pre-LLM lookup
+  manual_l1, категории manual_neutral/unmatched_neutral/manual_conflict/
+  invalid_or_unknown/unlabeled, таблица label_conflicts, ретеншн 50 прогонов
+- **Dynamic etalon import:** импорт исторических листов эталона и фиксация
+  исправлений из последнего отчёта (POST /labels/import, source=manual_l1)
+- **Наблюдаемость Topvisor:** лог сырого ответа при пустом projectsIds,
+  status_positions в логе поллинга; семантика сверена с официальным
+  topvisor-openapi (string без enum, значения не документированы)
+
+### Fixed
+- **Сбор после таймаута poll:** CollectTimeoutError только при 0 строк после
+  финальной попытки get_snapshot; снапшот, дозревший после 15-минутного
+  таймаута, больше не теряется (root cause «Сбор не вернул строк»)
+- **report_depth:** (1) валидации листа «Настройки» ищутся по ключу через
+  _findSettingsRow — захардкоженный getRange(3,2) больше не перезаписывает
+  report_depth переключателем true/false; (2) полный пайплайн пробрасывает
+  report_depth в build_report (раньше отчёт всегда рисовался 10 позиций)
+- **Отображение нулей:** _fmtCount в Apps Script — 0 валидное значение
+  счётчика (LLM: 0 показывалось как «—»)
+- **Env reload:** deploy.sh --force-recreate после смены ключей
+- **Apps Script V8:** оператор ?? заменён на совместимый код
+
+### Known limitations
+- Глубина выдачи задаётся в кабинете Topvisor (API её не принимает) — поле
+  depth в Sheets справочное (techdebt 2026-09-06)
+- Режим deep (разметка по контенту страницы) — заглушка (roadmap 2.0)
+- timeout_sec=900 фиксирован; масштабирование от объёма — бэклог
+
+---
+
 ## [1.0.0] - 2026-08-17
 
 Релизная документация v1.0 завершена после изменений, вошедших в историю до
