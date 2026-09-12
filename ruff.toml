@@ -1,0 +1,18 @@
+# Ruff config — SERPlux (щадящий baseline: критичные ошибки + readability).
+# Правила расширяемыми; линт не должен ломать легитимный код этого проекта.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W"]
+# E501: line-length — жёсткое правило конфликтует с русскими лог-строками;
+#       агенты не должны рефакторить чужие модули ради ворнингов.
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# apps_script.gs — это Google Apps Script, ruff его не читает (не python)
+"*.gs" = ["ALL"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

@@ -1,0 +1,13 @@
+# Dockerfile.mock — общий образ для sandbox-моков (mock_topvisor + mock_llm + seed).
+# Только stdlib Python; размер ~ базовый python:3.11-slim.
+FROM python:3.11-slim
+
+WORKDIR /srv
+
+# Копируем оба мока + seed (фикстуры монтируются volume'ом, не копируются)
+COPY sandbox/mock_topvisor.py sandbox/mock_llm.py ./
+COPY sandbox/seed.py /app/sandbox/seed.py
+# Модули проекта для seed (storage/config импортируются seed'ом)
+COPY *.py /app/
+
+CMD ["python3", "mock_topvisor.py", "--port", "8011"]

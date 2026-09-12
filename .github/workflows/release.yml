@@ -1,0 +1,121 @@
+# release.yml — immutable release pipeline (Workstream D, Фаза 3).
+#
+# Триггер: пуш тега v* (v1.0.3, v1.1.0, ...). Ручной деплой `git pull main` и
+# mutable-тег `latest` в проде запрещены — релиз только через этот workflow.
+#
+# Пайплайн:
+#   1) тесты (pytest) + shellcheck
+#   2) buildx образ с тегами ghcr.io/<owner>/serplux:{tag,tag-sha}
+#      build-args GIT_SHA/RELEASE_TAG → /version в runtime
+#   3) push в GHCR (приватный)
+#   4) деплой по SSH на сервер → scripts/release.sh:
+#      preflight → backup БД → migration preflight на копии → pull по digest
+#      → up -d → health + smoke(/version) → auto-rollback при провале
+#      → deployment record (docs/deployments.json)
+#
+# Требуемые GitHub Secrets (вносит владелец репо):
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY  — доступ к серверу
+#   GHCR_TOKEN                           — не нужен: GITHUB_TOKEN пишет в GHCR
+#                                          своего репо автоматически (packages: write)
+#
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Shellcheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: .
+          severity: warning
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      image: ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_lower }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set lowercase image name
+        id: meta
+        run: |
+          IMAGE_LOWER="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image_lower=${IMAGE_LOWER}" >> "$GITHUB_OUTPUT"
+          echo "GIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          echo "BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_lower }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_lower }}:${{ github.ref_name }}-${{ github.sha }}
+          build-args: |
+            GIT_SHA=${{ env.GIT_SHA }}
+            RELEASE_TAG=${{ github.ref_name }}
+            BUILT_AT=${{ env.BUILT_AT }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            cd /opt/serplux
+            bash scripts/release.sh \
+              --tag "${{ github.ref_name }}" \
+              --sha "${{ github.sha }}" \
+              --digest "${{ needs.build-push.outputs.digest }}" \
+              --image "${{ needs.build-push.outputs.image }}"

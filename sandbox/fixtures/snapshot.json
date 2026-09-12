@@ -1,0 +1,53 @@
+{
+  "project_id": 1,
+  "project_name": "sandbox-project",
+  "status_positions": "done",
+  "positions_percent": 100,
+  "searchers": [
+    {
+      "key": 1,
+      "name": "Google",
+      "regions": [
+        {"key": 117, "lang": "lt", "device": 0, "index": 1300, "name": "Vilnius", "type": "city", "countryCode": "LT", "domain": "google.com"}
+      ]
+    },
+    {
+      "key": 0,
+      "name": "Yandex (RU)",
+      "regions": [
+        {"key": 117, "lang": "ru", "device": 0, "index": 1300, "name": "Vilnius", "type": "city", "countryCode": "LT", "domain": "yandex.ru"}
+      ]
+    }
+  ],
+  "keyword_names": [
+    "sct chemicals vilnius",
+    "chempioil supplier"
+  ],
+  "keywords": [
+    {
+      "name": "sct chemicals vilnius",
+      "positions": {
+        "1": [
+          [1, "https://sctchemicals.example.com/products", "sctchemicals.example.com", "SCT Chemicals — products", "Leading chemicals supplier in Vilnius."],
+          [2, "https://competitor-a.example.com/", "competitor-a.example.com", "Competitor A", "Wholesale chemicals Europe."],
+          [3, "https://competitor-b.example.com/", "competitor-b.example.com", "Competitor B", "Industrial chemicals import."],
+          [4, "https://www.google.com/goto?url=UNSUPPORTED_OPAQUE_TOKEN", "www.google.com", "Google redirect wrapper", "Not recoverable — must be skipped."],
+          [5, "https://neutral-shop.example.com/catalog", "neutral-shop.example.com", "Neutral Shop", "Various industrial goods."]
+        ],
+        "0": [
+          [1, "https://sctchemicals.example.com/products", "sctchemicals.example.com", "SCT Chemicals — products", "Leading chemicals supplier in Vilnius."],
+          [2, "https://yandex-neutral.example.ru/", "yandex-neutral.example.ru", "Yandex Neutral", "Catalog of chemicals."]
+        ]
+      }
+    },
+    {
+      "name": "chempioil supplier",
+      "positions": {
+        "1": [
+          [1, "https://competitor-b.example.com/oil", "competitor-b.example.com", "Competitor B oil", "Oil products trading."],
+          [2, "https://chempioil.example.com/", "chempioil.example.com", "Chempioil", "Chempioil official site."]
+        ]
+      }
+    }
+  ]
+}

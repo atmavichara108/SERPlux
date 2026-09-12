@@ -1,0 +1,99 @@
+# docker-compose.sandbox.yml — песочница SERPlux (override основного compose).
+#
+# Использование:
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml --profile sandbox up -d
+#
+# Что даёт:
+#   - тот же образ serplux (та же сборка, что и прод), но:
+#     - SANDBOX_MODE=1: exporter/reporter пишут JSON вместо Google Sheets
+#     - TOPVISOR_API_BASE/LLM_API_BASE → локальные моки (детерминированные fixture)
+#     - DB_PATH → /app/data/serplux.db (отдельный volume serplux_sandbox_data)
+#   - mock-topvisor (8011) и mock-llm (8012) — stdlib-серверы с fixture-данными
+#   - seed: наполнение БД детерминированным клиентом/эталоном (sandbox/seed.py)
+#
+# Никаких секретов: .env не используется (env_file закомментирован), ключи не нужны.
+# Сеть только host-local (127.0.0.1). Подробности: docs/serpctl.md.
+
+services:
+  serplux-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: serplux:latest
+    container_name: serplux-sandbox
+    profiles: ["sandbox"]
+
+    environment:
+      SANDBOX_MODE: "1"
+      SANDBOX_EXPORT_PATH: /app/data/export.json
+      SANDBOX_REPORT_PATH: /app/data/report.json
+      TOPVISOR_API_BASE: http://mock-topvisor:8011/v2/json
+      LLM_API_BASE: http://mock-llm:8012/v1/chat/completions
+      WEBHOOK_SECRET: sandbox-secret-not-production
+      WEBHOOK_PORT: "8000"
+      DB_PATH: /app/data/serplux.db
+      LOG_LEVEL: INFO
+
+    # Секретов нет — env_file закомментирован намеренно (песочница их не требует).
+    # env_file:
+    #   - .env
+
+    volumes:
+      - serplux_sandbox_data:/app/data
+
+    ports:
+      - "127.0.0.1:8001:8000"
+
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  mock-topvisor:
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.mock
+    image: serplux-mocks:latest
+    container_name: mock-topvisor
+    profiles: ["sandbox"]
+    command: ["mock_topvisor.py", "--port", "8011", "--fixtures", "/fixtures/snapshot.json"]
+    environment:
+      FIXTURES_DIR: /fixtures
+    volumes:
+      - ./sandbox/fixtures:/fixtures:ro
+    # Моки доступны только из сети compose (serplux-sandbox резолвит по имени);
+    # наружу порты не публикуем — в хост-сеть для serpctl-тестов моков не публикуем.
+    expose:
+      - "8011"
+    restart: "no"
+
+  mock-llm:
+    image: serplux-mocks:latest
+    container_name: mock-llm
+    profiles: ["sandbox"]
+    command: ["mock_llm.py", "--port", "8012", "--fixtures", "/fixtures/labels.json"]
+    volumes:
+      - ./sandbox/fixtures:/fixtures:ro
+    restart: "no"
+
+  seed:
+    image: serplux-mocks:latest
+    container_name: serplux-seed
+    profiles: ["sandbox"]
+    # seed в том же контейнере, что и моки-образ; БД на общем volume с sandbox
+    command: ["python3", "-c",
+              "import sys; sys.path.insert(0, '/app'); sys.path.insert(0, '/app/sandbox'); from seed import seed; import json; print(json.dumps(seed('/app/data/serplux.db', __import__('pathlib').Path('/fixtures/snapshot.json'))))"]
+    volumes:
+      - serplux_sandbox_data:/app/data
+      - ./sandbox/fixtures:/fixtures:ro
+      - ./sandbox:/app/sandbox:ro
+    restart: "no"
+    depends_on: []
+
+volumes:
+  serplux_sandbox_data:
+    driver: local

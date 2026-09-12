@@ -1,0 +1,14 @@
+{
+  "positives": [
+    "sctchemicals.example.com",
+    "chempioil.example.com"
+  ],
+  "negatives": [
+    "competitor-a.example.com",
+    "competitor-b.example.com"
+  ],
+  "neutral": [
+    "neutral-shop.example.com",
+    "yandex-neutral.example.ru"
+  ]
+}

@@ -1,0 +1,37 @@
+# --- секреты (никогда в образ) ---
+.env
+.envrc
+credentials.json
+serplux-project-*.json
+*-*.iam.gserviceaccount.com.json
+service-account*.json
+*.json.key
+
+# --- git и CI ---
+.git/
+.github/
+
+# --- python/venv артефакты ---
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- данные (не вшивать БД в образ) ---
+*.db
+*.db.bak*
+*.db.copy*
+data/
+
+# --- agent layer (не нужен в runtime-образе) ---
+.opencode/node_modules/
+.opencode/package-lock.json
+
+# --- sandbox dev-артефакты ---
+sandbox/generated/
+
+# --- прочее ---
+.DS_Store
+docs/
+tests/__pycache__/
+scripts/__pycache__/
