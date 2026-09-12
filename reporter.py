@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime
 from typing import Any
@@ -22,6 +23,20 @@ SEARCHER_MAP = {
 
 REPORT_SHEET_NAME = "Отчёт"
 MAX_VERSIONS = 10  # храним последние 10 версий отчёта
+
+# SANDBOX_MODE=1: вместо Google Sheets пишем JSON-снимок отчёта в
+# SANDBOX_REPORT_PATH (тот же report_data/format_cells, без внешних API).
+# Дефолт — /app/data (контейнер); вне контейнера fallback <repo>/sandbox/generated/
+# (локальный запуск не должен падать с Permission denied на /app).
+def _sandbox_default_path(filename: str) -> str:
+    from pathlib import Path
+    if Path("/app/data").is_dir():
+        return f"/app/data/{filename}"
+    return str(Path(__file__).resolve().parent / "sandbox" / "generated" / filename)
+
+
+SANDBOX_MODE = os.environ.get("SANDBOX_MODE", "") == "1"
+SANDBOX_REPORT_PATH = os.environ.get("SANDBOX_REPORT_PATH") or _sandbox_default_path("report.json")
 
 LABEL_COLORS = {
     "positive": {"red": 0.85, "green": 0.92, "blue": 0.83},
@@ -251,6 +266,28 @@ def _trim_old_versions(spreadsheet, worksheet, max_versions: int = MAX_VERSIONS)
         log.error("Ошибка при обрезке старых версий: %s", e)
 
 
+def _write_sandbox_report(date: str, report_data: list[list[str]], format_cells: list[tuple]) -> None:
+    """SANDBOX-ветка build_report: JSON-снимок отчёта вместо Google Sheets.
+
+    Содержимое = то же report_data (матрица позиций) + format_cells (заливки),
+    что ушли бы в Sheets. Родительский каталог создаётся; ошибки не глотаются
+    (caller в main.py оборачивает build_report() в try/except).
+    """
+    payload = {
+        "written_at": datetime.now().isoformat(timespec="seconds"),
+        "date": date,
+        "rows_count": len(report_data),
+        "cells_count": len(report_data) * (len(report_data[0]) if report_data else 0),
+        "format_cells": [{"row": r, "col": c, "color": color} for (r, c, color) in format_cells],
+        "matrix": report_data,
+    }
+    path = os.path.abspath(SANDBOX_REPORT_PATH)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    log.info("SANDBOX report: %s строк -> %s", len(report_data), path)
+
+
 def build_report(date: str | None = None, force: bool = False, sheet_id: str | None = None,
                  client_id: str = "default", db_path: str = storage.DB_PATH,
                  report_depth: int | None = None) -> None:
@@ -402,7 +439,11 @@ def build_report(date: str | None = None, force: bool = False, sheet_id: str | N
             report_data.append([""] * cols)
 
         report_data.append([""] * cols)
-        report_data.append([""] * cols)
+    report_data.append([""] * cols)
+
+    if SANDBOX_MODE:
+        _write_sandbox_report(date, report_data, format_cells)
+        return
 
     spreadsheet = _get_spreadsheet(sheet_id=sheet_id)
     if spreadsheet is None:

@@ -13,6 +13,13 @@
 # ─── Stage 1: builder ─────────────────────────────────────────────────────────
 FROM python:3.11-slim AS builder
 
+# Immutable release-идентификация (Workstream D): release.yml передаёт их
+# build-args, /version отдаёт в runtime для smoke-гейта release.sh.
+ARG GIT_SHA=""
+ARG RELEASE_TAG=""
+ARG IMAGE_DIGEST=""
+ARG BUILT_AT=""
+
 WORKDIR /build
 
 # Устанавливаем зависимости (включая dev: pytest для verify.sh)
@@ -26,24 +33,25 @@ FROM python:3.11-slim AS runtime
 RUN groupadd --gid 1001 serplux && \
     useradd --uid 1001 --gid serplux --no-create-home --shell /sbin/nologin serplux
 
+# Пробрасываем build-args в env финального образа (webhook.py /version их отдаёт)
+ARG GIT_SHA=""
+ARG RELEASE_TAG=""
+ARG IMAGE_DIGEST=""
+ARG BUILT_AT=""
+ENV GIT_SHA=${GIT_SHA} \
+    RELEASE_TAG=${RELEASE_TAG} \
+    IMAGE_DIGEST=${IMAGE_DIGEST} \
+    BUILT_AT=${BUILT_AT}
+
 WORKDIR /app
 
 # Копируем установленные пакеты из builder
 COPY --from=builder /install /usr/local
 
-# Копируем только исходный код (без .env, credentials.json, venv, БД)
-COPY --chown=serplux:serplux \
-    main.py \
-    topvisor.py \
-    collector.py \
-    labeler.py \
-    storage.py \
-    exporter.py \
-    reporter.py \
-    config.py \
-    webhook.py \
-    migrate.py \
-    ./
+# Копируем все модули корня по glob (новый .py-модуль попадает в образ
+# автоматически; .dockerignore исключает venv/.git/секреты/артефакты)
+COPY --chown=serplux:serplux *.py ./
+COPY --chown=serplux:serplux template/ ./template/
 
 # Копируем тесты и конфиг pytest для verify.sh
 COPY --chown=serplux:serplux tests/ ./tests/

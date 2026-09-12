@@ -384,6 +384,23 @@ def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "serplux-webhook"})
 
 
+@app.get("/version")
+def version() -> JSONResponse:
+    """Immutable release-идентификация (Workstream D).
+
+    GIT_SHA/TAG/IMAGE_DIGEST задаются build-args Dockerfile (release.yml);
+    вне сборки (локальный запуск) — пустые строки. Без авторизации:
+    значения не секретные (git SHA + тег), эндпоинт используется smoke-гейтом
+    release.sh для проверки соответствия деплоя и образа.
+    """
+    return JSONResponse({
+        "git_sha": os.environ.get("GIT_SHA", ""),
+        "tag": os.environ.get("RELEASE_TAG", ""),
+        "image_digest": os.environ.get("IMAGE_DIGEST", ""),
+        "built_at": os.environ.get("BUILT_AT", ""),
+    })
+
+
 @app.get("/status")
 def run_status(authorization: str | None = Header(default=None)) -> JSONResponse:
     """Возвращает статус последнего прогона из БД."""

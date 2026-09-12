@@ -1,34 +1,42 @@
 ---
-description: Подготовить чек-лист деплоя SERPlux на сервер. Запускает infra-dev.
+description: Деплой SERPlux: serpctl release <tag> (гейт подтверждения) → Actions → автодеплой. Проверка статуса.
 agent: infra-dev
 ---
 
-# Подготовка деплоя SERPlux
-
-## Контекст
-!`cat docs/progress.md`
-!`cat docs/techdebt.md`
-!`cat docs/deploy.md`
+# Деплой SERPlux через serpctl (immutable releases, Workstream D)
 
 ## Модель
-Агенты работают на ЛОКАЛЬНОЙ машине. Деплой на сервер выполняется пользователем вручную через SSH.
-infra-dev НЕ выполняет docker-команды на сервере.
+
+Агент НЕ SSH-ится на сервер. Деплой автоматический: **пуш тега `v*` →
+`.github/workflows/release.yml`** (тесты → buildx с тегами `vX.Y.Z`+`sha` →
+GHCR → SSH → `scripts/release.sh`: preflight → backup → migration preflight
+на копии → pull по digest → smoke `/version` → auto-rollback при провале →
+deployment record).
 
 ## Задача
-1. Проверить локальные файлы на консистентность:
-   - Dockerfile: все .py файлы копируются (включая migrate.py)
-   - docker-compose.yml: переменные, volumes, ports
-   - .env.example: все переменные проброшены
-2. Сформировать чек-лист команд для сервера (git pull, build, up, migrate, verify)
-3. Проверить, нужна ли миграция БД (старая схема results → новая)
-4. Выдать готовый чек-лист пользователю для копипаста в SSH-терминал
 
-## Чек-лист должен включать
-- Предпосылки (группа docker, .env, credentials, regions_map)
-- Обновление кода (git pull)
-- Сборка и запуск (docker compose build, up -d)
-- Миграция БД (docker compose exec serplux python migrate.py --db /app/data/serplux.db)
-- Проверки (health, status с авторизацией)
-- Внешний доступ (nginx/домен — отметить если неизвестно)
+1. Убедись в готовности к релизу:
+   - `python3 scripts/serpctl.py test` — зелёный;
+   - `git status` — чистое дерево (чужой WIP — блокер, не stage его);
+   - HEAD соотв. ожиданию (`git log --oneline -3`).
+2. Подтверди с пользователем версию (semver `vX.Y.Z`, выше последнего тега
+   `git tag -l`). Версию не выбирать молча.
+3. Запусти release (RUN GATE: требует явного подтверждения пользователя):
+   ```bash
+   python3 scripts/serpctl.py release vX.Y.Z --dry-run   # показать шаги
+   python3 scripts/serpctl.py release vX.Y.Z --yes       # тег+пуш → автодеплой
+   ```
+4. Следи за деплоем:
+   - GitHub Actions → workflow **Release** (короткая ссылка из вывода `git push`);
+   - `python3 scripts/serpctl.py deploy-status` — последний deployment record
+     (пишется release.sh на сервере в docs/deployments.json);
+   - `python3 scripts/serpctl.py health` — жив ли сервис.
+5. Откат (если нужен): вручную на сервере по инструкции из
+   `scripts/release.sh` (docker tag предыдущего digest) — либо новый тег.
 
-Обнови docs/progress.md после завершения.
+## Границы
+- Агент не выполняет `git push`, тег и деплой сам — только `serpctl release`
+  с `--yes` после явного подтверждения пользователя.
+- Тег `latest` и `git pull main` в проде запрещены (immutable releases).
+- Ошибка SSH/GHCR-секрета → `BLOCKED`, не ретраить бесконечно.
+- Полный runbook: `docs/serpctl.md` § «Release».

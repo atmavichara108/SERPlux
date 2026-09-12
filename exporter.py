@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Any
 
@@ -14,6 +15,20 @@ log = config.setup_logging(__name__)
 Row = dict[str, Any]
 
 CACHE_SHEET_NAME = "Данные"
+
+# SANDBOX_MODE=1: вместо Google Sheets пишем JSON-снимок в SANDBOX_EXPORT_PATH
+# (полный проход pipeline без внешних API; тесты проверяют обе ветки).
+# Дефолт — /app/data (контейнер); вне контейнера fallback <repo>/sandbox/generated/
+# (локальный запуск не должен падать с Permission denied на /app).
+def _sandbox_default_path(filename: str) -> str:
+    from pathlib import Path
+    if Path("/app/data").is_dir():
+        return f"/app/data/{filename}"
+    return str(Path(__file__).resolve().parent / "sandbox" / "generated" / filename)
+
+
+SANDBOX_MODE = os.environ.get("SANDBOX_MODE", "") == "1"
+SANDBOX_EXPORT_PATH = os.environ.get("SANDBOX_EXPORT_PATH") or _sandbox_default_path("export.json")
 
 SEARCHER_MAP = {
     "google": "Google",
@@ -85,15 +100,40 @@ def _row_to_list(row: Row) -> list[str]:
     ]
 
 
+def _export_sandbox(rows: list[Row], path: str) -> None:
+    """SANDBOX-ветка export(): пишет rows как JSON в SANDBOX_EXPORT_PATH.
+
+    Формат: {"written_at_key_count": N, "rows": [...]} — ровно входные Row.
+    Родительский каталог создаётся автоматически; ошибки не глотаются —
+    caller в main.py уже оборачивает export() в try/except.
+    """
+    from datetime import datetime
+    payload = {
+        "written_at": datetime.now().isoformat(timespec="seconds"),
+        "count": len(rows),
+        "rows": rows,
+    }
+    path_obj = os.path.abspath(path)
+    os.makedirs(os.path.dirname(path_obj) or ".", exist_ok=True)
+    with open(path_obj, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    log.info("SANDBOX export: %s строк -> %s", len(rows), path_obj)
+
+
 def export(rows: list[Row], sheet_id: str | None = None) -> None:
     """
     Выгружает кэш выдачи (positions + метки) на лист 'Данные'.
 
     Лист полностью очищается перед записью (перезапись, не append).
     Лист 'Отчёт' не трогается — туда пишет reporter.build_report().
+    SANDBOX_MODE=1: вместо Sheets пишет JSON в SANDBOX_EXPORT_PATH.
     """
     if not rows:
         log.warning("Нет строк для экспорта")
+        return
+
+    if SANDBOX_MODE:
+        _export_sandbox(rows, SANDBOX_EXPORT_PATH)
         return
 
     spreadsheet = _get_spreadsheet(sheet_id=sheet_id)
