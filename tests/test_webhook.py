@@ -547,16 +547,9 @@ class TestProvidersEndpoint:
         assert zen is not None
         assert zen["enabled"] is True
         assert zen["priority"] == 1
-        assert zen["default_model"] == "mimo-v2.5-free"
-        # Проверяем все модели: только бесплатные из актуального каталога Zen
-        expected_models = {
-            "mimo-v2.5-free",
-            "ling-3.0-flash-fin-free",
-            "nemotron-3-ultra-free",
-            "nemotron-3.5-lightning-free",
-            "muse-spark-1.3-contributor-free",
-            "big-pickle",
-        }
+        assert zen["default_model"] == "deepseek-v4-flash"
+        # v1.0.4: бюджетный платный пул (free-модели гейтятся OpenCode)
+        expected_models = {"deepseek-v4-flash", "glm-5.3-flash", "kimi-k2.6"}
         assert set(zen["models"]) == expected_models
         assert zen["endpoint"] == "https://opencode.ai/zen/v1/chat/completions"
 

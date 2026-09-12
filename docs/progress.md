@@ -6,6 +6,39 @@
 
 ## Сделано
 
+- **Session: 2026-09-12 — v1.0.4: рабочая разметка + чистая выдача:**
+  - Root causes (доказаны): (1) 209 жёлтых — Google redirect-обёртки
+    /goto?url=CAES... в positions.url (Topvisor отдаёт по всем позициям,
+    декодирования в коде не было); (2) LLM:0 — free-модели OpenCode гейтятся
+    клиентом (400 MissingSessionID, подтверждено прямым тестом в контейнере);
+    (3) parseList1ToEtalon — бесконечный цикл (потерянный d++, регрессия
+    a6b1961); (4) DEPTH=10-лимиты чтения исторических эталон-листов.
+  - Решение пользователя (вариант A): бюджетные платные модели Zen +
+    динамическая ротация: 3 отказа подряд -> cooldown per-run, следующая
+    модель подхватывает; rate-limit пауза сохраняется (LLM_PAUSE_SEC env).
+  - topvisor.py: _decode_google_redirect_url (stdlib protobuf-walker,
+    /goto?url= и /url?q=) + sanity-gate (не-http url -> skip, счётчик
+    skipped_bad_urls). Prod-токены CAES... — подписанные opaque, офлайн
+    не декодируются: строки пропускаются, мусор в отчёт не попадает;
+    реальные URL таких позиций — HTTP-прыжком (бэклог v1.0.5).
+  - config.py: ZEN_BUDGET_MODELS = [deepseek-v4-flash, glm-5.3-flash,
+    kimi-k2.6], default deepseek-v4-flash; ZEN_FREE_MODELS deprecated.
+  - labeler.py: ротация 3-strikes (per-run state, отказ в строке ->
+    следующая модель, успех сбрасывает счётчик, 3 подряд -> cooldown),
+    логирование HTTP-статуса/тела ошибок провайдера (без ключей),
+    stats.labeling.llm_by_model.
+  - apps_script.gs: фикс цикла parseList1ToEtalon, снят DEPTH-лимит
+    (_collectReportLabels и парсер), подсказка model в Настройках.
+  - Тесты: +6 ротационных, +14 collector, +3 UI-регрессии; обновлены
+    2 legacy-теста (budget-пул), fake-сигнатуры (rotation=None), teardown
+    в test_sandbox_di (order-dependent reload-контаминация config).
+    Полный набор **393 passed**. Verifier: PASS; reviewer: секреты чисты,
+    замечания закрыты (.env.example, contracts, config комментарий).
+  - Tag v1.0.2 по-прежнему отложен (ADR 2026-09-08) — до подтверждения
+    качества разметки заказчиком.
+  - В бэклог: HTTP-прыжок для позиций с обёртками; валидация LLM_PAUSE_SEC
+    при импорте (int() падает на мусорном env).
+
 - **Session: 2026-09-08 (3) — Предварительное закрытие v1.0.2:**
   - Решение пользователя: сбор и разметка работают, качество разметки пока
     НЕ проверено. v1.0.2 закрывается ПРЕДВАРИТЕЛЬНО; финальное закрытие —

@@ -56,7 +56,7 @@ def test_auto_mode_cache_hit_from_domain_labels(init_db, sample_row, monkeypatch
 
     llm_called = {"n": 0}
 
-    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
+    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None, rotation=None):
         llm_called["n"] += 1
         raise AssertionError("LLM не должен вызываться, когда есть кэш")
 
@@ -77,7 +77,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_empty_snippet(init_db, sample_
     """AUTO режим: пустой сниппет → neutral с confidence='uncertain' (без LLM вызова)."""
     sample_row["snippet"] = ""  # Пустой сниппет
 
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "positive")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "positive")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -92,7 +92,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_empty_snippet(init_db, sample_
 
 def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample_row, monkeypatch):
     """AUTO режим: ошибка провайдера → neutral с confidence='uncertain', кэш не отравляется."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: None)
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: None)
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -112,7 +112,7 @@ def test_auto_mode_snippet_fallback_to_neutral_on_provider_error(init_db, sample
 
 def test_auto_mode_snippet_success_is_not_saved_to_domain_labels(init_db, sample_row, monkeypatch):
     """AUTO режим: успешная разметка по сниппету не меняет эталон."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "negative")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -153,7 +153,7 @@ def test_auto_mode_respects_manual_l1_priority(init_db, sample_row, monkeypatch)
     )
 
     # Пытаемся перезаписать через AUTO режим (source='snippet')
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "negative")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="auto")
@@ -181,7 +181,7 @@ def test_auto_mode_force_relabel_respects_manual_l1(init_db, sample_row, monkeyp
 
     llm_called = {"n": 0}
 
-    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
+    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None, rotation=None):
         llm_called["n"] += 1
         raise AssertionError("LLM не должен вызываться: manual_l1 выигрывает всегда")
 
@@ -278,7 +278,7 @@ def test_auto_mode_logs_stats_per_searcher_geo(init_db, caplog, monkeypatch):
         db_path=init_db,
     )
 
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "negative")
 
     rows = [
         {
@@ -319,7 +319,7 @@ def test_auto_mode_logs_stats_per_searcher_geo(init_db, caplog, monkeypatch):
 
 def test_full_pipeline_auto_then_deep(init_db, sample_row, monkeypatch):
     """Полный пайплайн: AUTO разметил, потом DEEP обрабатывает."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "negative")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "negative")
 
     # Шаг 1: AUTO разметка
     rows = [sample_row]
@@ -337,7 +337,7 @@ def test_full_pipeline_auto_then_deep(init_db, sample_row, monkeypatch):
 
 def test_unknown_label_mode_defaults_to_auto(init_db, sample_row, monkeypatch):
     """Неизвестный режим падает на AUTO с warning."""
-    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None: "positive")
+    monkeypatch.setattr(labeler, "_label_one_llm", lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "positive")
 
     rows = [sample_row]
     result = labeler.label(rows, db_path=init_db, label_mode="unknown_mode")
@@ -497,7 +497,7 @@ def test_label_passes_model_override(monkeypatch, init_db, sample_row):
     """label() передаёт model override в _label_one_llm."""
     captured_model: dict[str, str | None] = {"value": None}
 
-    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
+    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None, rotation=None):
         captured_model["value"] = model
         return "positive"
 
@@ -513,7 +513,7 @@ def test_label_without_model_override(monkeypatch, init_db, sample_row):
     """label() без model передаёт None в _label_one_llm."""
     captured_model: dict[str, str | None] = {"value": "not_none"}
 
-    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None):
+    def fake_label_one_llm(row, provider_chain=None, model=None, invalid_ref=None, rotation=None):
         captured_model["value"] = model
         return "positive"
 
@@ -592,7 +592,7 @@ def test_label_stats_out_etalon_hit(init_db, sample_row, monkeypatch):
     )
     monkeypatch.setattr(
         labeler, "_label_one_llm",
-        lambda row, provider_chain=None, model=None, invalid_ref=None: (
+        lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: (
             pytest.fail("LLM не должен вызываться при etalon HIT")
         ),
     )
@@ -609,7 +609,7 @@ def test_label_stats_out_llm_success(init_db, sample_row, monkeypatch):
     """stats_out: успешная LLM-разметка → llm_success=1, etalon_hit=0."""
     monkeypatch.setattr(
         labeler, "_label_one_llm",
-        lambda row, provider_chain=None, model=None, invalid_ref=None: "negative",
+        lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "negative",
     )
 
     stats_out: dict = {}
@@ -636,7 +636,7 @@ def test_label_stats_out_fallback_provider_error(init_db, sample_row, monkeypatc
     """stats_out: все провайдеры недоступны → fallback_provider_error=1."""
     monkeypatch.setattr(
         labeler, "_label_one_llm",
-        lambda row, provider_chain=None, model=None, invalid_ref=None: None,
+        lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: None,
     )
 
     stats_out: dict = {}
@@ -650,7 +650,7 @@ def test_label_stats_out_none_keeps_old_behavior(init_db, sample_row, monkeypatc
     """stats_out=None (дефолт): поведение прежнее, breakdown только в логах."""
     monkeypatch.setattr(
         labeler, "_label_one_llm",
-        lambda row, provider_chain=None, model=None, invalid_ref=None: "positive",
+        lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "positive",
     )
 
     result = labeler.label([sample_row], db_path=init_db, label_mode="auto")
@@ -678,7 +678,7 @@ def test_label_stats_out_mixed_sources(init_db, sample_row, monkeypatch):
 
     monkeypatch.setattr(
         labeler, "_label_one_llm",
-        lambda row, provider_chain=None, model=None, invalid_ref=None: "neutral",
+        lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: "neutral",
     )
 
     stats_out: dict = {}
@@ -698,3 +698,145 @@ def test_label_stats_out_mixed_sources(init_db, sample_row, monkeypatch):
         + stats_out["invalid_key"]
     )
     assert categorized == stats_out["total"]
+
+
+# ─── v1.0.4: динамическая ротация моделей (3-strikes cooldown) ────────────────
+
+
+def test_rotation_pool_excludes_cooldown_models():
+    """_effective_model_pool: модель в cooldown исключается из пула."""
+    provider_cfg = {
+        "default_model": "deepseek-v4-flash",
+        "models": ["deepseek-v4-flash", "glm-5.3-flash", "kimi-k2.6"],
+    }
+    rotation = labeler._new_rotation_state()
+    rotation["cooldown"].add("deepseek-v4-flash")
+    pool = labeler._effective_model_pool(provider_cfg, None, rotation)
+    assert pool == ["glm-5.3-flash", "kimi-k2.6"]
+
+
+def test_rotation_pool_preferred_model_first():
+    """_effective_model_pool: preferred model (model override) идёт первой."""
+    provider_cfg = {
+        "default_model": "deepseek-v4-flash",
+        "models": ["deepseek-v4-flash", "glm-5.3-flash", "kimi-k2.6"],
+    }
+    rotation = labeler._new_rotation_state()
+    pool = labeler._effective_model_pool(provider_cfg, "kimi-k2.6", rotation)
+    assert pool == ["kimi-k2.6", "deepseek-v4-flash", "glm-5.3-flash"]
+
+
+def test_rotation_three_strikes_then_next_model(monkeypatch, init_db, sample_row):
+    """Семантика v1.0.4: отказ модели в строке -> следующая модель пула;
+    счётчик последовательных отказов копится МЕЖДУ строками; 3 подряд ->
+    cooldown, запросы подхватывает следующая модель динамически."""
+    calls = []
+
+    def fake_call(provider_id, provider_cfg, prompt, model=None):
+        calls.append(model)
+        return None if model == "deepseek-v4-flash" else "positive"
+
+    monkeypatch.setattr(labeler, "_call_provider", fake_call)
+
+    rotation = labeler._new_rotation_state()
+    row = dict(sample_row)
+
+    # Строки 1-2: deepseek отказал, glm подхватил сразу
+    for _ in range(2):
+        assert labeler._label_one_llm(dict(sample_row), rotation=rotation) == "positive"
+    assert "deepseek-v4-flash" not in rotation["cooldown"]
+    assert rotation["consecutive_fail"]["deepseek-v4-flash"] == 2
+
+    # Строка 3: третий отказ -> cooldown; запрос всё равно успевает в glm
+    assert labeler._label_one_llm(dict(sample_row), rotation=rotation) == "positive"
+    assert "deepseek-v4-flash" in rotation["cooldown"]
+    assert "glm-5.3-flash" not in rotation["cooldown"]
+
+    # Строка 4+: deepseek в cooldown -> только glm, без новых попыток deepseek
+    calls.clear()
+    assert labeler._label_one_llm(dict(sample_row), rotation=rotation) == "positive"
+    assert calls == ["glm-5.3-flash"]
+
+
+def test_rotation_success_resets_fail_counter(monkeypatch, init_db, sample_row):
+    """Успешный вызов модели сбрасывает её счётчик последовательных отказов:
+    после сброса модели нужно снова 3 отказа, чтобы уйти в cooldown."""
+    # Поведение fake: deepseek-v4-flash отказывает по скрипту строк
+    # (строки 1-2 fail, строка 3 success -> сброс, строка 4 fail);
+    # glm-5.3-flash всегда успешен.
+    ds_script = iter([None, None, "positive", None])
+    calls = []
+
+    def fake_call(provider_id, provider_cfg, prompt, model=None):
+        calls.append(model)
+        if model == "deepseek-v4-flash":
+            return next(ds_script)
+        return "positive"
+
+    monkeypatch.setattr(labeler, "_call_provider", fake_call)
+
+    rotation = labeler._new_rotation_state()
+
+    # Строка 1: ds fail (fail=1) -> glm подхватывает
+    assert labeler._label_one_llm(dict(sample_row), rotation=rotation) == "positive"
+    assert rotation["consecutive_fail"]["deepseek-v4-flash"] == 1
+    assert "deepseek-v4-flash" not in rotation["cooldown"]
+
+    # Строка 2: ds fail (fail=2) -> glm подхватывает
+    assert labeler._label_one_llm(dict(sample_row), rotation=rotation) == "positive"
+    assert rotation["consecutive_fail"]["deepseek-v4-flash"] == 2
+    assert "deepseek-v4-flash" not in rotation["cooldown"]
+
+    # Строка 3: ds success -> счётчик сброшен в 0
+    assert labeler._label_one_llm(dict(sample_row), rotation=rotation) == "positive"
+    assert rotation["consecutive_fail"]["deepseek-v4-flash"] == 0
+    assert "deepseek-v4-flash" not in rotation["cooldown"]
+
+    # Строка 4: ds fail снова (fail=1, не 2!) — сброс работал
+    assert labeler._label_one_llm(dict(sample_row), rotation=rotation) == "positive"
+    assert rotation["consecutive_fail"]["deepseek-v4-flash"] == 1
+    assert "deepseek-v4-flash" not in rotation["cooldown"]
+
+
+def test_rotation_all_models_cooldown_returns_none(monkeypatch, init_db, sample_row):
+    """Все модели в cooldown -> _label_one_llm возвращает None без вызовов."""
+    calls = []
+
+    def fake_call(provider_id, provider_cfg, prompt, model=None):
+        calls.append(model)
+        return None
+
+    monkeypatch.setattr(labeler, "_call_provider", fake_call)
+
+    provider_cfg = {
+        "enabled": True,
+        "priority": 1,
+        "default_model": "deepseek-v4-flash",
+        "models": ["deepseek-v4-flash"],
+        "endpoint": "https://example.com",
+        "api_key_env_var": "TEST_KEY",
+    }
+    monkeypatch.setattr(labeler.config, "PROVIDERS", {"p1": provider_cfg})
+    monkeypatch.setenv("TEST_KEY", "k")
+
+    rotation = labeler._new_rotation_state()
+    rotation["cooldown"].add("deepseek-v4-flash")
+    row = dict(sample_row)
+    assert labeler._label_one_llm(row, provider_chain=None, rotation=rotation) is None
+    assert calls == []  # cooldown-модель не вызывалась
+
+
+def test_label_stats_out_llm_by_model(init_db, sample_row, monkeypatch):
+    """stats.labeling.llm_by_model: успешные модели попадают в breakdown."""
+    monkeypatch.setattr(
+        labeler, "_label_one_llm",
+        lambda row, provider_chain=None, model=None, invalid_ref=None, rotation=None: (
+            rotation and rotation["consecutive_fail"].update(
+                {"deepseek-v4-flash": 0, "glm-5.3-flash": 0}
+            ) or "positive"
+        ),
+    )
+    stats_out = {}
+    labeler.label([dict(sample_row)], db_path=init_db, label_mode="auto", stats_out=stats_out)
+    assert stats_out["llm_success"] == 1
+    assert set(stats_out["llm_by_model"]) == {"deepseek-v4-flash", "glm-5.3-flash"}

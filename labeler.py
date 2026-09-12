@@ -11,7 +11,7 @@ import storage
 
 log = config.setup_logging(__name__)
 
-LLM_PAUSE = 1  # секунд между вызовами LLM
+LLM_PAUSE = int(os.environ.get("LLM_PAUSE_SEC", "1"))
 
 LABEL_PATTERN = re.compile(r"\b(positive|negative|neutral)\b", re.IGNORECASE)
 
@@ -151,12 +151,20 @@ def _get_provider_chain(provider_chain: str | list[str] | None = None) -> list[t
     return chain
 
 
-def _call_provider(provider_id: str, provider_cfg: dict, prompt: str, model: str | None = None) -> str | None:
+def _call_provider(
+    provider_id: str,
+    provider_cfg: dict,
+    prompt: str,
+    model: str | None = None,
+) -> str | None:
     """
     Вызывает LLM-провайдера по его конфигу. Возвращает сырой ответ или None.
 
     При получении HTTP 429 или сетевой ошибке делает до 3 попыток
     с экспоненциальной задержкой (3с, 6с, 12с).
+
+    v1.0.4: HTTP-ошибка логируется со статусом и телом ответа (усечённо,
+    без ключей/заголовков) — сбои провайдера перестают быть молчаливыми.
     """
     api_key = os.environ.get(provider_cfg["api_key_env_var"])
     if not api_key:
@@ -165,6 +173,7 @@ def _call_provider(provider_id: str, provider_cfg: dict, prompt: str, model: str
 
     max_retries = 3
     base_delay = 3  # секунды
+    effective_model = model or provider_cfg["default_model"]
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -175,45 +184,87 @@ def _call_provider(provider_id: str, provider_cfg: dict, prompt: str, model: str
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": model or provider_cfg["default_model"],
+                    "model": effective_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0,
                 },
                 timeout=(10, 60),
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # v1.0.4: видимый отказ — статус + тело (без секретов).
+                # 429/5xx — retry; остальные (400/401/403) — сразу None.
+                body = (resp.text or "")[:300].replace("\n", " ")
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    if attempt < max_retries:
+                        delay = base_delay * (2 ** (attempt - 1))
+                        log.warning(
+                            "%s/%s HTTP %s (попытка %s/%s), повтор через %ss: %s",
+                            provider_id, effective_model, resp.status_code,
+                            attempt, max_retries, delay, body,
+                        )
+                        time.sleep(delay)
+                        continue
+                log.warning(
+                    "%s/%s HTTP %s: %s",
+                    provider_id, effective_model, resp.status_code, body,
+                )
+                return None
             data = resp.json()
             return data["choices"][0]["message"]["content"]
-        except requests.exceptions.HTTPError as e:
-            status_code = e.response.status_code if e.response is not None else None
-            # 429 и 5xx — временные проблемы, делаем retry
-            if status_code == 429 or (status_code is not None and status_code >= 500):
-                if attempt < max_retries:
-                    delay = base_delay * (2 ** (attempt - 1))
-                    log.warning(
-                        "%s HTTP %s (попытка %s/%s), повтор через %ss",
-                        provider_id, status_code, attempt, max_retries, delay,
-                    )
-                    time.sleep(delay)
-                    continue
-            log.warning("%s HTTP ошибка: %s", provider_id, e)
-            return None
         except requests.exceptions.RequestException as e:
             if attempt < max_retries:
                 delay = base_delay * (2 ** (attempt - 1))
                 log.warning(
-                    "%s сетевая ошибка (попытка %s/%s), повтор через %ss: %s",
-                    provider_id, attempt, max_retries, delay, e,
+                    "%s/%s сетевая ошибка (попытка %s/%s), повтор через %ss: %s",
+                    provider_id, effective_model, attempt, max_retries, delay, e,
                 )
                 time.sleep(delay)
                 continue
-            log.warning("%s сетевая ошибка после %s попыток: %s", provider_id, max_retries, e)
+            log.warning(
+                "%s/%s сетевая ошибка после %s попыток: %s",
+                provider_id, effective_model, max_retries, e,
+            )
             return None
         except Exception as e:
             # Ошибки парсинга/структуры ответа — не retry
-            log.warning("%s ошибка: %s", provider_id, e)
+            log.warning("%s/%s ошибка: %s", provider_id, effective_model, e)
             return None
     return None
+
+
+def _new_rotation_state() -> dict:
+    """
+    Per-run state ротации моделей (v1.0.4): consecutive-fail счётчик и
+    cooldown на модель. Создаётся один раз на вызов label() и передаётся
+    по ссылке во все _label_one_llm. 3 отказа подряд → модель уходит
+    в cooldown до конца прогона; успех сбрасывает счётчик.
+    """
+    return {"consecutive_fail": {}, "cooldown": set()}
+
+
+def _effective_model_pool(
+    provider_cfg: dict,
+    model: str | None,
+    rotation: dict | None,
+) -> list[str]:
+    """
+    Пул моделей провайдера для одного запроса (v1.0.4).
+
+    Порядок: preferred model (если задан и в пуле) → остальные из
+    provider_cfg["models"] в исходном порядке. Модели в cooldown
+    (3 отказа подряд за прогон) исключаются.
+    """
+    pool = list(provider_cfg.get("models") or [])
+    if not pool:
+        pool = [provider_cfg.get("default_model") or ""]
+    preferred = model or provider_cfg.get("default_model")
+    if preferred:
+        if preferred not in pool:
+            pool = [preferred] + pool
+        pool.remove(preferred)
+        pool.insert(0, preferred)
+    cooldown = (rotation or {}).get("cooldown", set()) if rotation else set()
+    return [m for m in pool if m not in cooldown]
 
 
 def _label_one_llm(
@@ -221,32 +272,51 @@ def _label_one_llm(
     provider_chain: str | list[str] | None = None,
     model: str | None = None,
     invalid_ref: list | None = None,
+    rotation: dict | None = None,
 ) -> str | None:
-    """Вызывает LLM для разметки по цепочке провайдеров
+    """
+    Вызывает LLM для разметки по цепочке провайдеров
     (без проверки кэша — кэш проверяет label()).
 
     invalid_ref: опциональный счётчик [n]; инкрементируется, если провайдер
     вернул нечитаемый ответ (v1.1: категория invalid_or_unknown).
+
+    rotation: per-run state (_new_rotation_state()); v1.0.4 — динамическая
+    ротация моделей: 3 последовательных отказа модели → cooldown до конца
+    прогона, следующий запрос подхватывает следующую модель пула.
     """
     prompt = _build_prompt(row["query"], row["url"], row.get("snippet", ""))
     chain = _get_provider_chain(provider_chain)
+    cooldown = rotation.setdefault("cooldown", set()) if rotation is not None else set()
+    fail_counts = rotation.setdefault("consecutive_fail", {}) if rotation is not None else {}
+
     for provider_id, provider_cfg in chain:
-        raw = _call_provider(provider_id, provider_cfg, prompt, model=model)
-        if raw is not None:
-            lbl = _parse_label(raw)
-            if lbl is None:
-                # Мусорный ответ провайдера — учитываем как invalid,
-                # наружу отдаём None (fallback neutral ставит группа)
-                if invalid_ref is not None:
-                    invalid_ref[0] += 1
-                return None
-            log.info("%s: %s + '%s' -> %s", provider_id, row["url"], row["query"], lbl)
-            return lbl
-    # Все провайдеры недоступны — возвращаем None, не neutral
-    log.error("Все провайдеры недоступны для %s", row["url"])
-    return None
-
-
+        pool = _effective_model_pool(provider_cfg, model, rotation)
+        for candidate in pool:
+            raw = _call_provider(provider_id, provider_cfg, prompt, model=candidate)
+            if raw is not None:
+                lbl = _parse_label(raw)
+                if lbl is None:
+                    # Мусорный ответ провайдера — учитываем как invalid,
+                    # наружу отдаём None (fallback neutral ставит группа)
+                    if invalid_ref is not None:
+                        invalid_ref[0] += 1
+                    return None
+                fail_counts[candidate] = 0
+                log.info("%s/%s: %s + '%s' -> %s",
+                         provider_id, candidate, row["url"], row["query"], lbl)
+                return lbl
+            # Отказ модели: инкремент последовательных отказов
+            n = fail_counts.get(candidate, 0) + 1
+            fail_counts[candidate] = n
+            if n >= 3 and candidate not in cooldown:
+                cooldown.add(candidate)
+                log.warning(
+                    "%s/%s: %s отказов подряд — cooldown до конца прогона",
+                    provider_id, candidate, n,
+                )
+        if pool:
+            log.warning("%s: все модели пула отказали для %s", provider_id, row["url"])
 LABEL_MODES = {"auto", "deep"}
 
 
@@ -258,6 +328,7 @@ def _label_group_auto(
     provider_chain: str | list[str] | None,
     last_real_call_ref: list[float],
     model: str | None = None,
+    rotation: dict | None = None,
 ) -> list[dict]:
     """
     Режим AUTO: эталон domain_labels → сниппет → neutral при ошибке.
@@ -355,7 +426,8 @@ def _label_group_auto(
 
         invalid_before = invalid_ref[0]
         sentiment = _label_one_llm(
-            row, provider_chain=provider_chain, model=model, invalid_ref=invalid_ref,
+            row, provider_chain=provider_chain, model=model,
+            invalid_ref=invalid_ref, rotation=rotation,
         )
 
         if sentiment is None:
@@ -655,6 +727,8 @@ def label(
 
     result = []
     last_real_call_ref = [0.0]
+    # v1.0.4: per-run state ротации моделей (3-strikes cooldown)
+    rotation = _new_rotation_state()
     
     for (searcher, geo), group_rows in sorted(groups.items()):
         if label_mode == "auto":
@@ -666,6 +740,7 @@ def label(
                 provider_chain=provider_chain,
                 last_real_call_ref=last_real_call_ref,
                 model=model,
+                rotation=rotation,
             ))
         elif label_mode == "deep":
             result.extend(_label_group_deep(
@@ -683,6 +758,13 @@ def label(
     # v1.0.3: breakdown разметки по label_source — наружу для stats прогона.
     # Источник истины — row["label_source"], проставленный _label_group_auto.
     if stats_out is not None:
+        # v1.0.4: успехи LLM по моделям из per-run state ротации.
+        # consecutive_fail==0 и не в cooldown = модель использовалась успешно.
+        if rotation:
+            by_model = {m: n for m, n in rotation.get("consecutive_fail", {}).items()
+                        if n == 0 and m not in rotation.get("cooldown", set())}
+        else:
+            by_model = {}
         breakdown = {
             "etalon_hit": 0,
             "llm_success": 0,
@@ -691,6 +773,7 @@ def label(
             "fallback_invalid_llm": 0,
             "fallback_invalid_key": 0,
             "invalid_key": 0,
+            "llm_by_model": by_model,
             "total": len(result),
         }
         for r in result:

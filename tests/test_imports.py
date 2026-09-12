@@ -182,3 +182,73 @@ def test_apps_script_provider_discover_ui_does_not_ask_for_api_key():
     # Пустой working из discover -> провайдер не регистрируется
     assert "Нет рабочих моделей" in script
     assert "провайдер НЕ зарегистрирован".lower() in script.lower()
+
+
+def _read_script() -> str:
+    """Читает apps_script.gs (skip, если артефакт не скопирован в образ)."""
+    script_path = Path(PROJECT_ROOT) / "apps_script.gs"
+    if not script_path.exists():
+        pytest.skip("apps_script.gs is a client-side artifact and is not copied into the server image")
+    return script_path.read_text(encoding="utf-8")
+
+
+def _script_fn_block(script: str, fn_name: str) -> str:
+    """Вырезает блок функции fn_name (от 'function fn_name()' до следующей 'function ')."""
+    fn_start = script.index(f"function {fn_name}(")
+    fn_end = script.index("\nfunction ", fn_start + len(fn_name) + 10)
+    return script[fn_start:fn_end]
+
+
+def test_apps_script_parse_list1_etalon_advances_loop():
+    """parseList1ToEtalon продвигает d и r — нет бесконечного цикла (регрессия a6b1961).
+
+    Регрессия: while-цикл чтения номеров под гео потерял инкремент d,
+    а continue без движения зацикливался навсегда (script timeout).
+    Исправление: d++ при каждом continue, break на первой не-числовой ячейке,
+    r = r + 1 + d после блока (переход к следующему гео-заголовку).
+    """
+    script = _read_script()
+    fn = _script_fn_block(script, "parseList1ToEtalon")
+
+    # Инкремент d внутри while присутствует (каждый continue сопровождается d++)
+    assert "d++" in fn
+    # Цикл чтения номеров под гео
+    assert "while (r + 1 + d < values.length)" in fn
+    # Не-числовая ячейка номера — конец блока гео (break, не continue)
+    assert "if (!/^\\d+$/.test(numCell)) {" in fn
+    idx = fn.index("if (!/^\\d+$/.test(numCell)) {")
+    block = fn[idx:fn.index("}", idx)]
+    assert "break" in block
+    assert "continue" not in block
+    # Регрессионный однострочный паттерн отсутствует
+    assert "if (!/^\\d+$/.test(numCell)) { continue; }" not in fn
+    # r продвигается к следующему гео-заголовку после блока
+    assert "r = r + 1 + d;" in fn
+    # DEPTH-лимит отсутствует (эталон не зависит от глубины)
+    assert "DEPTH" not in fn
+
+
+def test_apps_script_collect_report_labels_no_depth_limit():
+    """_collectReportLabels читает все числовые строки блока без DEPTH-лимита."""
+    script = _read_script()
+    fn = _script_fn_block(script, "_collectReportLabels")
+
+    # Точный регрессионный паттерн отсутствует
+    assert "d <= DEPTH" not in fn
+    # DEPTH-переменная в функции удалена/обнулена (эталон не зависит от глубины)
+    assert "DEPTH" not in fn
+    # Блок всё ещё читается числовыми строками с break на не-числе
+    assert "d = 1;" in fn
+    assert "if (!/^\\d+$/.test(position)) break;" in fn
+
+
+def test_apps_script_settings_model_hint_fallback_pool():
+    """SETTINGS_TEMPLATE: подсказка model упоминает default и пул fallback."""
+    script = _read_script()
+    template_start = script.index("var SETTINGS_TEMPLATE = [")
+    template_end = script.index("];", template_start)
+    template_block = script[template_start:template_end]
+
+    assert "deepseek-v4-flash" in template_block
+    assert "glm-5.3-flash" in template_block
+    assert "kimi-k2.6" in template_block

@@ -55,7 +55,7 @@ var SETTINGS_TEMPLATE = [
   ["force_rebuild_report", "false",    "Перестроить отчёт: true или false"],
   ["report_date",          "latest",   "Дата отчёта: latest или YYYY-MM-DD"],
   ["provider_chain",       "opencode-zen", "Цепочка провайдеров LLM (через запятую)"],
-  ["model",                "",             "Модель LLM (пусто = default_model провайдера)"],
+  ["model",                "",             "Предпочтительная модель LLM (пусто = default deepseek-v4-flash). Пул fallback: glm-5.3-flash, kimi-k2.6"],
   ["status",               "idle",     "Статус последнего прогона (обновляется автоматически)"],
   ["searcher_google",      "true",     "Поисковик Google: true или false (применяется к текущему прогону)"],
   ["searcher_yandex_ru",   "true",     "Поисковик Яндекс (ru): true или false (применяется к текущему прогону)"],
@@ -2543,7 +2543,6 @@ function _getWebhookUrl() {
 var LIST1_SHEET_NAME = "Лист1";
 var ETALON_SHEET_NAME = "Эталон разметки";
 var SPORNYE_SHEET_NAME = "Спорные";
-var DEPTH = 10;
 
   /**
    * Разовый парсер Лист1 → лист «Эталон разметки».
@@ -2664,7 +2663,9 @@ function parseList1ToEtalon() {
       Logger.log("parseList1ToEtalon: субъект '" + subj.name + "', гео='" + geo + "', строка=" + (r+1));
 
       // Читаем ВСЕ номера под гео (эталон (domain, query) не зависит от
-      // позиции — DEPTH-лимит был рудиментом старой модели и резал эталон).
+      // позиции — лимит глубины был рудиментом старой модели и резал эталон).
+      // Блок завершается на первой не-числовой ячейке номера (следующий
+      // гео-заголовок или буфер) — это конец блока гео.
       var d = 0;
       while (r + 1 + d < values.length) {
         var numRow = r + 1 + d;
@@ -2673,13 +2674,14 @@ function parseList1ToEtalon() {
         var urlCell = String(values[numRow][nameCol] || "").trim();
         var bgColor = backgrounds[numRow][posCol] || "";
 
-        // Проверяем, что это номер позиции
+        // Не-числовая ячейка номера — конец блока гео
         if (!/^\d+$/.test(numCell)) {
-          continue;
+          break;
         }
 
         var position = parseInt(numCell, 10);
         if (position < 1) {
+          d++;
           continue;
         }
 
@@ -2689,26 +2691,32 @@ function parseList1ToEtalon() {
          if (!sentiment) {
            // Нейтральный/белый цвет — в «Спорные»
            spornyeRows.push([numRow + 1, posCol + 1, bgColor, urlCell, geo, query]);
+           d++;
            continue;
          }
 
          if (!urlCell) {
            // Нет URL — в «Спорные»
            spornyeRows.push([numRow + 1, posCol + 1, bgColor, "", geo, query]);
+           d++;
            continue;
          }
 
           // Валидируем URL (должен содержать схему http/https)
           if (!/^https?:\/\//i.test(urlCell)) {
             spornyeRows.push([numRow + 1, posCol + 1, bgColor, urlCell, geo, query]);
+            d++;
             continue;
           }
 
           // Сервер симметрично нормализует значение до домена.
           etalonRows.push([urlCell, query, sentiment, "manual_l1"]);
+          d++;
       }
 
-      // Продвигаем r за прочитанный блок номеров (до первой не-числовой строки)
+      // Продвигаем r к следующему гео-заголовку: r+1+d — первая строка после
+      // блока номеров (обычно пустой буфер), гео-сканирующая петля выше
+      // пропустит буферные строки сама и остановится на следующем гео.
       r = r + 1 + d;
     }
   }
@@ -2878,7 +2886,10 @@ function _collectReportLabels(sheet, latestOnly) {
         var geoCell = String(values[r][subj.posCol] || "").trim();
         if (!geoCell || /^\d+$/.test(geoCell)) continue;
 
-        for (var d = 1; d <= DEPTH && r + d < end; d++) {
+        // Эталон не зависит от глубины (ADR a6b1961): читаем ВСЕ числовые
+        // строки блока; конец блока — первая не-числовая ячейка (break ниже)
+        // или конец версии отчёта (end).
+        for (var d = 1; r + d < end; d++) {
           var rowIndex = r + d;
           var position = String(values[rowIndex][subj.posCol] || "").trim();
           if (!/^\d+$/.test(position)) break;

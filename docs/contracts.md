@@ -207,8 +207,10 @@ PROVIDERS: dict[str, dict] = {
     "opencode-zen": {
         "enabled": True,               # участвует в фолбек-цепочке
         "priority": 1,                 # порядок в цепочке (меньше = выше)
-        "default_model": "qwen3.6-plus",  # модель для API-вызова
-        "models": ["qwen3.6-plus"],        # список доступных моделей
+        # v1.0.4: бюджетный платный пул (free-модели гейтятся OpenCode
+        # — 400 MissingSessionID, недоступны извне)
+        "default_model": "deepseek-v4-flash",
+        "models": ["deepseek-v4-flash", "glm-5.3-flash", "kimi-k2.6"],
         "endpoint": "https://opencode.ai/zen/v1/chat/completions",
         "api_key_env_var": "OPENCODE_API_KEY",
     },
@@ -221,6 +223,10 @@ DEFAULT_PROVIDER: str = "opencode-zen"
 - `api_key_env_var`: имя переменной в `.env`, **не значение ключа** (безопасность).
 - `endpoint`: OpenAI-совместимый URL.
 - `models`: список строк-идентификаторов моделей; `default_model` — одна из них.
+  **Ротация моделей (v1.0.4):** labeler перебирает `models` динамически —
+  отказ модели в строке -> следующая модель пула; 3 последовательных отказа
+  (между строками) -> cooldown до конца прогона; успех сбрасывает счётчик.
+  `model` из запроса = preferred (первая), если задана и в пуле.
 
 ## webhook.py — GET /providers
 
@@ -234,8 +240,8 @@ DEFAULT_PROVIDER: str = "opencode-zen"
     "id": "opencode-zen",
     "enabled": true,
     "priority": 1,
-    "default_model": "mimo-v2.5-free",
-    "models": ["mimo-v2.5-free", "nemotron-3-ultra-free"],
+    "default_model": "deepseek-v4-flash",
+    "models": ["deepseek-v4-flash", "glm-5.3-flash", "kimi-k2.6"],
     "endpoint": "https://opencode.ai/zen/v1/chat/completions",
     "api_key_env_var": "OPENCODE_API_KEY"
   }
@@ -681,8 +687,8 @@ Health-check для мониторинга контейнера (без авто
         "id": "opencode-zen",
         "enabled": true,
         "priority": 1,
-        "default_model": "qwen3.6-plus",
-        "models": ["qwen3.6-plus"]
+        "default_model": "deepseek-v4-flash",
+        "models": ["deepseek-v4-flash", "glm-5.3-flash", "kimi-k2.6"]
     }
 ]
 ```

@@ -100,10 +100,19 @@ KNOWN_ENDPOINTS: dict[str, str] = {
     "openai": "https://api.openai.com/v1/chat/completions",
 }
 
-# Бесплатные модели OpenCode Zen (актуальный каталог на 2026-09-05).
-# Только free-модели: literal `*-free` в id + big-pickle (free, но без суффикса).
-# Примечание: deepseek-v4-flash-free и north-mini-code-free отсутствуют в каталоге
-# Zen (см. docs/decisions.md / отчёт build), поэтому не включены.
+# Бюджетные модели OpenCode Zen для разметки (решение 2026-09-12, вариант A).
+# Free-модели исключены: OpenCode гейтит free tier клиентом OpenCode
+# (400 MissingSessionID "free tier can only be used in OpenCode"),
+# Прямой тест провайдера 2026-09-12; details: docs/decisions.md ADR 2026-09-08.
+# Пул — дешёвые платные модели chat/completions; ротация 3-strikes в labeler.
+ZEN_BUDGET_MODELS: list[str] = [
+    "deepseek-v4-flash",   # $0.14/$0.28 за 1M — основной
+    "glm-5.3-flash",       # $0.15/$0.50 — fallback 1
+    "kimi-k2.6",           # $0.95/$4.00 — fallback 2
+]
+
+# Deprecated: free-модели недоступны извне OpenCode (v1.0.4).
+# Оставлены для обратной совместимости импортов/тестов, в пул не входят.
 ZEN_FREE_MODELS: list[str] = [
     "mimo-v2.5-free",
     "ling-3.0-flash-fin-free",
@@ -117,9 +126,11 @@ PROVIDERS: dict[str, dict] = {
     "opencode-zen": {
         "enabled": True,
         "priority": 1,
-        "default_model": os.environ.get("OPENCODE_MODEL", "mimo-v2.5-free"),
-        "models": list(ZEN_FREE_MODELS),
-        "endpoint": KNOWN_ENDPOINTS["opencode-zen"],
+        "default_model": os.environ.get("OPENCODE_MODEL", "deepseek-v4-flash"),
+        "models": list(ZEN_BUDGET_MODELS),
+        # В песочнице endpoint подменяется на локальный мок (LLM_API_BASE),
+        # в проде переменная не задаётся — работает канонический URL.
+        "endpoint": os.environ.get("LLM_API_BASE", KNOWN_ENDPOINTS["opencode-zen"]),
         "api_key_env_var": "OPENCODE_API_KEY",
     },
 }

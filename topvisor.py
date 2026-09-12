@@ -1,7 +1,8 @@
+import base64
 import json
 import os
 import time
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from typing import Any
 
 import requests
@@ -13,7 +14,11 @@ load_dotenv()
 
 log = config.setup_logging(__name__)
 
-BASE_URL = "https://api.topvisor.com/v2/json"
+# База Topvisor API. В песочнице (SANDBOX_MODE=1) подменяется на локальный мок
+# через TOPVISOR_API_BASE (например, http://mock-topvisor:8011/v2/json).
+# Env переопределяет только в тестах/песочнице; в проде переменная не задаётся.
+_BASE_URL_DEFAULT = "https://api.topvisor.com/v2/json"
+BASE_URL = os.environ.get("TOPVISOR_API_BASE", _BASE_URL_DEFAULT).rstrip("/")
 
 Row = dict[str, Any]
 
@@ -22,6 +27,161 @@ SEARCHER_MAP = {
     1: "google",
     20: "yandex_com",
 }
+
+
+# Обёртки Google-редиректов в snapshotsData[*].val.url (hotfix v1.0.4)
+_GOOGLE_HOST_SUFFIXES = ("google.com", ".google.com")
+
+
+def _extract_query_param(url: str, *names: str) -> str | None:
+    """Достаёт значение параметра из query-строки без parse_qs.
+
+    parse_qs превращает '+' в пробел, что портит base64-токены,
+    поэтому разбираем query вручную. Возвращает первое найденное
+    значение (уже URL-decoded) или None.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    if not parsed.query:
+        return None
+    for part in parsed.query.split("&"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if key in names:
+            return unquote(value)
+    return None
+
+
+def _is_google_redirect_wrapper(url: str) -> bool:
+    """Распознаёт обёртки Google-редиректов: /goto?url=... и /url?q=...
+
+    Относительные пути (/goto?url=...) — то, что возвращает Topvisor.
+    Абсолютные — только на хостах google.com, чтобы не зацепить легитимный
+    URL вида https://example.com/url?q=...
+    """
+    u = url.strip()
+    if u.startswith("/goto?url=") or u.startswith("/url?q="):
+        return True
+    try:
+        parsed = urlparse(u)
+    except ValueError:
+        return False
+    host = (parsed.netloc or "").lower()
+    if not host or not host.endswith(_GOOGLE_HOST_SUFFIXES):
+        return False
+    return parsed.path in ("/goto", "/url")
+
+
+def _extract_http_url_from_protobuf(data: bytes, _depth: int = 0) -> str | None:
+    """Консервативный walker по protobuf-байтам: ищет http(s) URL.
+
+    Идёт по полям varint/length-delimited (tag >> 3 — номер поля,
+    tag & 0x07 — wire type). Из length-delimited полей берёт первый
+    байтовый кусок, начинающийся с http:// или https://; внутрь
+    вложенных сообщений заходит рекурсивно (с ограничением глубины).
+    Любая неоднозначность (обрезанное поле, неизвестный wire type) —
+    остановка разбора, None. Никаких исключений наружу.
+    """
+    if _depth > 4:
+        return None
+    i = 0
+    n = len(data)
+    while i < n:
+        tag = data[i]
+        i += 1
+        wire = tag & 0x07
+        if wire == 0:  # varint
+            while i < n:
+                b = data[i]
+                i += 1
+                if not (b & 0x80):
+                    break
+        elif wire == 2:  # length-delimited
+            length = 0
+            shift = 0
+            while i < n:
+                b = data[i]
+                i += 1
+                length |= (b & 0x7F) << shift
+                if not (b & 0x80):
+                    break
+                shift += 7
+                if shift > 63:
+                    return None
+            if length > n - i:
+                # Поле обрезано (реальные токены Google обрезаны/подписаны) —
+                # консервативно прекращаем разбор.
+                return None
+            chunk = data[i:i + length]
+            i += length
+            if chunk.startswith(b"http://") or chunk.startswith(b"https://"):
+                try:
+                    return chunk.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+            found = _extract_http_url_from_protobuf(chunk, _depth + 1)
+            if found:
+                return found
+        elif wire == 1:  # 64-bit fixed
+            i += 8
+        elif wire == 5:  # 32-bit fixed
+            i += 4
+        else:
+            # wire types 3/4 (groups) и 6/7 — не поддерживаем
+            return None
+        if i > n:
+            return None
+    return None
+
+
+def _decode_google_redirect_url(url: str) -> str | None:
+    """Пытается восстановить реальный URL из Google-обёртки редиректа.
+
+    Поддерживает два вида обёрток:
+    - "/goto?url=<token>" — формат с конца августа 2026. Токен — base64url
+      от protobuf (08 01 12 <len> ...). ВАЖНО: у актуальных токенов Google
+      URL внутри ОТСУТСТВУЕТ (подписанный opaque-токен, подтверждено
+      разбором prod-payload'ов); walker возвращает None, если URL не найден.
+    - "/url?q=<payload>" — старый формат: q содержит открытый http(s) URL;
+      если там токен — пробуем тот же protobuf-walk.
+
+    Возвращает http(s) URL или None, если восстановить не удалось.
+    Никогда не бросает исключений.
+    """
+    if not isinstance(url, str):
+        return None
+    u = url.strip()
+    if not _is_google_redirect_wrapper(u):
+        return None
+    try:
+        path = urlparse(u).path
+    except ValueError:
+        return None
+    param_names = ("url",) if path == "/goto" else ("q", "url")
+    payload = _extract_query_param(u, *param_names)
+    if not payload:
+        return None
+    # Старый формат: URL лежит в параметре открыто
+    if payload.startswith(("http://", "https://")):
+        return payload
+    # Токен: URL-decode (на случай %XX) затем base64url-декод
+    payload = unquote(payload)
+    if payload.startswith(("http://", "https://")):
+        return payload
+    try:
+        raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+    except (ValueError, TypeError):
+        return None
+    if not raw:
+        return None
+    decoded = _extract_http_url_from_protobuf(raw)
+    if decoded is not None and decoded.startswith(("http://", "https://")):
+        return decoded
+    return None
+
 
 # Lazy credentials — не читаются при импорте
 _credentials: dict[str, Any] = {}
@@ -254,6 +414,8 @@ def get_snapshot(project_id: int, region_index: int, date: str,
     keywords = result.get("keywords", []) if isinstance(result, dict) else []
     searcher_name = SEARCHER_MAP.get(searcher_key, "unknown")
     rows: list[Row] = []
+    skipped_bad_urls = 0
+    bad_url_examples: list[str] = []
     for kw in keywords:
         name = kw.get("name", "")
         snapshots_data = kw.get("snapshotsData", {})
@@ -272,7 +434,25 @@ def get_snapshot(project_id: int, region_index: int, date: str,
             url = val.get("url", "")
             if not url:
                 continue
+            # Hotfix v1.0.4: Google-обёртки /goto?url=... / /url?q=... —
+            # пробуем восстановить реальный URL; не удалось — строка мусор.
+            decoded = _decode_google_redirect_url(url)
+            if decoded is not None:
+                url = decoded
+            elif _is_google_redirect_wrapper(url):
+                skipped_bad_urls += 1
+                if len(bad_url_examples) < 3:
+                    bad_url_examples.append(url[:80])
+                continue
+            # Sanity-gate: в Row попадает только валидный http(s) URL.
+            if not url.startswith(("http://", "https://")):
+                skipped_bad_urls += 1
+                if len(bad_url_examples) < 3:
+                    bad_url_examples.append(url[:80])
+                continue
             domain = val.get("domain") or urlparse(url).netloc or ""
+            # Нормализация домена (storage-независимая): lowercase + strip www
+            domain = domain.lower().removeprefix("www.")
             snippet = f"{val.get('snippet_title', '')} {val.get('snippet_body', '')}".strip()
             rows.append({
                 "date": date,
@@ -297,6 +477,11 @@ def get_snapshot(project_id: int, region_index: int, date: str,
                 "позиций в кабинете Topvisor), а не запросом снимка.",
                 depth, max_pos,
             )
+    if skipped_bad_urls > 0:
+        log.warning(
+            "Снапшот %s/%s: пропущено %s строк с невосстановимым URL (примеры: %s)",
+            project_id, date, skipped_bad_urls, "; ".join(bad_url_examples),
+        )
     log.info("Получено %s строк из снимка", len(rows))
     return rows
 

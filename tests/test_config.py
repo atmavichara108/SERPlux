@@ -120,12 +120,14 @@ def test_known_endpoints_contains_three_entries():
     assert config.KNOWN_ENDPOINTS["openai"] == "https://api.openai.com/v1/chat/completions"
 
 
-def test_zen_provider_models_are_free_only():
-    """Модели opencode-zen — только бесплатные (literal *-free или big-pickle)."""
+def test_zen_provider_models_are_budget_pool():
+    """v1.0.4: модели opencode-zen — бюджетный платный пул (free-модели
+    гейтятся OpenCode: 400 MissingSessionID, недоступны извне)."""
     zen = config.PROVIDERS["opencode-zen"]
-    for model in zen["models"]:
-        assert "-free" in model or model == "big-pickle", (
-            f"Модель '{model}' не является бесплатной (нет '-free' и не big-pickle)"
-        )
-    # default_model — одна из доступных моделей
+    assert zen["models"] == config.ZEN_BUDGET_MODELS
+    assert zen["default_model"] == "deepseek-v4-flash"
     assert zen["default_model"] in zen["models"]
+    for model in zen["models"]:
+        assert model not in config.ZEN_FREE_MODELS, (
+            f"Модель '{model}' из free-пула недоступна извне OpenCode и не должна быть в пуле"
+        )
