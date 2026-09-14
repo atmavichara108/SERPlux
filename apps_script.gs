@@ -2917,11 +2917,27 @@ function _importReportLabels(labels, secret) {
   var totalErrors = 0;
   var errorSamples = [];
   var conflicts = [];
+  // v1.0.5: дедупликация пар (domain, query) — листы содержат одну пару
+  // многократно (разные позиции/гео/версии); импорт уникальных пар
+  // сокращает батчи и делает счётчики честными.
+  var seen = {};
+  var unique = [];
+  for (var i = 0; i < labels.length; i++) {
+    var l = labels[i];
+    var key = (l.domain || l.url || "") + "\u0000" + (l.query || "");
+    if (seen[key]) continue;
+    seen[key] = true;
+    unique.push(l);
+  }
+  if (unique.length !== labels.length) {
+    Logger.log("_importReportLabels: дедупликация " + labels.length + " -> " + unique.length);
+  }
+  labels = unique;
   var batchCount = Math.ceil(labels.length / IMPORT_BATCH_SIZE);
 
   for (var b = 0; b < batchCount; b++) {
     var batch = labels.slice(b * IMPORT_BATCH_SIZE, (b + 1) * IMPORT_BATCH_SIZE);
-    var result = _post("/labels/import", batch, secret);
+    var result = _post("/labels/import", { labels: batch, force: true }, secret);
     if (result.ok && result.data) {
       totalImported += result.data.imported || 0;
       totalSkipped += result.data.skipped || 0;
@@ -3213,7 +3229,7 @@ function importEtalonToDb() {
     var start = b * IMPORT_BATCH_SIZE;
     var batch = labels.slice(start, start + IMPORT_BATCH_SIZE);
 
-    var result = _post("/labels/import", batch, secret);
+    var result = _post("/labels/import", { labels: batch, force: true }, secret);
     Logger.log(
       "importEtalonToDb: батч " + (b + 1) + "/" + batchCount +
       ", отправлено " + batch.length + ", код " + result.code + ", ok=" + result.ok

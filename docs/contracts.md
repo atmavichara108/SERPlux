@@ -149,7 +149,7 @@ Row = {
   **Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>` (без токена — 401).
   **Тело:** допускаются два формата:
     - голый массив `[{domain, query, sentiment, source}, ...]`;
-    - объект `{"labels": [...]}`.
+    - объект `{"labels": [...], "force": bool}` (force, v1.0.5).
   Принимается `domain` или URL в поле `domain`; сервер нормализует его до домена.
   `source` по умолчанию `"manual_l1"` (если не передан или пуст).
   **Поведение:**
@@ -161,6 +161,11 @@ Row = {
   - Конфликт `manual_l1` → `manual_l1` с другим sentiment (ADR 2026-09-05):
     запись уходит в `errors`, сообщение `"manual_l1 conflict"` попадает в
     `error_samples`, батч продолжается. Тот же sentiment — идемпотентно.
+  - `force: true` (v1.0.5, только явный операторский импорт: исторические
+    листы, «Зафиксировать исправления в эталон») перезаписывает существующий
+    manual_l1 даже при другом sentiment — last-write-wins разрешён только для
+    ручного действия. Автоматика force не передаёт. Apps Script шлёт
+    `{labels, force: true}` с дедупликацией пар (domain, query).
   - Ответ HTTP 200 даже при частичных ошибках:
     `{"imported": N, "skipped": N, "errors": N, "error_samples": [...]}`.
 

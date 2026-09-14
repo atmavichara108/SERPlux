@@ -123,6 +123,50 @@ def test_manual_l1_conflict_returns_marker(init_db):
     assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "positive"
 
 
+def test_manual_l1_force_overwrites(init_db):
+    """v1.0.5: force=True (явный операторский импорт) перезаписывает manual_l1.
+
+    Инцидент 2026-09-14: исправления цветов заказчика не применялись —
+    конфликт manual_l1 блокировал обновление. force разрешает last-write-wins
+    ТОЛЬКО для явного ручного действия.
+    """
+    storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
+    )
+    result = storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "negative", "manual_l1",
+        db_path=init_db, force=True,
+    )
+    assert result is None
+    assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "negative"
+
+
+def test_bulk_upsert_force_overwrites(init_db):
+    """v1.0.5: bulk_upsert с force=True перезаписывает конфликтующий manual_l1."""
+    storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
+    )
+    storage.bulk_upsert_domain_labels(
+        [{"domain": "https://example.com/page", "query": "subject a",
+          "sentiment": "negative", "source": "manual_l1"}],
+        db_path=init_db, force=True,
+    )
+    assert storage.get_domain_label("https://example.com/page", "subject a", "Литва", init_db) == "negative"
+
+
+def test_bulk_upsert_without_force_still_raises(init_db):
+    """Без force конфликт manual_l1 по-прежнему ValueError (защита от автоматики)."""
+    storage.upsert_domain_label(
+        "https://example.com/page", "subject a", "Литва", "positive", "manual_l1", db_path=init_db
+    )
+    with pytest.raises(ValueError, match="manual_l1 conflict"):
+        storage.bulk_upsert_domain_labels(
+            [{"domain": "https://example.com/page", "query": "subject a",
+              "sentiment": "negative", "source": "manual_l1"}],
+            db_path=init_db,
+        )
+
+
 def test_upsert_success_returns_none(init_db):
     """Успешный upsert возвращает None (не признак конфликта)."""
     result = storage.upsert_domain_label(

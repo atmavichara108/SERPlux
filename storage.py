@@ -821,6 +821,7 @@ def upsert_domain_label(
     source: str | None = None,
     db_path: str = DB_PATH,
     url: str | None = None,
+    force: bool = False,
     **kwargs,
 ) -> str | None:
     """
@@ -836,6 +837,11 @@ def upsert_domain_label(
       - 'manual_l1' — не перезаписывается источниками 'snippet' или 'page'.
       - 'snippet'/'page' могут перезаписывать друг друга и 'snippet'/'page'.
       - 'manual_l1' может перезаписать любую существующую запись.
+
+    force=True (v1.0.5): явный операторский импорт (исторические листы,
+    «Зафиксировать исправления в эталон») перезаписывает существующий
+    manual_l1 даже при другом sentiment — last-write-wins разрешён ТОЛЬКО
+    для явного ручного действия, не для автоматики.
     """
     domain_or_url = domain_or_url or url
     # Принимаем старые позиционные geo-вызовы только для плавного перехода;
@@ -873,14 +879,24 @@ def upsert_domain_label(
                 )
                 return
             if existing["sentiment"] != sentiment:
-                # Конфликт ручных эталонов: last-write-wins запрещён.
-                # Не бросаем исключение — возвращаем признак конфликта,
-                # чтобы импорт вернул строку оператору (жёлтая маркировка).
-                log.warning(
-                    "domain_labels: manual_l1 conflict (%s, %s): existing=%s, new=%s",
-                    domain, query_norm, existing["sentiment"], sentiment,
-                )
-                return "manual_l1_conflict"
+                if force:
+                    # v1.0.5: явный операторский импорт (force=True) перезаписывает
+                    # старый manual_l1 — last-write-wins разрешён ТОЛЬКО для
+                    # ручного действия (исторические листы, «Зафиксировать
+                    # исправления в эталон»), не для автоматики.
+                    log.info(
+                        "domain_labels: force-перезапись manual_l1 (%s, %s): %s -> %s",
+                        domain, query_norm, existing["sentiment"], sentiment,
+                    )
+                else:
+                    # Конфликт ручных эталонов: last-write-wins запрещён.
+                    # Не бросаем исключение — возвращаем признак конфликта,
+                    # чтобы импорт вернул строку оператору (жёлтая маркировка).
+                    log.warning(
+                        "domain_labels: manual_l1 conflict (%s, %s): existing=%s, new=%s",
+                        domain, query_norm, existing["sentiment"], sentiment,
+                    )
+                    return "manual_l1_conflict"
             # Тот же sentiment — идемпотентный upsert, идём дальше
 
         conn.execute(
@@ -902,12 +918,15 @@ def upsert_domain_label(
 def bulk_upsert_domain_labels(
     items: list[dict],
     db_path: str = DB_PATH,
+    force: bool = False,
 ) -> None:
     """
     Массовый upsert записей в domain_labels.
 
     Каждый элемент items — dict с ключами: domain (или url), query, sentiment, source.
     Применяются те же правила приоритета source, что и в upsert_domain_label.
+    force=True (v1.0.5): перезаписывает существующий manual_l1 при другом
+    sentiment (явный операторский импорт); иначе конфликт -> ValueError.
     """
     valid_sources = {"manual_l1", "snippet", "page"}
     for item in items:
@@ -961,11 +980,18 @@ def bulk_upsert_domain_labels(
                 if source != "manual_l1":
                     continue
                 if existing_sentiment != sentiment:
-                    raise ValueError(
-                        f"manual_l1 conflict for ({domain}, {query}): "
-                        f"existing={existing_sentiment}, new={sentiment}; "
-                        "требуется явное разрешение оператора (last-write-wins запрещён)"
-                    )
+                    if force:
+                        # v1.0.5: явный операторский импорт перезаписывает
+                        log.info(
+                            "domain_labels: bulk force-перезапись manual_l1 (%s, %s): %s -> %s",
+                            domain, query, existing_sentiment, sentiment,
+                        )
+                    else:
+                        raise ValueError(
+                            f"manual_l1 conflict for ({domain}, {query}): "
+                            f"existing={existing_sentiment}, new={sentiment}; "
+                            "требуется явное разрешение оператора (last-write-wins запрещён)"
+                        )
 
             conn.execute(
                 """INSERT INTO domain_labels

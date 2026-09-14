@@ -22,6 +22,14 @@
 
 ## Сделано
 
+- **Session: 2026-09-14 (3) — Etalon force-rewrite + dedup (v1.0.5 fix):**
+  - Root cause (доказан логами): импорт 4856 записей не увеличил БД (359) — все пары (domain, query) уже существовали; 21 пропущено — дедупликация. 9-5 конфликтов на батч (armtek.ru, vseinstrumenti.ru, 2gis.ae, ozon.ru, wildberries.ru, finanzkun.de) блокировали обновление: manual_l1 conflict без force не перезаписывался, исправления заказчика не применялись — вот почему «теряются эталонные записи».
+  - storage.py: upsert_domain_label(force=False) и bulk_upsert_domain_labels(force=False) — force=True перезаписывает существующий manual_l1 даже при другом sentiment (last-write-wins разрешён только для явного операторского импорта).
+  - webhook.py: POST /labels/import принимает force (bool) из тела {labels, force}; пробрасывает в storage.
+  - apps_script.gs: _importReportLabels — дедупликация пар (domain, query) до батчей (логирует 5585 -> уникальных), шлёт {labels, force: true}; importEtalonToDb — тоже force: true.
+  - Тесты: +3 storage (force overwrite, bulk force, bulk without force raises), +1 webhook (force_overwrites_manual_l1_conflict). Полный набор 402 passed.
+  - Отменён green-neutral эксперимент (storage.py/reporter.py) — по решению пользователя, не от заказчика.
+
 - **Session: 2026-09-14 — v1.0.5: постоянная сверка эталона (/labels/reconcile):**
   - Диагноз по данным сервера: breakdown зелёный (etalon_hit 1504, llm_success 923,
     fallback 0, invalid 0, conflicts 0; classification D: 0, C: 0, ANOMALY: 0) —

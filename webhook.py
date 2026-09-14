@@ -1106,6 +1106,10 @@ def import_domain_labels(
     conflicts: list[dict] = []
     conflicts_count = 0
     error_samples: list[str] = []
+    # v1.0.5: force=True — явный операторский импорт (исторические листы,
+    # «Зафиксировать исправления в эталон») перезаписывает старый manual_l1
+    # при другом sentiment. Автоматика force не передаёт.
+    force = bool(body.get("force", False)) if isinstance(body, dict) else False
 
     def _add_sample(message: str) -> None:
         if len(error_samples) < MAX_ERROR_SAMPLES:
@@ -1152,6 +1156,7 @@ def import_domain_labels(
                 sentiment=sentiment,
                 source=source,
                 db_path=storage.DB_PATH,
+                force=force,
             )
             if conflict == "manual_l1_conflict":
                 # Конфликт ручных эталонов (один domain+query, разные sentiment):

@@ -1012,6 +1012,36 @@ class TestLabelsConflictsEndpoint:
         assert resp.status_code == 403
 
 
+    def test_import_force_overwrites_manual_l1_conflict(self, client, client_db):
+        """v1.0.5: POST /labels/import с force:true перезаписывает conflicting manual_l1."""
+        import storage
+        # 1. Создаём эталон positive
+        resp = client.post(
+            "/labels/import",
+            json=[{"domain": "force-test.com", "query": "q1", "sentiment": "positive", "source": "manual_l1"}],
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.json()["imported"] == 1
+        assert storage.get_domain_label("https://force-test.com/x", "q1", client_db) == "positive"
+        # 2. Тот же ключ с другим sentiment без force — конфликт (не перезаписан)
+        resp2 = client.post(
+            "/labels/import",
+            json=[{"domain": "force-test.com", "query": "q1", "sentiment": "neutral", "source": "manual_l1"}],
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp2.json()["imported"] == 0
+        assert len(resp2.json()["conflicts"]) == 1
+        assert storage.get_domain_label("https://force-test.com/x", "q1", client_db) == "positive"
+        # 3. Тот же ключ с force:true — перезапись разрешена
+        resp3 = client.post(
+            "/labels/import",
+            json={"labels": [{"domain": "force-test.com", "query": "q1", "sentiment": "neutral", "source": "manual_l1"}], "force": True},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp3.json()["imported"] == 1
+        assert storage.get_domain_label("https://force-test.com/x", "q1", client_db) == "neutral"
+
+
 class TestLabelsReconcileEndpoint:
     """Тесты POST /labels/reconcile — постоянная сверка эталона (v1.0.5)."""
 
