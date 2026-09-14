@@ -106,6 +106,7 @@ function onOpen() {
       .addItem("⟳ Проверить статус", "checkStatus")
       .addItem("[>] Построить отчёт за дату...", "buildReportForDate")
       .addItem("Зафиксировать исправления в эталон", "importLatestReportToEtalon")
+      .addItem("Сверить эталон с БД и отчётом", "reconcileEtalonWithDb")
       .addSeparator()
       .addItem("Разметить собранные данные", "labelOnly")
       .addItem("Разметить за дату...", "labelOnlyForDate")
@@ -3222,6 +3223,9 @@ function importEtalonToDb() {
       totalImported += result.data.imported || 0;
       totalSkipped += result.data.skipped || 0;
       totalErrors += result.data.errors || 0;
+      if (Array.isArray(result.data.conflicts) && result.data.conflicts.length > 0) {
+        _markEtalonConflictsInSpornye(result.data.conflicts, "Эталон разметки");
+      }
     } else {
       totalErrors += batch.length;
       Logger.log("importEtalonToDb: ошибка батча " + (b + 1) + ": " + result.body);
@@ -3236,6 +3240,102 @@ function importEtalonToDb() {
 
    Logger.log("importEtalonToDb: " + summary.replace(/\n/g, " | "));
    ui.alert("Готово", summary, ui.ButtonSet.OK);
+}
+
+
+// ─── Постоянная сверка эталона (v1.0.5) ──────────────────────────────────
+
+/**
+ * «Сверить эталон с БД и отчётом» — диагностика рассинхрона.
+ *
+ * Read-only: читает лист «Эталон разметки», отправляет на POST /labels/reconcile
+ * и показывает три расхождения:
+ *   1. есть на листе, нет в БД  -> импорт забыт/конфликт съел;
+ *   2. есть в БД, нет на листе  -> лист перезаписан (рассинхрон);
+ *   3. есть в отчёте, нет в БД    -> URL не накрыт эталоном (жалоба заказчика).
+ */
+function reconcileEtalonWithDb() {
+  var ui = SpreadsheetApp.getUi();
+
+  var secret = _getSecret();
+  if (!secret) {
+    ui.alert("Ошибка", "Секрет не задан.", ui.ButtonSet.OK);
+    return;
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(ETALON_SHEET_NAME);
+  if (!sheet) {
+    ui.alert("Ошибка", "Лист «Эталон разметки» не найден.", ui.ButtonSet.OK);
+    return;
+  }
+
+  var values = sheet.getDataRange().getValues();
+  if (!values || values.length < 2) {
+    ui.alert("Ошибка", "Лист «Эталон разметки» пуст.", ui.ButtonSet.OK);
+    return;
+  }
+
+  var headers = values[0].map(function (h) { return String(h).trim().toLowerCase(); });
+  var colMap = {};
+  for (var i = 0; i < headers.length; i++) colMap[headers[i]] = i;
+
+  var domainColumn = ("domain" in colMap) ? "domain" : (("url" in colMap) ? "url" : null);
+  if (!domainColumn || !("query" in colMap) || !("sentiment" in colMap)) {
+    ui.alert("Ошибка", "Не распознаны колонки эталона: " + JSON.stringify(headers), ui.ButtonSet.OK);
+    return;
+  }
+
+  var labels = [];
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var domain = String(row[colMap[domainColumn]] || "").trim();
+    var query = String(row[colMap["query"]] || "").trim();
+    var sentiment = String(row[colMap["sentiment"]] || "").trim().toLowerCase();
+    if (!domain || !query || !sentiment) continue;
+    labels.push({ domain: domain, query: query, sentiment: sentiment });
+  }
+
+  var settings = _readSettings();
+  var payload = {
+    labels: labels,
+    client_id: settings.clientId,
+    date: "latest"
+  };
+
+  var result = _post("/labels/reconcile", payload, secret);
+  if (!result.ok || !result.data) {
+    ui.alert("Ошибка", _friendlyError(result), ui.ButtonSet.OK);
+    return;
+  }
+
+  var d = result.data;
+  var sh = d.sheet || {};
+  var db = d.database || {};
+  var rp = d.report || {};
+
+  var msg = "Сверка эталона (дата отчёта: " + (d.date || "—") + ")\n\n" +
+    "Лист эталона: валидных " + (sh.valid || 0) +
+      ", пропущено " + (sh.skipped || 0) +
+      ", конфликтов " + (sh.conflicts || 0) + "\n" +
+    "БД (manual_l1): " + (db.manual_l1 || 0) + " записей\n" +
+    "Отчёт: " + (rp.rows || 0) + " строк, накрыто эталоном " + (rp.manual_hits || 0) + "\n\n" +
+    "⚠ Есть на листе, нет в БД: " + (sh.only_in_sheet || 0) + "\n" +
+    "⚠ Есть в БД, нет на листе: " + (db.only_in_database || 0) + "\n" +
+    "⚠ В отчёте, не накрыто: " + (rp.uncovered || 0) + "\n" +
+    "⚠ Противоречит эталону: " + (rp.mismatches || 0);
+
+  if ((sh.only_in_sheet || 0) > 0 && rp.uncovered > 0) {
+    msg += "\n\n→ Запустите «Зафиксировать исправления в эталон» для доимпорта.";
+  }
+
+  Logger.log("reconcileEtalonWithDb: " + JSON.stringify({
+    sheet: sh.valid, sheet_skipped: sh.skipped, sheet_conflicts: sh.conflicts,
+    db: db.manual_l1, only_in_sheet: sh.only_in_sheet, only_in_db: db.only_in_database,
+    report_rows: rp.rows, report_hits: rp.manual_hits,
+    uncovered: rp.uncovered, mismatches: rp.mismatches
+  }));
+  ui.alert("Сверка эталона", msg, ui.ButtonSet.OK);
 }
 
 // ─── Модуль 7: Инициализация шаблона листов (§5) ────────────────────────────────

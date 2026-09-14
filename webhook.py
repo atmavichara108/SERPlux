@@ -1194,6 +1194,166 @@ def import_domain_labels(
     })
 
 
+@app.post("/labels/reconcile")
+def reconcile_domain_labels(
+    body: dict = Body(...),
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Сверяет лист эталона, БД manual_l1 и последний отчёт.
+
+    Тело: ``{"labels": [{"domain"|"url", "query", "sentiment"}],
+    "client_id": "...", "date": "latest"|"YYYY-MM-DD"}``.
+    Операция read-only: ничего не импортирует и не изменяет.
+    """
+    _verify_token(authorization)
+
+    raw_labels = body.get("labels", []) if isinstance(body, dict) else []
+    if not isinstance(raw_labels, list):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="labels must be a list",
+        )
+
+    sheet_labels: dict[tuple[str, str], str] = {}
+    sheet_conflicts: list[dict[str, Any]] = []
+    skipped = 0
+    for raw in raw_labels:
+        if not isinstance(raw, dict):
+            skipped += 1
+            continue
+        domain = storage.normalize_domain(_extract_str(raw.get("domain") or raw.get("url")))
+        query = storage.normalize_query(_extract_str(raw.get("query")))
+        sentiment = _extract_str(raw.get("sentiment")).lower()
+        if not domain or not query or sentiment not in VALID_IMPORT_SENTIMENTS:
+            skipped += 1
+            continue
+        key = (domain, query)
+        previous = sheet_labels.get(key)
+        if previous is not None and previous != sentiment:
+            sheet_conflicts.append({
+                "domain": domain,
+                "query": query,
+                "existing": previous,
+                "incoming": sentiment,
+            })
+            continue
+        sheet_labels[key] = sentiment
+
+    client_id = _extract_str(body.get("client_id")) or "default"
+    requested_date = _extract_str(body.get("date"))
+
+    conn = storage._get_conn(storage.DB_PATH)
+    try:
+        db_rows = conn.execute(
+            """SELECT domain, query, sentiment, source
+               FROM domain_labels WHERE source = 'manual_l1'"""
+        ).fetchall()
+        db_labels = {
+            (str(row["domain"]), str(row["query"])): {
+                "sentiment": row["sentiment"], "source": row["source"]
+            }
+            for row in db_rows
+        }
+
+        if requested_date in ("", "latest"):
+            date_row = conn.execute(
+                "SELECT MAX(date) AS date FROM positions WHERE client_id = ?",
+                (client_id,),
+            ).fetchone()
+            report_date = date_row["date"] if date_row and date_row["date"] else None
+        else:
+            report_date = requested_date
+
+        report_rows: list[dict[str, Any]] = []
+        if report_date:
+            report_rows = [dict(row) for row in conn.execute(
+                """SELECT p.url, p.query, p.searcher, p.geo, p.position,
+                          l.sentiment, l.confidence
+                   FROM positions p
+                   JOIN labels l ON l.position_id = p.id
+                   WHERE p.client_id = ? AND p.date = ?
+                     AND l.id = (
+                         SELECT latest.id FROM labels latest
+                         WHERE latest.position_id = p.id
+                         ORDER BY latest.created_at DESC, latest.id DESC
+                         LIMIT 1
+                     )""",
+                (client_id, report_date),
+            )]
+    finally:
+        conn.close()
+
+    sheet_keys = set(sheet_labels)
+    db_keys = set(db_labels)
+    sheet_only = sheet_keys - db_keys
+    db_only = db_keys - sheet_keys
+
+    report_keys: set[tuple[str, str]] = set()
+    report_uncovered: list[dict[str, Any]] = []
+    report_mismatches: list[dict[str, Any]] = []
+    report_manual_hits = 0
+    for row in report_rows:
+        key = (
+            storage.normalize_domain(row.get("url")),
+            storage.normalize_query(row.get("query")),
+        )
+        if not key[0] or not key[1]:
+            continue
+        report_keys.add(key)
+        manual = db_labels.get(key)
+        if manual is None:
+            if len(report_uncovered) < 100:
+                report_uncovered.append({
+                    "domain": key[0], "query": key[1],
+                    "searcher": row.get("searcher"), "geo": row.get("geo"),
+                    "position": row.get("position"),
+                })
+            continue
+        report_manual_hits += 1
+        if row.get("sentiment") != manual["sentiment"] and len(report_mismatches) < 100:
+            report_mismatches.append({
+                "domain": key[0], "query": key[1],
+                "expected": manual["sentiment"],
+                "actual": row.get("sentiment"),
+                "searcher": row.get("searcher"), "geo": row.get("geo"),
+                "position": row.get("position"),
+            })
+
+    def _samples(keys: set[tuple[str, str]]) -> list[dict[str, str]]:
+        return [{"domain": domain, "query": query} for domain, query in sorted(keys)[:100]]
+
+    result = {
+        "client_id": client_id,
+        "date": report_date,
+        "sheet": {
+            "valid": len(sheet_labels), "skipped": skipped,
+            "conflicts": len(sheet_conflicts),
+            "only_in_sheet": len(sheet_only),
+            "only_in_sheet_samples": _samples(sheet_only),
+        },
+        "database": {
+            "manual_l1": len(db_labels),
+            "only_in_database": len(db_only),
+            "only_in_database_samples": _samples(db_only),
+        },
+        "report": {
+            "rows": len(report_rows), "keys": len(report_keys),
+            "manual_hits": report_manual_hits,
+            "uncovered": len(report_uncovered),
+            "uncovered_samples": report_uncovered,
+            "mismatches": len(report_mismatches),
+            "mismatch_samples": report_mismatches,
+        },
+        "sheet_conflict_samples": sheet_conflicts[:100],
+    }
+    log.info(
+        "labels_reconcile: client=%s date=%s sheet=%s db=%s report=%s uncovered=%s mismatches=%s",
+        client_id, report_date, len(sheet_labels), len(db_labels),
+        len(report_rows), len(report_uncovered), len(report_mismatches),
+    )
+    return JSONResponse(result)
+
+
 @app.get("/labels/conflicts")
 def list_label_conflicts(
     run_id: str | None = None,

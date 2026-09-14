@@ -6,6 +6,29 @@
 
 ## Сделано
 
+- **Session: 2026-09-14 — v1.0.5: постоянная сверка эталона (/labels/reconcile):**
+  - Диагноз по данным сервера: breakdown зелёный (etalon_hit 1504, llm_success 923,
+    fallback 0, invalid 0, conflicts 0; classification D: 0, C: 0, ANOMALY: 0) —
+    пайплайн здоров; жалоба «жёлтые есть в эталоне» требовала инструмента сверки,
+    а не догадок.
+  - НЕЗАКОММИЧЕННЫЙ green-neutral эксперимент (storage.py/reporter.py) — ОТМЕНЁН
+    по решению пользователя (git restore): «neutral+high → зелёный» не от
+    заказчика и не входит в приоритет.
+  - `webhook.py`: `POST /labels/reconcile` (read-only, Bearer) — сверяет лист
+    эталона / БД manual_l1 / последний отчёт клиента по каноническому ключу
+    `(normalize_domain(url), normalize_query(query))`; возвращает diff:
+    only_in_sheet (импорт не дошёл / конфликт съел), only_in_database
+    (лист перезаписан), report.uncovered (жалоба заказчика), report.mismatches
+    (баг матчинга, должно быть 0), samples.
+  - `apps_script.gs`: `reconcileEtalonWithDb()` + пункт меню
+    «SERPlux → Сверить эталон с БД и отчётом» (подтверждена read-only природа:
+    ничего не пишет, показывает диалог с числами и подсказкой про доимпорт).
+  - Тесты: 5 новых в TestLabelsReconcileEndpoint (full match, sheet-only,
+    db-only, uncovered+mismatch, auth 401). Полный набор **398 passed**.
+  - Контракты: docs/contracts.md — секция POST /labels/reconcile.
+  - Приоритет следующих сессий (пользователь): сверка эталона — главное;
+    остальное после. Отчёт заказчику обновлять после решения проблемы сверки.
+
 - **Session: 2026-09-12 — v1.0.4: рабочая разметка + чистая выдача:**
   - Root causes (доказаны): (1) 209 жёлтых — Google redirect-обёртки
     /goto?url=CAES... в positions.url (Topvisor отдаёт по всем позициям,

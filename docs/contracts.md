@@ -635,6 +635,54 @@ Health-check для мониторинга контейнера (без авто
 
 **Ответ 502 Bad Gateway:** при ошибке связи с Topvisor.
 
+### POST /labels/reconcile
+
+Постоянная сверка эталона (v1.0.5): лист «Эталон разметки» vs БД `manual_l1` vs
+последний отчёт клиента. **Read-only** — ничего не импортирует и не изменяет.
+
+**Авторизация:** `Authorization: Bearer <WEBHOOK_SECRET>`
+
+**Тело:**
+```python
+{
+    "labels": [{"domain"|"url": str, "query": str, "sentiment": str}, ...],
+    "client_id": str = "default",
+    "date": "latest" | "YYYY-MM-DD" = "latest",
+}
+```
+
+**Ответ 200 OK:**
+```json
+{
+  "client_id": "client01",
+  "date": "2026-09-14",
+  "sheet": {
+    "valid": 359, "skipped": 0, "conflicts": 0,
+    "only_in_sheet": 12,
+    "only_in_sheet_samples": [{"domain": "x.com", "query": "q"}]
+  },
+  "database": {
+    "manual_l1": 359,
+    "only_in_database": 3,
+    "only_in_database_samples": [{"domain": "y.com", "query": "q"}]
+  },
+  "report": {
+    "rows": 2427, "keys": 2000, "manual_hits": 1504,
+    "uncovered": 496, "uncovered_samples": [...],
+    "mismatches": 0, "mismatch_samples": []
+  },
+  "sheet_conflict_samples": []
+}
+```
+
+**Смысл расхождений:**
+- `sheet.only_in_sheet` — есть на листе, нет в БД: импорт не выполнен / конфликт manual_l1 съел запись;
+- `database.only_in_database` — есть в БД, нет на листе: лист перезаписан (потеря в UI-канале);
+- `report.uncovered` — URL есть в отчёте, но не в эталоне: жалоба заказчика «есть в эталоне, но жёлтый»;
+- `report.mismatches` — отчётная метка расходится с эталоном (должно быть 0; иначе баг матчинга).
+
+Вызывается из Apps Script меню: «SERPlux → Сверить эталон с БД и отчётом».
+
 ### GET /labels/conflicts
 
 Возвращает журнал конфликтов разметки (v1.1, ADR 2026-09-05).

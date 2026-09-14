@@ -1012,6 +1012,114 @@ class TestLabelsConflictsEndpoint:
         assert resp.status_code == 403
 
 
+class TestLabelsReconcileEndpoint:
+    """Тесты POST /labels/reconcile — постоянная сверка эталона (v1.0.5)."""
+
+    def _seed_db_labels(self, client_db, labels):
+        import storage
+        for lbl in labels:
+            storage.upsert_domain_label(
+                url=lbl["domain"], query=lbl["query"],
+                sentiment=lbl["sentiment"], source="manual_l1", db_path=client_db,
+            )
+
+    def test_reconcile_full_match(self, client, client_db):
+        """Лист = БД = отчёт: все diff пустые."""
+        self._seed_db_labels(client_db, [
+            {"domain": "https://a.com", "query": "q1", "sentiment": "positive"},
+        ])
+        storage_mod = __import__("storage")
+        storage_mod.save([{
+            "date": "2026-09-14", "searcher": "google", "query": "q1",
+            "geo": "Литва", "region_index": 1300, "position": 1,
+            "url": "https://a.com/x", "domain": "a.com", "snippet": "s",
+        }], client_id="default", db_path=client_db)
+        # Привяжем метку к позиции
+        rows = storage_mod.get_history({"client_id": "default", "date": "2026-09-14"}, db_path=client_db)
+        rows[0]["sentiment"] = "positive"
+        rows[0]["label_mode"] = "auto"
+        storage_mod.insert_labels(rows, db_path=client_db)
+
+        resp = client.post(
+            "/labels/reconcile",
+            json={"labels": [{"domain": "a.com", "query": "q1", "sentiment": "positive"}],
+                  "client_id": "default", "date": "2026-09-14"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["sheet"]["only_in_sheet"] == 0
+        assert body["database"]["only_in_database"] == 0
+        assert body["report"]["uncovered"] == 0
+        assert body["report"]["mismatches"] == 0
+
+    def test_reconcile_sheet_only_found(self, client, client_db):
+        """URL есть на листе, нет в БД (import забыт/конфликт)."""
+        resp = client.post(
+            "/labels/reconcile",
+            json={"labels": [{"domain": "missing.com", "query": "q9", "sentiment": "positive"}],
+                  "client_id": "default", "date": "latest"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["sheet"]["only_in_sheet"] == 1
+        assert body["sheet"]["only_in_sheet_samples"][0]["domain"] == "missing.com"
+
+    def test_reconcile_db_only_found(self, client, client_db):
+        """Запись в БД, но нет на листе (лист перезаписан)."""
+        self._seed_db_labels(client_db, [
+            {"domain": "dbonly.com", "query": "q7", "sentiment": "negative"},
+        ])
+        resp = client.post(
+            "/labels/reconcile",
+            json={"labels": [], "client_id": "default", "date": "latest"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["database"]["only_in_database"] == 1
+        assert body["database"]["only_in_database_samples"][0]["domain"] == "dbonly.com"
+
+    def test_reconcile_report_uncovered_and_mismatch(self, client, client_db):
+        """Строки отчёта: uncovered (нет в эталоне) и mismatch (расхождение)."""
+        import storage as storage_mod
+        self._seed_db_labels(client_db, [
+            {"domain": "known.com", "query": "q1", "sentiment": "positive"},
+        ])
+        storage_mod.save([
+            {"date": "2026-09-14", "searcher": "google", "query": "q1",
+             "geo": "Литва", "region_index": 1300, "position": 1,
+             "url": "https://known.com/x", "domain": "known.com", "snippet": "s"},
+            {"date": "2026-09-14", "searcher": "google", "query": "q1",
+             "geo": "Литва", "region_index": 1300, "position": 2,
+             "url": "https://unknown.com/y", "domain": "unknown.com", "snippet": "s"},
+        ], client_id="default", db_path=client_db)
+        rows = storage_mod.get_history({"client_id": "default", "date": "2026-09-14"}, db_path=client_db)
+        for r in rows:
+            r["sentiment"] = "neutral" if "known" in r["url"] else "positive"
+            r["label_mode"] = "auto"
+        storage_mod.insert_labels(rows, db_path=client_db)
+
+        resp = client.post(
+            "/labels/reconcile",
+            json={"labels": [{"domain": "known.com", "query": "q1", "sentiment": "positive"}],
+                  "client_id": "default", "date": "2026-09-14"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["report"]["manual_hits"] == 1
+        assert body["report"]["mismatches"] == 1
+        assert body["report"]["mismatches"] if isinstance(body["report"]["mismatches"], int) else True
+        assert body["report"]["uncovered"] == 1
+
+    def test_reconcile_requires_auth(self, client):
+        """Без Bearer — 401."""
+        resp = client.post("/labels/reconcile", json={"labels": []})
+        assert resp.status_code == 401
+
+
 class TestLabelsImportEndpoint:
     """Тесты POST /labels/import — батчевый импорт в domain_labels."""
 
