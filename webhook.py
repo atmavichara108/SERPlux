@@ -1179,9 +1179,22 @@ def import_domain_labels(
                 idx, domain, query, exc,
             )
 
+    # v1.0.5: контрольная телеметрия — сколько записей реально в БД после
+    # импорта. Ловит рассинхрон «API отчитался imported=N, а в БД пусто»
+    # (инцидент 2026-09-14: импорт 4856 -> в БД 359 без следа).
+    db_total_after = None
+    try:
+        conn = storage._get_conn(storage.DB_PATH)
+        db_total_after = conn.execute(
+            "SELECT COUNT(*) FROM domain_labels"
+        ).fetchone()[0]
+        conn.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("labels_import: не удалось посчитать db_total_after: %s", exc)
+
     log.info(
-        "labels_import: imported=%s skipped=%s errors=%s conflicts=%s",
-        imported, skipped, errors, conflicts_count,
+        "labels_import: imported=%s skipped=%s errors=%s conflicts=%s db_total_after=%s db=%s",
+        imported, skipped, errors, conflicts_count, db_total_after, storage.DB_PATH,
     )
 
     return JSONResponse({
@@ -1191,6 +1204,8 @@ def import_domain_labels(
         "conflicts": conflicts,
         "conflicts_count": conflicts_count,
         "error_samples": error_samples,
+        "db_total_after": db_total_after,
+        "db_path": storage.DB_PATH,
     })
 
 
@@ -1334,6 +1349,8 @@ def reconcile_domain_labels(
     result = {
         "client_id": client_id,
         "date": report_date,
+        # v1.0.5: путь к БД в ответе — диагностика рассинхрона окружений
+        "db_path": storage.DB_PATH,
         "sheet": {
             "valid": len(sheet_labels), "skipped": skipped,
             "conflicts": len(sheet_conflicts),
