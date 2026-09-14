@@ -1292,16 +1292,23 @@ def reconcile_domain_labels(
     report_uncovered: list[dict[str, Any]] = []
     report_mismatches: list[dict[str, Any]] = []
     report_manual_hits = 0
+    # v1.0.5 fix: счётчики полные, samples обрезаются отдельно (было
+    # len(list) < 100 как счётчик — диалог показывал 100 вместо реального числа).
+    uncovered_total = 0
+    mismatches_total = 0
+    invalid_key_rows = 0
     for row in report_rows:
         key = (
             storage.normalize_domain(row.get("url")),
             storage.normalize_query(row.get("query")),
         )
         if not key[0] or not key[1]:
+            invalid_key_rows += 1
             continue
         report_keys.add(key)
         manual = db_labels.get(key)
         if manual is None:
+            uncovered_total += 1
             if len(report_uncovered) < 100:
                 report_uncovered.append({
                     "domain": key[0], "query": key[1],
@@ -1310,14 +1317,16 @@ def reconcile_domain_labels(
                 })
             continue
         report_manual_hits += 1
-        if row.get("sentiment") != manual["sentiment"] and len(report_mismatches) < 100:
-            report_mismatches.append({
-                "domain": key[0], "query": key[1],
-                "expected": manual["sentiment"],
-                "actual": row.get("sentiment"),
-                "searcher": row.get("searcher"), "geo": row.get("geo"),
-                "position": row.get("position"),
-            })
+        if row.get("sentiment") != manual["sentiment"]:
+            mismatches_total += 1
+            if len(report_mismatches) < 100:
+                report_mismatches.append({
+                    "domain": key[0], "query": key[1],
+                    "expected": manual["sentiment"],
+                    "actual": row.get("sentiment"),
+                    "searcher": row.get("searcher"), "geo": row.get("geo"),
+                    "position": row.get("position"),
+                })
 
     def _samples(keys: set[tuple[str, str]]) -> list[dict[str, str]]:
         return [{"domain": domain, "query": query} for domain, query in sorted(keys)[:100]]
@@ -1339,17 +1348,18 @@ def reconcile_domain_labels(
         "report": {
             "rows": len(report_rows), "keys": len(report_keys),
             "manual_hits": report_manual_hits,
-            "uncovered": len(report_uncovered),
+            "uncovered": uncovered_total,
             "uncovered_samples": report_uncovered,
-            "mismatches": len(report_mismatches),
+            "mismatches": mismatches_total,
             "mismatch_samples": report_mismatches,
+            "invalid_key_rows": invalid_key_rows,
         },
         "sheet_conflict_samples": sheet_conflicts[:100],
     }
     log.info(
         "labels_reconcile: client=%s date=%s sheet=%s db=%s report=%s uncovered=%s mismatches=%s",
         client_id, report_date, len(sheet_labels), len(db_labels),
-        len(report_rows), len(report_uncovered), len(report_mismatches),
+        len(report_rows), uncovered_total, mismatches_total,
     )
     return JSONResponse(result)
 
